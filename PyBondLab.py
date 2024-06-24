@@ -57,10 +57,10 @@ class StrategyFormation:
                 skip = self.strategy.skip
                 varname = f'ret_{self.adj}'
                 self.data['logret'] = np.log(self.data[varname] + 1)
-                self.data[f'signal_{self.adj}'] = self.data.groupby(['ISSUE_ID'], group_keys=False)['logret']\
+                self.data[f'signal_{self.adj}'] = self.data.groupby(['ID'], group_keys=False)['logret']\
                     .rolling(J, min_periods=J).sum().values
                 self.data[f'signal_{self.adj}'] = np.exp(self.data[f'signal_{self.adj}']) - 1
-                self.data[f'signal_{self.adj}'] = self.data.groupby("ISSUE_ID")[f'signal_{self.adj}'].shift(skip)
+                self.data[f'signal_{self.adj}'] = self.data.groupby("ID")[f'signal_{self.adj}'].shift(skip)
          
         else:
             sort_var = self.strategy.get_sort_var()
@@ -68,10 +68,10 @@ class StrategyFormation:
                 J = self.strategy.J
                 skip = self.strategy.skip
                 self.data['logret'] = np.log(self.data['ret'] + 1)
-                self.data['signal'] = self.data.groupby(['ISSUE_ID'], group_keys=False)['logret']\
+                self.data['signal'] = self.data.groupby(['ID'], group_keys=False)['logret']\
                     .rolling(J, min_periods=J).sum().values            
                 self.data['signal'] = np.exp(self.data['signal']) - 1
-                self.data['signal'] = self.data.groupby("ISSUE_ID")['signal'].shift(skip)
+                self.data['signal'] = self.data.groupby("ID")['signal'].shift(skip)
             
             
                 
@@ -84,7 +84,7 @@ class StrategyFormation:
         hor = self.strategy.K                        # holding period
         
         TM = len(self.datelist)
-        tab = self.data.copy().sort_values(['ISSUE_ID', 'date']) # make a copy of the data
+        tab = self.data.copy().sort_values(['ID', 'date']) # make a copy of the data
         
         if adj == 'wins':
             tab_ex_post_wins = self.data_winsorized_ex_post # this is a df w/ wisorized returns
@@ -159,9 +159,9 @@ class StrategyFormation:
             elif adj == 'price' and self.w:
                 if isinstance(self.w, list) and len(self.w) == 2:
                     lower_bound, upper_bound = self.w
-                    It0 = It0[(It0['PRICE_L5M'] <= upper_bound) & (It0['PRICE_L5M'] >= lower_bound)]
+                    It0 = It0[(It0['PRICE'] <= upper_bound) & (It0['PRICE'] >= lower_bound)]
                 else:
-                    It0 = It0[It0['PRICE_L5M'] <= self.w] if self.w > 25 else It0[It0['PRICE_L5M'] >= self.w]
+                    It0 = It0[It0['PRICE'] <= self.w] if self.w > 25 else It0[It0['PRICE'] >= self.w]
 
             # =====================================================================
             # start sorting procedure
@@ -279,15 +279,15 @@ class StrategyFormation:
             thres2 = np.percentile(It0[sig2], np.linspace(0, 100, nport2 + 1))# compute edges for signal2
             thres2[0] = -np.inf
         
-        id0 = It0['ISSUE_ID']
-        id1 = It1['ISSUE_ID']
+        id0 = It0['ID']
+        id1 = It1['ID']
         
         intersect_ids = id0[id0.isin(id1)]
         It0 = It0[id0.isin(intersect_ids)].copy()
         It1 = It1[id1.isin(intersect_ids)].copy() 
         
         # missing_ids = id0[~id0.isin(id1)]
-        It1['AMOUNT_OUTSTANDING'] = It0['VW'].values
+        It1['VW'] = It0['VW'].values
         
         sortvar = It0[sig]
         # =====================================================================
@@ -310,7 +310,7 @@ class StrategyFormation:
             nportmax = nport
             It1['ptf_rank'] = self.compute_rank_idx(sortvar,thres,nport)
                                
-        It1['weights'] = It1.groupby('ptf_rank')['AMOUNT_OUTSTANDING'].apply(lambda x: x / x.sum()).reset_index(level=0, drop=True)
+        It1['weights'] = It1.groupby('ptf_rank')['VW'].apply(lambda x: x / x.sum()).reset_index(level=0, drop=True)
         
         # It1[ret_col] = It1[ret_col].fillna(0)
         ptf_ret_ew = It1.groupby('ptf_rank')[ret_col].mean()
@@ -319,7 +319,7 @@ class StrategyFormation:
         # =====================================================================
         # Create csv with number of assets in each bin
         # =====================================================================
-        # ptf_count = It1.groupby('ptf_rank')['ISSUE_ID'].count()
+        # ptf_count = It1.groupby('ptf_rank')['ID'].count()
         # ptf_count_df = ptf_count.reset_index().T
         # ptf_count_df['date'] = It1.date.iloc[0]
         # ptf_count_df = ptf_count_df.drop('ptf_rank')

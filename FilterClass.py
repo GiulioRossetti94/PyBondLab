@@ -24,7 +24,7 @@ class Filter:
         
         
         if self.loc:
-            self.name_filt += "_{self.loc}"
+            self.name_filt += f"_{self.loc}"
 
     def apply_filters(self):
         if self.adj == 'trim':
@@ -33,6 +33,7 @@ class Filter:
             self._pricefilter(self.w)
         elif self.adj == 'wins':
             self.data_winsorized_ex_post = self._winsorizing_ep(self.data.copy(),self.w)
+            
             self._winsorizing(self.w)
         elif self.adj == 'bounce':
             self._bounce(self.w)
@@ -71,15 +72,15 @@ class Filter:
         adj = 'price'
         if isinstance(w, list) and len(w) == 2:
             lower_bound, upper_bound = w
-            self.data[f"ret_{adj}"] = np.where((self.data['PRICE_L5M'] > upper_bound) | (self.data['PRICE_L5M'] < lower_bound), np.NaN, self.data['ret'])              
+            self.data[f"ret_{adj}"] = np.where((self.data['PRICE'] > upper_bound) | (self.data['PRICE'] < lower_bound), np.NaN, self.data['ret'])              
         elif w >= 25:
-            self.data[f"ret_{adj}"] = np.where(self.data['PRICE_L5M'] > w, np.NaN, self.data['ret'])
+            self.data[f"ret_{adj}"] = np.where(self.data['PRICE'] > w, np.NaN, self.data['ret'])
         else:
-            self.data[f"ret_{adj}"] = np.where(self.data['PRICE_L5M'] < w, np.NaN, self.data['ret'])
+            self.data[f"ret_{adj}"] = np.where(self.data['PRICE'] < w, np.NaN, self.data['ret'])
 
     def _bounce(self, w):
         adj = 'bounce'
-        self.data['ret_LAG'] = self.data.groupby("ISSUE_ID")['ret'].shift(1)   
+        self.data['ret_LAG'] = self.data.groupby("ID")['ret'].shift(1)   
         self.data['bounce'] = self.data['ret_LAG'] * self.data['ret']
         if isinstance(w, list) and len(w) == 2:
             lower_bound, upper_bound = w
@@ -121,17 +122,18 @@ class Filter:
         self.data[f"ret_{adj}"] = pd.to_numeric(self.data[f"ret_{adj}"])
         
     def _winsorizing_ep(self,df,w):
+        adj = 'wins'
         df1 = df.copy() # redundant
         self.lb_ep = np.nanpercentile(df1['ret'], 100 - w)
         self.ub_ep = np.nanpercentile(df1['ret'], w)
         if self.loc == 'both':
-            df1['ret'] = np.where(df1['ret'] > self.ub_ep, self.ub_ep,
+            df1[f"ret_{adj}"] = np.where(df1['ret'] > self.ub_ep, self.ub_ep,
                                  np.where(df1['ret'] < self.lb_ep, self.lb_ep, 
                                         df1['ret']))
         if self.loc == 'right':
-            df1['ret'] = np.where(df1['ret'] > self.ub_ep, self.ub_ep, df1['ret'])
+            df1[f"ret_{adj}"] = np.where(df1['ret'] > self.ub_ep, self.ub_ep, df1['ret'])
         
         if self.loc == 'left':
-            df1['ret'] = np.where(df1['ret'] < self.lb_ep, self.lb_ep, df1['ret'])
+            df1[f"ret_{adj}"] = np.where(df1['ret'] < self.lb_ep, self.lb_ep, df1['ret'])
         return df1
     

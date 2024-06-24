@@ -212,10 +212,10 @@ class Momentum(Strategy):
     def compute_signal(self, data):
         varname = "ret"
         data['logret'] = np.log(data[varname] + 1)
-        data['signal'] = data.groupby(['ISSUE_ID'], group_keys=False)['logret']\
+        data['signal'] = data.groupby(['ID'], group_keys=False)['logret']\
             .rolling(self.J, min_periods=self.J).sum().values
         data['signal'] = np.exp(data['signal']) - 1    
-        data['signal'] = data.groupby("ISSUE_ID")['signal'].shift(self.skip)
+        data['signal'] = data.groupby("ID")['signal'].shift(self.skip)
         return data
     
     def get_sort_var(self, adj=None):
