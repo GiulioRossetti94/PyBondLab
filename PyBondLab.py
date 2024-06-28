@@ -9,12 +9,16 @@ import numpy as np
 import pandas as pd
 from FilterClass import Filter
 from StrategyClass import *
+import warnings
+import statsmodels.api as sm
 
 class StrategyFormation:
     def __init__(self, data: pd.DataFrame,strategy: Strategy, rating: str = None, filters: dict = None):
+        
         self.data_raw = data.copy()
         self.data = data.copy()
-        self.datelist = pd.Series(self.data['date'].unique()).sort_values().tolist()
+        # self.datelist = pd.Series(self.data['date'].unique()).sort_values().tolist()
+        self.datelist = pd.Series(self.data['date'].unique()).sort_values().tolist() if 'date' in self.data.columns else None
             
         self.strategy = strategy
         self.nport = strategy.nport
@@ -32,9 +36,52 @@ class StrategyFormation:
         else:
             self.name = f"{self.rating}_" + self.strategy.str_name
             
+        # initialize df 
+        
+        self.ewls_ep_df = None 
+        self.vwls_ep_df = None
+    
+    def fit(self, *, IDvar=None, DATEvar=None, RETvar=None, PRICEvar=None):
+        if IDvar or DATEvar or RETvar or PRICEvar:
+            self.rename_id(IDvar=IDvar, DATEvar=DATEvar, RETvar=RETvar, PRICEvar=PRICEvar)
+        
+        required_columns = ['ID', 'date', 'ret']               
+        if self.adj == 'price':
+            required_columns.append('PRICE')
+            
+        missing_columns = [col for col in required_columns if col not in self.data.columns]    
+        if missing_columns:
+            raise ValueError(f"Missing required columns: {', '.join(missing_columns)}")         
+            
         self.compute_signal()
         self.portfolio_formation()
+        return self
+    
+    def rename_id(self, *, IDvar=None, DATEvar=None,RETvar=None, PRICEvar=None):
+        """
+        rename columns to ensure consistency with col names
 
+        """
+        mapping = {}
+        
+        if IDvar:
+            mapping[IDvar] = 'ID'
+        if DATEvar:
+            mapping[DATEvar] = 'date'
+        if RETvar:
+            mapping[RETvar] = 'ret'
+        if PRICEvar:
+            mapping[PRICEvar] = 'PRICE'
+            
+        self.data.rename(columns=mapping, inplace=True)
+        self.data_raw.rename(columns=mapping, inplace=True)
+        
+        if not pd.api.types.is_datetime64_any_dtype(self.data['date']):
+            self.data['date'] = pd.to_datetime(self.data['date'])
+        if not pd.api.types.is_datetime64_any_dtype(self.data_raw['date']):
+            self.data_raw['date'] = pd.to_datetime(self.data_raw['date'])
+            
+        self.datelist = pd.Series(self.data['date'].unique()).sort_values().tolist()
                      
     def compute_signal(self):
         # compute signal
@@ -107,8 +154,9 @@ class StrategyFormation:
         # initialize storing   
         ewport_hor_ea = np.full((TM, hor, tot_nport), np.nan)
         vwport_hor_ea = np.full((TM, hor, tot_nport), np.nan)
-        ewport_hor_ep = np.full((TM, hor, tot_nport), np.nan)
-        vwport_hor_ep = np.full((TM, hor, tot_nport), np.nan) 
+        if adj:
+            ewport_hor_ep = np.full((TM, hor, tot_nport), np.nan)
+            vwport_hor_ep = np.full((TM, hor, tot_nport), np.nan) 
         
         # for t in range((hor+1), TM - hor): to discuss this!
         for t in range( TM - hor):
@@ -172,8 +220,9 @@ class StrategyFormation:
                 It1 = self.data_raw[(self.data_raw['date'] == self.datelist[t + h])& (~self.data_raw[ret_var].isna())]
                 
                 if adj == 'wins' and 'signal' in sort_var:
+                    # TODO can be removed
                     # use winsorized returns to assign to ptfs
-                    port_ret_ea = self.port_sorted_ret(It0, It1,ret_var, sort_var+'_wins',DoubleSort=DoubleSort,sig2 = sort_var2,nport2 = nport2 )
+                    port_ret_ea = self.port_sorted_ret(It0, It1,ret_var, sort_var,DoubleSort=DoubleSort,sig2 = sort_var2,nport2 = nport2 )
                 else:
                     # if signal is not in sort_var, we do not use winsorized returns to sort portfolios
                     port_ret_ea = self.port_sorted_ret(It0, It1,ret_var, sort_var,DoubleSort=DoubleSort,sig2 = sort_var2,nport2 = nport2 )
@@ -192,61 +241,132 @@ class StrategyFormation:
                     ewport_hor_ep[t + h, h - 1, :] = port_ret_ep[0]
                     vwport_hor_ep[t + h, h - 1, :] = port_ret_ep[1]
                 
-        ewport_ea = np.mean(ewport_hor_ea, axis=1)
-        vwport_ea = np.mean(vwport_hor_ea, axis=1)
-        ewport_ep = np.mean(ewport_hor_ep, axis=1)
-        vwport_ep = np.mean(vwport_hor_ep, axis=1)    
+        self.ewport_ea = np.mean(ewport_hor_ea, axis=1)
+        self.vwport_ea = np.mean(vwport_hor_ea, axis=1)
+        if adj:
+            self.ewport_ep = np.mean(ewport_hor_ep, axis=1)
+            self.vwport_ep = np.mean(vwport_hor_ep, axis=1)    
             
         nport_tot = len(port_ret_ea[0])   # this is nport1 x nport2
         
         # =====================================================================
         # Compute portfolio returns
         # =====================================================================
-        if DoubleSort:        
+        if DoubleSort:  
+            # storing rets
             avg_res_ew = []
             avg_res_vw = []
+            
+            # storing legs
+            long_leg_ew_ea   = []
+            short_leg_ew_ea  = []
+            long_leg_vw_ea   = []
+            short_leg_vw_ea  = []            
+            
             idx = self.compute_idx(nport, nport2)
             for i in range(1, nport + 1):
                 col_idx_n2 = idx[(i, nport2)]
                 col_idx_1 = idx[(i, 1)]
 
-                avg_res_ew.append(ewport_ea[:,col_idx_n2-1]- (1 * ewport_ea[:,col_idx_1-1]))
-                avg_res_vw.append(vwport_ea[:,col_idx_n2-1]- (1 * vwport_ea[:,col_idx_1-1]))
+                avg_res_ew.append(self.ewport_ea[:,col_idx_n2-1]- (1 * self.ewport_ea[:,col_idx_1-1]))
+                avg_res_vw.append(self.vwport_ea[:,col_idx_n2-1]- (1 * self.vwport_ea[:,col_idx_1-1]))
+                
+                long_leg_ew_ea.append(self.ewport_ea[:,col_idx_n2-1])
+                short_leg_ew_ea.append(self.ewport_ea[:,col_idx_1-1])
+                
+                long_leg_vw_ea.append(self.vwport_ea[:,col_idx_n2-1])
+                short_leg_vw_ea.append(self.vwport_ea[:,col_idx_1-1])                
+                
             
             avg_res_ew = np.vstack(avg_res_ew).T
             avg_res_vw = np.vstack(avg_res_vw).T
             
             self.ewls_ea = np.mean(avg_res_ew,axis=1)
-            self.vwls_ea = np.mean(avg_res_vw,axis=1)       
-        else:
-            self.ewls_ea = ewport_ea[:, nport_tot - 1] - ewport_ea[:, 0]
-            self.vwls_ea = vwport_ea[:, nport_tot - 1] - vwport_ea[:, 0]
-    
+            self.vwls_ea = np.mean(avg_res_vw,axis=1)  
+            
+            self.ewls_ea_long_df = pd.DataFrame(np.vstack(long_leg_ew_ea).T,index = self.datelist, columns = [[str(x)+'_LONG_EWEA_' + self.name for x in range(1,nport+1)]]) 
+            self.vwls_ea_long_df = pd.DataFrame(np.vstack(long_leg_vw_ea).T,index = self.datelist, columns = [[str(x)+'_LONG_VWEA_' + self.name for x in range(1,nport+1)]])
+            # computing short leg df 
+            self.ewls_ea_short_df = pd.DataFrame(np.vstack(short_leg_ew_ea).T,index = self.datelist, columns = [[str(x)+'_SHORT_EWEA_' + self.name for x in range(1,nport+1)]])
+            self.vwls_ea_short_df = pd.DataFrame(np.vstack(short_leg_vw_ea).T,index = self.datelist, columns = [[str(x)+'_SHORT_VWEA_' + self.name for x in range(1,nport+1)]])
+        else:           
+            # computing long leg
+            EWlong_leg_ea = self.ewport_ea[:, nport_tot - 1]
+            VWlong_leg_ea = self.vwport_ea[:, nport_tot - 1]
+            
+            # computing short leg            
+            EWshort_leg_ea = self.ewport_ea[:, 0]
+            VWshort_leg_ea = self.vwport_ea[:, 0]          
+            
+            # Long short portfolio
+            self.vwls_ea = self.vwport_ea[:, nport_tot - 1] - self.vwport_ea[:, 0]
+            self.ewls_ea = self.ewport_ea[:, nport_tot - 1] - self.ewport_ea[:, 0]
+            # computing long leg df
+            self.ewls_ea_long_df = pd.DataFrame(EWlong_leg_ea,index = self.datelist, columns = ['LONG_EWEA_' + self.name]) 
+            self.vwls_ea_long_df = pd.DataFrame(VWlong_leg_ea,index = self.datelist, columns = ['LONG_VWEA_' + self.name]) 
+            # computing short leg df 
+            self.ewls_ea_short_df = pd.DataFrame(EWshort_leg_ea,index = self.datelist, columns = ['SHORT_EWEA_' + self.name]) 
+            self.vwls_ea_short_df = pd.DataFrame(VWshort_leg_ea,index = self.datelist, columns = ['SHORT_VWEA_' + self.name])  
+      
         self.ewls_ea_df = pd.DataFrame(self.ewls_ea,index = self.datelist, columns = ['EWEA_' + self.name]) 
         self.vwls_ea_df = pd.DataFrame(self.vwls_ea,index = self.datelist, columns = ['VWEA_' + self.name]) 
-         
+
         if adj:
             if DoubleSort:
                 avg_res_ew = []
                 avg_res_vw = []
+                # storing legs
+                long_leg_ew_ep   = []
+                short_leg_ew_ep  = []
+                long_leg_vw_ep   = []
+                short_leg_vw_ep  = []            
+                
                 idx = self.compute_idx(nport, nport2)
                 for i in range(1, nport + 1):
                     col_idx_n2 = idx[(i, nport2)]
                     col_idx_1 = idx[(i, 1)]
 
-                    avg_res_ew.append(ewport_ep[:,col_idx_n2-1]- (1 * ewport_ep[:,col_idx_1-1]))
-                    avg_res_vw.append(vwport_ep[:,col_idx_n2-1]- (1 * vwport_ep[:,col_idx_1-1]))       
+                    avg_res_ew.append(self.ewport_ep[:,col_idx_n2-1]- (1 * self.ewport_ep[:,col_idx_1-1]))
+                    avg_res_vw.append(self.vwport_ep[:,col_idx_n2-1]- (1 * self.vwport_ep[:,col_idx_1-1]))    
+                    
+                    long_leg_ew_ep.append(self.ewport_ep[:,col_idx_n2-1])
+                    short_leg_ew_ep.append(self.ewport_ep[:,col_idx_1-1])
+                    
+                    long_leg_vw_ep.append(self.vwport_ep[:,col_idx_n2-1])
+                    short_leg_vw_ep.append(self.vwport_ep[:,col_idx_1-1]) 
                     
                 avg_res_ew = np.vstack(avg_res_ew).T
                 avg_res_vw = np.vstack(avg_res_vw).T
             
                 self.ewls_ep = np.mean(avg_res_ew,axis=1)
                 self.vwls_ep = np.mean(avg_res_vw,axis=1)  
-            
-            else:       
-                self.ewls_ep = ewport_ep[:, nport_tot - 1] - ewport_ep[:, 0]
-                self.vwls_ep = vwport_ep[:, nport_tot - 1] - vwport_ep[:, 0]
                 
+                self.ewls_ep_long_df = pd.DataFrame(np.vstack(long_leg_ew_ep).T,index = self.datelist, columns = [[str(x)+'_LONG_EWEP_' + self.name for x in range(1,nport+1)]]) 
+                self.vwls_ep_long_df = pd.DataFrame(np.vstack(long_leg_vw_ep).T,index = self.datelist, columns = [[str(x)+'_LONG_VWEP_' + self.name for x in range(1,nport+1)]])
+                # computing short leg df 
+                self.ewls_ep_short_df = pd.DataFrame(np.vstack(short_leg_ew_ep).T,index = self.datelist, columns = [[str(x)+'_SHORT_EWEP_' + self.name for x in range(1,nport+1)]])
+                self.vwls_ep_short_df = pd.DataFrame(np.vstack(short_leg_vw_ep).T,index = self.datelist, columns = [[str(x)+'_SHORT_VWEP_' + self.name for x in range(1,nport+1)]])
+
+            
+            else:      
+                # Long short portfolio
+                self.ewls_ep = self.ewport_ep[:, nport_tot - 1] - self.ewport_ep[:, 0]
+                self.vwls_ep = self.vwport_ep[:, nport_tot - 1] - self.vwport_ep[:, 0]
+                
+                # computing long leg
+                EWlong_leg_ep = self.ewport_ep[:, nport_tot - 1]
+                VWlong_leg_ep = self.vwport_ep[:, nport_tot - 1]
+                
+                # computing short leg            
+                EWshort_leg_ep = self.ewport_ep[:, 0]
+                VWshort_leg_ep = self.vwport_ep[:, 0]    
+                # computing long leg df      
+                self.ewls_ep_long_df = pd.DataFrame(EWlong_leg_ep,index = self.datelist, columns = ['LONG_EWEP_' + self.name]) 
+                self.vwls_ep_long_df = pd.DataFrame(VWlong_leg_ep,index = self.datelist, columns = ['LONG_VWEP_' + self.name]) 
+                # computing short leg df
+                self.ewls_ep_short_df = pd.DataFrame(EWshort_leg_ep,index = self.datelist, columns = ['SHORT_EWEP_' + self.name]) 
+                self.vwls_ep_short_df = pd.DataFrame(VWshort_leg_ep,index = self.datelist, columns = ['SHORT_VWEP_' + self.name])  
+                                
             self.ewls_ep_df = pd.DataFrame(self.ewls_ep,index = self.datelist,columns = ['EWEP_' + self.name])   
             self.vwls_ep_df = pd.DataFrame(self.vwls_ep,index = self.datelist,columns = ['VWEP_' + self.name])   
                 
@@ -389,4 +509,106 @@ class StrategyFormation:
             n2 = int(np.nanmax(temp_ind))
             idx[(idx1 == i) & (temp_ind > 0)] = temp_ind[(idx1 == i) & (temp_ind > 0)] + n2 * (i - 1)
         return idx
+    
+    # getters 
+    def get_long_leg_ex_ante(self):
+        if self.ewls_ea_long_df is None or self.vwls_ea_long_df is None:
+            warnings.warn("The DataFrame has not been initialized.", UserWarning)
+            return None  
+        else:
+            return self.ewls_ea_long_df, self.vwls_ea_long_df
+
+    def get_long_leg_ex_post(self):
+        if self.ewls_ea_long_df is None:
+            warnings.warn("The DataFrame has not been initialized.", UserWarning)
+            return None     
+        else:
+            return self.ewls_ep_long_df, self.vwls_ep_long_df
+
+    def get_short_leg_ex_ante(self):
+        if self.ewls_ea_short_df is None or self.vwls_ea_short_df is None:
+            warnings.warn("The DataFrame has not been initialized.", UserWarning)
+            return None     
+        else:
+            return self.ewls_ea_short_df, self.vwls_ea_short_df
+
+    def get_short_leg_ex_post(self):
+        if self.ewls_ep_short_df is None or self.vwls_ep_short_df is None:
+            warnings.warn("The DataFrame has not been initialized.", UserWarning)
+            return None   
+        else:
+            return self.ewls_ep_short_df, self.vwls_ep_short_df
+    
+    # Long-Short ptf
+    def get_long_short_ex_ante(self):
+        if self.ewls_ea_df is None or self.vwls_ea_df is None:
+            warnings.warn("The DataFrame has not been initialized.", UserWarning)
+            return None   
+        else:
+            return self.ewls_ea_df, self.vwls_ea_df
+
+    def get_long_short_ex_post(self):
+        if self.ewls_ep_df is None or self.vwls_ep_df is None:
+            warnings.warn("The DataFrame has not been initialized.", UserWarning)
+            return None   
+        else:
+            return self.ewls_ep_df, self.vwls_ep_df
         
+    def get_ptf_ex_ante(self):
+        if self.ewport_ea is None or self.vwport_ea is None:
+            warnings.warn("The DataFrame has not been initialized.", UserWarning)
+            return None           
+        return self.ewport_ea,self.vwport_ea
+
+    def get_ptf_ex_post(self):
+        if self.ewport_ep is None or self.vwport_ep is None:
+            warnings.warn("The DataFrame has not been initialized.", UserWarning)
+            return None           
+        return self.ewport_ep,self.vwport_ep
+    
+    def set_factors(self,factors):
+        """
+        set K factors
+        
+        """
+        # check consistency for date column
+        if 'date' in factors.columns:
+            if not pd.api.types.is_datetime64_any_dtype(factors['date']):
+                factors['date'] = pd.to_datetime(factors['date'])
+            factors.set_index('date',inplace = True)
+        else:
+            raise ValueError("Missing required date. If you set date as index, please reset_index()")
+        self.factors = factors
+            
+    def get_alphas(self,nw_lag = 0):           
+        # check consistency of dates between the long-short ptf and factors
+        anom    = pd.concat(self.get_long_short_ex_ante(),axis = 1) 
+        if self.ewls_ep_df is not None:
+            anom_ep = pd.concat(self.get_long_short_ex_post(),axis = 1) 
+            anom = pd.concat([anom, anom_ep],axis =1 )
+              
+        idx = anom.index.intersection(self.factors.index)
+        
+        factors = self.factors.loc[idx]
+        anom    = anom.loc[idx]
+        
+        # get alpha
+        res = pd.DataFrame(np.zeros((6,anom.shape[1])),columns = anom.columns,index=['mean','tval_m','p-val_m','alpha','t-val_a','p-val_a'])
+        for i in range(anom.shape[1]):
+            mod1 = sm.OLS(np.array(anom)[:,i],np.ones_like(np.array(anom)[:,i]),missing='drop').fit(cov_type='HAC',
+                             cov_kwds={'maxlags': nw_lag})
+            mod2 = sm.OLS(np.array(anom)[:,i],sm.add_constant(np.array(factors)),missing='drop').fit(cov_type='HAC',
+                             cov_kwds={'maxlags': nw_lag})
+            
+            res.iloc[0,i] = mod1.params[0]
+            res.iloc[1,i] = mod1.tvalues[0]
+            res.iloc[2,i] = mod1.pvalues[0]            
+            
+            res.iloc[3,i] = mod2.params[0]
+            res.iloc[4,i] = mod2.tvalues[0]
+            res.iloc[5,i] = mod2.pvalues[0]
+            
+        return res
+
+
+
