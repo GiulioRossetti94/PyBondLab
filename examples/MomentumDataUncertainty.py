@@ -6,9 +6,8 @@ Created on Mon Jun 24 10:32:52 2024
 """
 # Momentum data uncertainty.
 # The script replicates the results in Dickerson, Robotti, Rossetti 2024
-# It computes 240
+# It computes a total of n momentum strategies with different data cleaning (ex ante and ex post) procedures
 #
-
 
 import numpy as np
 import pandas as pd
@@ -17,25 +16,22 @@ import PyBondLab as pbl
 #==============================================================================
 #   Load Data
 #==============================================================================
-
 tbl1         =  pd.read_csv(r'~/Dropbox/NIG_momentum/bondret_new.csv')#.reset_index()
 
 tbl1.columns = tbl1.columns.str.upper()
 tbl1['date'] = pd.to_datetime(tbl1['DATE'])
-datelist = pd.Series( tbl1['date'].unique()).sort_values()
-datelist = list(datelist)
 
-tbl1['ret'] = tbl1['RET_L5M']
 tbl1['AMOUNT_OUTSTANDING'] = np.abs(tbl1['AMOUNT_OUTSTANDING'])
 tbl1['PRICE_L5M'] = np.abs(tbl1['PRICE_L5M'])
 tbl1 = tbl1.sort_values(['ISSUE_ID','DATE'])
-tbl1      = tbl1[tbl1['date'] >= "2002-08-31"]
 
+# starting point "2002-08-31"
+tbl1 = tbl1[tbl1['date'] >= "2002-08-31"]
+# column used for value weigted returns
 tbl1['VW'] = (tbl1['PRICE_L5M'] * tbl1['AMOUNT_OUTSTANDING'])/1000
 
-
-# renaming. could be avoided but then specify the ID and Ret variable in the .fit() method
-tbl1.rename({"ISSUE_ID":"ID","PRICE_L5M":"PRICE"},axis=1)
+# renaming. could be skipped but then specify the ID and Ret variable in the .fit() method
+tbl1.rename({"ISSUE_ID":"ID","PRICE_L5M":"PRICE","RET_L5M":"ret"},axis=1)
 tbl1.rename({"ISSUE_ID":"ID","PRICE_L5M":"PRICE"},axis=1,inplace=True)
 
 # Specify the universe of bonds based on Ratings: "NIG", "IG", None -> "NIG" + "IG"
