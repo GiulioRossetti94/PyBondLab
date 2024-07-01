@@ -141,7 +141,7 @@ class StrategyFormation:
         # =====================================================================
         DoubleSort = getattr(self.strategy, 'DoubleSort', False)
         if DoubleSort:
-            DoubleSort = 1
+            # DoubleSort = 1
             nport2 = self.strategy.nport2
             sort_var2 = self.strategy.sort_var2
             tot_nport = nport * nport2
@@ -184,7 +184,8 @@ class StrategyFormation:
                     It0 = tab[(tab['date'] == self.datelist[t]) & (~tab[sort_var].isna()) & (~tab[sort_var2].isna()) ]                 
             
             if It0.shape[0] == 0:
-                print(f"no bonds at time {t}. Going to next period.")
+                if t > hor:
+                    print(f"no bonds at time {t}:{self.datelist[t]}. Going to next period.")      
                 continue
             
             # =====================================================================
