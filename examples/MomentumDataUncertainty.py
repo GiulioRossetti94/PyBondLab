@@ -4,6 +4,11 @@ Created on Mon Jun 24 10:32:52 2024
 
 @author: phd19gr
 """
+# Momentum data uncertainty.
+# The script replicates the results in Dickerson, Robotti, Rossetti 2024
+# It computes 240
+#
+
 
 import numpy as np
 import pandas as pd
