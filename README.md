@@ -55,7 +55,8 @@ These scripts allow comparison of the effects of ex-ante and ex-post data cleani
 
 
 ## References
-
+Dickerson, Robotti, and Rossetti, [2024](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=4575879)
+[Open Source Bond Asset Pricing project](https://openbondassetpricing.com/)
 
 ## Requirements
 
