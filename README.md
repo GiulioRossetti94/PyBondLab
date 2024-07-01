@@ -12,7 +12,7 @@ PyBondLab provides tools for computing and evaluating investment strategies. It 
 ## Usage & Examples
 
 ### Portfolio sorting
-This example demonstrates how to implement a long-short investment strategy using the `PyBondLab` module, based on quintile sorting of corporate bond credit ratings.
+This example demonstrates how to implement a long-short investment strategy using the `PyBondLab` module, based on quintile sorting of corporate bond on credit ratings.
 
 At each month $t$, corporate bonds are sorted into five portfolios according to their credit rating (`RATING_NUM` column). 
 The strategy involves:
@@ -25,6 +25,12 @@ import PyBondLab as pbl
 import pandas as pd
 
 # read bond dataset
+# use a pandas DataFrame with columns:
+# "RATING_NUM": the credit rating of bonds
+# "ISSUE_ID": the identifier for each bond
+# "date": the date
+# "RET_L5M": bond returns used to compute portfolio returns
+# "VW":  weights used to compute value-weighted performnace
 data = pd.read_csv("bond_data.csv")
 
 holding_period = 1             # holding period returns
