@@ -7,7 +7,7 @@ setup(name = 'PyBondLab',
       author_email = 'Giulio.Rossetti.1@wbs.ac.uk, alexander.dickerson1@unsw.edu.au',
       license='MIT',
       keywords='corporate bonds, portfolio sorting, data cleaning',
-      packages=['PyBondLab']
+      packages=['PyBondLab'],
       url='https://github.com/GiulioRossetti94/PyBondLab',
       install_requires=[
           'numpy','pandas'],
