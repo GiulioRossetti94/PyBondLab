@@ -1,5 +1,8 @@
 # PyBondLab
-PyBondLab is a Python module for portfolio sorting and other tools for empirical asset pricing research with particular focus on corporate bonds. 
+PyBondLab is a Python module designed for portfolio sorting and other tools tailored for empirical asset pricing research, with a particular focus on corporate bonds. 
+
+## Overview
+PyBondLab provides tools for computing and evaluating investment strategies. It features look-ahead bias free data cleaning procedures to ensure the integrity and reliability of empirical results.
 
 ## Documentation
 
@@ -9,6 +12,14 @@ PyBondLab is a Python module for portfolio sorting and other tools for empirical
 ## Usage & Examples
 
 ### Portfolio sorting
+This example demonstrates how to implement a long-short investment strategy using the `PyBondLab` module, based on quintile sorting of corporate bond credit ratings.
+
+At each month $t$, corporate bonds are sorted into five portfolios according to their credit rating (`RATING_NUM` column). 
+The strategy involves:
+
+1. **Long Position**: buy the portfolio containing bonds with the lowest credit rating
+2. **Short Position**: sell the portfolio containing bonds with the highest credit rating
+
 ```python
 import PyBondLab as pbl
 import pandas as pd
@@ -29,7 +40,6 @@ params = {'strategy': single_sort,
   }
 
 # fit the strategy to the data
-
 res = pbl.StrategyFormation(data, **params).fit(IDvar = "ISSUE_ID",RETvar = "RET_L5M")
 
 # get long-short portfolios (equal- and value-weighted)
