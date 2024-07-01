@@ -29,21 +29,21 @@ data = pd.read_csv("bond_data.csv")
 
 holding_period = 1             # holding period returns
 n_portf        = 5             # number of portfolios
-sort_var1    = 'RATING_NUM'    # sorting chararcteristic/ variable
+sort_var1      = 'RATING_NUM'  # sorting chararcteristic/variable
 
-# Initialize the single sort variable
-single_sort = pbl.SingleSort(holding_period, sort_var1,n_portf)
+# Initialize the single sort strategy
+single_sort = pbl.SingleSort(holding_period, sort_var1, n_portf)
 
-# define a dictionary with strategy and optional parameters
+# Define a dictionary with strategy and optional parameters
 params = {'strategy': single_sort,
           'rating':None,
   }
 
-# fit the strategy to the data
+# Fit the strategy to the data. Specify ID identifier and column of returns 
 res = pbl.StrategyFormation(data, **params).fit(IDvar = "ISSUE_ID",RETvar = "RET_L5M")
 
-# get long-short portfolios (equal- and value-weighted)
-ew,vw = res.get_long_short_ex_ante()
+# Get long-short portfolios (equal- and value-weighted)
+ew,vw = res.get_long_short()
 
 
 ```

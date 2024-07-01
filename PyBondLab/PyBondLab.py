@@ -512,7 +512,7 @@ class StrategyFormation:
         return idx
     
     # getters 
-    def get_long_leg_ex_ante(self):
+    def get_long_leg(self):
         if self.ewls_ea_long_df is None or self.vwls_ea_long_df is None:
             warnings.warn("The DataFrame has not been initialized.", UserWarning)
             return None  
@@ -526,7 +526,7 @@ class StrategyFormation:
         else:
             return self.ewls_ep_long_df, self.vwls_ep_long_df
 
-    def get_short_leg_ex_ante(self):
+    def get_short_leg(self):
         if self.ewls_ea_short_df is None or self.vwls_ea_short_df is None:
             warnings.warn("The DataFrame has not been initialized.", UserWarning)
             return None     
@@ -541,7 +541,7 @@ class StrategyFormation:
             return self.ewls_ep_short_df, self.vwls_ep_short_df
     
     # Long-Short ptf
-    def get_long_short_ex_ante(self):
+    def get_long_short(self):
         if self.ewls_ea_df is None or self.vwls_ea_df is None:
             warnings.warn("The DataFrame has not been initialized.", UserWarning)
             return None   
@@ -555,7 +555,7 @@ class StrategyFormation:
         else:
             return self.ewls_ep_df, self.vwls_ep_df
         
-    def get_ptf_ex_ante(self):
+    def get_ptf(self):
         if self.ewport_ea is None or self.vwport_ea is None:
             warnings.warn("The DataFrame has not been initialized.", UserWarning)
             return None           
@@ -583,7 +583,7 @@ class StrategyFormation:
             
     def get_alphas(self,nw_lag = 0):           
         # check consistency of dates between the long-short ptf and factors
-        anom    = pd.concat(self.get_long_short_ex_ante(),axis = 1) 
+        anom    = pd.concat(self.get_long_short(),axis = 1) 
         if self.ewls_ep_df is not None:
             anom_ep = pd.concat(self.get_long_short_ex_post(),axis = 1) 
             anom = pd.concat([anom, anom_ep],axis =1 )

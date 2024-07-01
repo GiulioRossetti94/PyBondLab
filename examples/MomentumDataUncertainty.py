@@ -190,7 +190,7 @@ for i, params in enumerate(params_all):
     print(i+1,'/',len(params_all),"\t",mom_res.name)
 
     # get the long short portfolios ex ante and ex post
-    ew_ea, vw_ea = mom_res.get_long_short_ex_ante() 
+    ew_ea, vw_ea = mom_res.get_long_short() 
     ew_ep, vw_ep = mom_res.get_long_short_ex_post()
     
     
