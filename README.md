@@ -4,7 +4,7 @@ PyBondLab is a Python module designed for portfolio sorting and other tools tail
 ## Overview
 PyBondLab provides tools for computing and evaluating investment strategies. It features look-ahead bias free data cleaning procedures to ensure the integrity and reliability of empirical results.
 
-## Documentation
+## Installation
 
 
 
@@ -47,8 +47,12 @@ ew,vw = res.get_long_short_ex_ante()
 
 
 ```
-### Momentum in corporate bonds and Data Uncertainty
-the script  [MomentumDataUncertainty.py](examples/MomentumDataUncertainty.py)
+### Data Uncertainty
+the scripts  [MomentumDataUncertainty.py](examples/MomentumDataUncertainty.py) and [RatingDataUncertainty.py](examples/MomentumDataUncertainty.py) provide the replications of Section X in \ref{}.
+
+The scripts allow to compare the effect of ex ante and ex post data cleaning procedures on the expected returns of long-short portfolios sorted on specific variables/characteristics, highlighting the effect of look-ahead bias that is incorrectly introduced when ex post cleaning procedures are applied. 
+
+
 
 ## References
 
