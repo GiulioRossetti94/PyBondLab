@@ -7,8 +7,8 @@ Created on Mon Jun 17 11:28:52 2024
 
 import numpy as np
 import pandas as pd
-from FilterClass import Filter
-from StrategyClass import *
+from .FilterClass import Filter
+from .StrategyClass import *
 import warnings
 import statsmodels.api as sm
 
