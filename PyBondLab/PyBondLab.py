@@ -29,6 +29,7 @@ class StrategyFormation:
         self.w = self.filters.get('level')
         self.loc = self.filters.get('location')
         self.percentile_breakpoints = self.filters.get('df_breakpoints') if self.adj == 'wins' else None
+        self.price_threshold = self.filters.get('price_threshold', 25) if self.adj == 'price' else None
         # stratey params
                 
         if self.rating is None:
@@ -116,7 +117,7 @@ class StrategyFormation:
         # get params from strategy
         
         if self.filters and self.adj in ["trim", "wins", "price", "bounce"]:
-            filter_obj = Filter(self.data, self.adj, self.w, self.loc, self.percentile_breakpoints)
+            filter_obj = Filter(self.data, self.adj, self.w, self.loc, self.percentile_breakpoints,self.price_threshold)
             self.name += filter_obj.name_filt
             
             self.data = filter_obj.apply_filters()
@@ -237,7 +238,7 @@ class StrategyFormation:
                     lower_bound, upper_bound = self.w
                     It0 = It0[(It0['PRICE'] <= upper_bound) & (It0['PRICE'] >= lower_bound)]
                 else:
-                    It0 = It0[It0['PRICE'] <= self.w] if self.w > 25 else It0[It0['PRICE'] >= self.w]
+                    It0 = It0[It0['PRICE'] <= self.w] if self.w > self.price_threshold else It0[It0['PRICE'] >= self.w]
 
             # =====================================================================
             # start sorting procedure

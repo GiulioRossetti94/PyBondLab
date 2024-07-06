@@ -8,13 +8,13 @@ import numpy as np
 import pandas as pd
 
 class Filter:
-    def __init__(self, data, adj, w, loc, percentile_breakpoints=None):
+    def __init__(self, data, adj, w, loc, percentile_breakpoints=None, price_threshold=None):
         self.data = data
         self.adj = adj
         self.w = w
         self.loc = loc
         self.percentile_breakpoints = percentile_breakpoints
-        
+        self.price_threshold = price_threshold   
         
         if isinstance(self.w, list) and len(self.w) == 2:
             lower_bound, upper_bound = w
@@ -73,7 +73,7 @@ class Filter:
         if isinstance(w, list) and len(w) == 2:
             lower_bound, upper_bound = w
             self.data[f"ret_{adj}"] = np.where((self.data['PRICE'] > upper_bound) | (self.data['PRICE'] < lower_bound), np.NaN, self.data['ret'])              
-        elif w >= 25:
+        elif w >= self.price_threshold:
             self.data[f"ret_{adj}"] = np.where(self.data['PRICE'] > w, np.NaN, self.data['ret'])
         else:
             self.data[f"ret_{adj}"] = np.where(self.data['PRICE'] < w, np.NaN, self.data['ret'])
