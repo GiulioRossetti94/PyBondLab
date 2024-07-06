@@ -41,7 +41,7 @@ class StrategyFormation:
         self.ewls_ep_df = None 
         self.vwls_ep_df = None
     
-    def fit(self, *, IDvar=None, DATEvar=None, RETvar=None, PRICEvar=None):
+    def fit(self, *, IDvar=None, DATEvar=None, RETvar=None, PRICEvar=None, Wvar = None):
         if IDvar or DATEvar or RETvar or PRICEvar:
             # here check if a "ret" column is present 
             if RETvar and "ret" in self.data.columns:
@@ -59,9 +59,16 @@ class StrategyFormation:
             if DATEvar and "date" in self.data.columns: 
                 self.data.drop(columns="date", inplace=True)
                 self.data_raw.drop(columns="date", inplace=True)
-                warnings.warn("Column 'date' already exists. It will be overwritten.", UserWarning)
+            if Wvar and "VW" in self.data.columns:
+                self.data.drop(columns="VW", inplace=True)
+                self.data_raw.drop(columns="VW", inplace=True)
+                warnings.warn("Column 'VW' already exists. It will be overwritten.", UserWarning)
+            if Wvar is None and "VW" not in self.data.columns:
+                self.data['VW'] = 1
+                self.data_raw['VW'] = 1
+                warnings.warn("Column 'VW' does not exist. Setting VW = 1 (i.e. equal weights)", UserWarning)
 
-            self.rename_id(IDvar=IDvar, DATEvar=DATEvar, RETvar=RETvar, PRICEvar=PRICEvar)
+            self.rename_id(IDvar=IDvar, DATEvar=DATEvar, RETvar=RETvar, PRICEvar=PRICEvar, Wvar = Wvar)
         
         required_columns = ['ID', 'date', 'ret']               
         if self.adj == 'price':
@@ -75,7 +82,7 @@ class StrategyFormation:
         self.portfolio_formation()
         return self
     
-    def rename_id(self, *, IDvar=None, DATEvar=None,RETvar=None, PRICEvar=None):
+    def rename_id(self, *, IDvar=None, DATEvar=None,RETvar=None, PRICEvar=None, Wvar = None):
         """
         rename columns to ensure consistency with col names
 
@@ -90,6 +97,8 @@ class StrategyFormation:
             mapping[RETvar] = 'ret'
         if PRICEvar:
             mapping[PRICEvar] = 'PRICE'
+        if Wvar:
+            mapping[Wvar] = 'VW'
             
         self.data.rename(columns=mapping, inplace=True)
         self.data_raw.rename(columns=mapping, inplace=True)
