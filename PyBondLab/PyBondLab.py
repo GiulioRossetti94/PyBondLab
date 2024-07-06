@@ -43,6 +43,24 @@ class StrategyFormation:
     
     def fit(self, *, IDvar=None, DATEvar=None, RETvar=None, PRICEvar=None):
         if IDvar or DATEvar or RETvar or PRICEvar:
+            # here check if a "ret" column is present 
+            if RETvar and "ret" in self.data.columns:
+                self.data.drop(columns="ret", inplace=True)
+                self.data_raw.drop(columns="ret", inplace=True)
+                warnings.warn("Column 'ret' already exists. It will be overwritten.", UserWarning)
+            if PRICEvar and "PRICE" in self.data.columns:
+                self.data.drop(columns="PRICE", inplace=True)
+                self.data_raw.drop(columns="PRICE", inplace=True)
+                warnings.warn("Column 'PRICE' already exists. It will be overwritten.", UserWarning)
+            if IDvar and "ID" in self.data.columns:
+                self.data.drop(columns="ID", inplace=True)
+                self.data_raw.drop(columns="ID", inplace=True)
+                warnings.warn("Column 'ID' already exists. It will be overwritten.", UserWarning)
+            if DATEvar and "date" in self.data.columns: 
+                self.data.drop(columns="date", inplace=True)
+                self.data_raw.drop(columns="date", inplace=True)
+                warnings.warn("Column 'date' already exists. It will be overwritten.", UserWarning)
+
             self.rename_id(IDvar=IDvar, DATEvar=DATEvar, RETvar=RETvar, PRICEvar=PRICEvar)
         
         required_columns = ['ID', 'date', 'ret']               
