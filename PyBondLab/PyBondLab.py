@@ -638,6 +638,47 @@ class StrategyFormation:
             res.iloc[5,i] = mod2.pvalues[0]
             
         return res
+    
+    def plot(self,vw = False):
+        # plot cumulative returns
+        from matplotlib.axes import Axes
+        from matplotlib.pyplot import figure
+        
+        # get the long short ptf 
+        ew_,vw_ = self.get_long_short()
+        lab = 'ex ante'
+        if self.ewls_ep_df is not None:
+            ewp_, vwp_ = self.get_long_short_ex_post()
+            ew_ = pd.concat([ew_,ewp_],axis = 1)
+            vw_ = pd.concat([vw_,vwp_],axis = 1)
+            lab = [lab, "ex post"]
+
+        # plotting ew or vw
+        if vw:
+            v_ = vw_
+        else:
+            v_ = ew_
+
+        var_plot = (v_ + 1).cumprod()
+        
+        fig = figure()
+        ax = fig.add_subplot(111)
+        ax.plot(var_plot.index,var_plot ,label = lab)
+
+        ax.set_ylabel('Value ($)')
+        ax.set_xlabel('Date')
+
+        if vw:
+            ax.set_title("Value-weighted cumulative performance")
+        else:
+            ax.set_title("Equally-weighted cumulative performance") 
+        ax.legend()
+
+
+        
+
+
+
 
 
 
