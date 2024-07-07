@@ -675,7 +675,7 @@ class StrategyFormation:
             ax.set_title("Equally-weighted cumulative performance") 
         ax.legend()
 
-    def bonds_stats_filtered(self):
+    def stats_bonds_adj(self):
         """
         get the bonds filtered out
         
