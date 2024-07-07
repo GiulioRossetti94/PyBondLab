@@ -35,7 +35,7 @@ data = pd.read_csv("bond_data.csv")
 
 holding_period = 1             # holding period returns
 n_portf        = 5             # number of portfolios
-sort_var1      = 'RATING_NUM'  # sorting chararcteristic/variable
+sort_var1      = 'RATING_NUM'  # sorting characteristic/variable
 
 # Initialize the single sort strategy
 single_sort = pbl.SingleSort(holding_period, sort_var1, n_portf)
@@ -69,7 +69,7 @@ Filtering out bonds whose prices are above/below a certain threshold level. When
 - `{'adj':'price,'level':[20, 150]}` excludes prices < 20 and prices > 150
 
 By default, the threshold for below/above exclusion is set to 25 (by default `'price_threshold':25`).
-This implies that if `'level':26` is passed, bonds whose price is above 26 are excluded. To specify a different threshold, include `'price_threshold'` in the dictioinary.
+This implies that if `'level':26` is passed, bonds whose price is above 26 are excluded. To specify a different threshold, include `'price_threshold'` in the dictionary.
 
 - `{'adj':'price,'level':26}` excludes prices >26
 - `{'adj':'price,'level':26,'price_threshold':30}` excludes prices <26
@@ -90,14 +90,17 @@ Filtering out bonds where the product of their monthly returns $R_t \times R_{t-
 - `{'adj':'wins,'level':98,'location':'left'}`: winsorize the left tail of the distribution at the 2nd percentile level.
 - `{'adj':'wins,'level':98,'location':'both'}`: winsorize the left tail of the distribution at the 2nd percentile level and the right tail at 98th percentile level.
 
+For ex ante winsorization, returns at time $t$ are winsorized based on the pooled distribution of returns from $t_0$ up until $t$. This means that for every $t$, percentile levels must be recomputed, which can impact the performance of the scripts. This is particularly relevant when running hundreds of different strategies (see Data Uncertainty section). To mitigate this issue, there is an option to pass a pandas DataFrame with precomputed rolling percentiles, thereby avoiding the need to compute the winsorization threshold at each iteration.
+Example:
+```python
+BREAKPOINTS = pd.read_csv('../breakpoints_update.csv',index_col=0)
+BREAKPOINTS.index = pd.to_datetime(BREAKPOINTS.index)
 
+# specify the parameters 
+params = {'strategy':rating_single_sort,'rating':"NIG",
+'filters': {'adj':'wins','level': 98,'location':"both",'df_breakpoints':BREAKPOINTS}}
 
-
-
-
-
-
-
+```
 ### Data Uncertainty
 the scripts [MomentumDataUncertainty.py](examples/MomentumDataUncertainty.py) and [RatingDataUncertainty.py](examples/MomentumDataUncertainty.py) provide replications of Section X in Dickerson, Robotti, and Rossetti, [2024](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=4575879).
 
