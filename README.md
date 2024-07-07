@@ -50,9 +50,44 @@ res = pbl.StrategyFormation(data, **params).fit(IDvar = "ISSUE_ID",RETvar = "RET
 
 # Get long-short portfolios (equal- and value-weighted)
 ew,vw = res.get_long_short()
-
-
 ```
+### Data cleaning / filtering options
+Currently, the package provides functionality for four different data cleaning procedures routinely applied in corporate bonds research.
+Data cleaning functionalities are passed with a dictionary `{'adj':"{adjustments}","level":{level}, **options`
+
+#### Return exclusion (trimming)
+Filtering out bonds whose returns are above/below a certain threshold level:
+- `{'adj':'trim,'level':0.2}` excludes returns > 20%
+- `{'adj':'trim,'level':-0.2}` excludes returns < 20%
+- `{'adj':'trim,'level':[-0.2,0.2]}` excludes returns < -20% and returns >20%
+
+#### Price exclusion
+Filtering out bonds whose prices are above/below a certain threshold level. When constructing the strategy, either rename a column to `"PRICE"` or specify `PRICEvar` in the `.fit()` method.
+
+- `{'adj':'price,'level':150}` excludes prices > 150
+- `{'adj':'price,'level':20}` excludes prices < 150
+- `{'adj':'price,'level':[20, 150]}` excludes prices < 20 and prices > 150
+
+By default, the threshold for below/above exclusion is set to 25 (by default `'price_threshold':25`).
+
+This implies that if `'level':26` is passed, bonds whose price is above 26 are excluded). To specify a different threshold, include `'price_threshold'` in the dictioinary.
+
+- `{'adj':'price,'level':26}` excludes prices >26
+- `{'adj':'price,'level':26,'price_threshold':30}` excludes prices <26
+
+#### Return bounce-back exclusion
+Filtering out bonds where the product of their monthly returns $R_t \times R_{t-1}$ meets a pre-defined threshold.
+
+- `{'adj':'bounce,'level':0.01}` excludes if $R_t \times R_{t-1}   $ > 0.01
+- `{'adj':'bounce,'level':-0.01}` excludes if $R_t \times R_{t-1}  $ < 0.01 
+- `{'adj':'bounce,'level':[-0.01, 0.01]}` excludes if $R_t \times R_{t-1}  $ <0.01 and  $R_t \times R_{t-1}  $ >0.01
+
+#### Return winsorization
+
+
+
+
+
 ### Data Uncertainty
 the scripts [MomentumDataUncertainty.py](examples/MomentumDataUncertainty.py) and [RatingDataUncertainty.py](examples/MomentumDataUncertainty.py) provide replications of Section X in Dickerson, Robotti, and Rossetti, [2024](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=4575879).
 
