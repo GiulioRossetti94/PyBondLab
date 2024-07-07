@@ -682,14 +682,26 @@ class StrategyFormation:
         """
         adj = self.adj
         if f"ret_{adj}" in self.data.columns:
-            df = self.data[(self.data[f"ret_{adj}"].isna()) & (self.data["ret"].notna())]
+            if adj == 'wins':
+                lb = np.nanpercentile(self.data_raw['ret'], 100 - self.w)
+                ub = np.nanpercentile(self.data_raw['ret'], self.w)
+                if self.loc == 'right':
+                    df = self.data_winsorized_ex_post[(self.data_winsorized_ex_post[f"ret_{adj}"]== ub)]
+                elif self.loc == 'left':
+                    df = self.data_winsorized_ex_post[(self.data_winsorized_ex_post[f"ret_{adj}"]== lb)]
+                elif self.loc == 'both':
+                    df = self.data_winsorized_ex_post[(self.data_winsorized_ex_post[f"ret_{adj}"]== lb) | (self.data_winsorized_ex_post[f"ret_{adj}"]== ub)] 
 
+            else:
+                df = self.data[(self.data[f"ret_{adj}"].isna()) & (self.data["ret"].notna())]
+            
             # stats whole sample
             stats_all_ret = df['ret'].describe().to_frame("ALL")
             stats_all_tmt = df['TMT'].describe().loc[['mean']].to_frame("Avg. TMT").rename(index={'mean':'ALL'})
             stats_all_amt = df['AMOUNT_OUTSTANDING'].describe().loc[['mean']].to_frame("Avg. AMT. OUT").rename(index={'mean':'ALL'})
             if self.rating is None:
                 df['rating_cat'] = np.where(df['RATING_NUM']>10, 'NIG','IG')
+
                 # df['tmt_cat'] = pd.cut(df['TMT'], bins=[-float('inf'), 5, 12, float('inf')], labels=['short', 'med', 'long'])
 
                 # group by rating category
@@ -708,7 +720,7 @@ class StrategyFormation:
             total_count = stats.loc['ALL','count'].sum()
 
             stats['count'] = stats['count'].apply(lambda x: f"{int(x)} ({x / total_count * 100:.2f}%)")
-            stats[col_perc] = (stats[col_perc]).applymap(lambda x: f"{x * 100:.2f}%")
+            stats[col_perc] = (stats[col_perc]).map(lambda x: f"{x * 100:.2f}%")
             stats['Avg. AMT. OUT'] = stats['Avg. AMT. OUT'].apply(lambda x: f"{x:,.0f}")
             stats['Avg. TMT'] = stats['Avg. TMT'].round(3)
 
