@@ -11,6 +11,7 @@ from .FilterClass import Filter
 from .StrategyClass import *
 import warnings
 import statsmodels.api as sm
+import matplotlib.pyplot as plt
 
 class StrategyFormation:
     def __init__(self, data: pd.DataFrame,strategy: Strategy, rating: str = None, filters: dict = None):
@@ -640,11 +641,13 @@ class StrategyFormation:
             
         return res
     
-    def plot(self,vw = False):
+    def plot(self,vw = False, ax=None):
         # plot cumulative returns
         from matplotlib.axes import Axes
         from matplotlib.pyplot import figure
-        
+
+        if ax is None:
+            fig, ax = plt.subplots()
         # get the long short ptf 
         ew_,vw_ = self.get_long_short()
         lab = 'ex ante'
@@ -655,25 +658,22 @@ class StrategyFormation:
             lab = [lab, "ex post"]
 
         # plotting ew or vw
-        if vw:
-            v_ = vw_
-        else:
-            v_ = ew_
+        v_ = vw_ if vw else ew_
 
         var_plot = (v_ + 1).cumprod()
         
-        fig = figure()
-        ax = fig.add_subplot(111)
+        # fig = figure()
+        # ax = fig.add_subplot(111)
         ax.plot(var_plot.index,var_plot ,label = lab)
 
         ax.set_ylabel('Value ($)')
         ax.set_xlabel('Date')
 
-        if vw:
-            ax.set_title("Value-weighted cumulative performance")
-        else:
-            ax.set_title("Equally-weighted cumulative performance") 
+        title = "Value-weighted cumulative performance" if vw else "Equally-weighted cumulative performance"
+        ax.set_title(title)
         ax.legend()
+
+        return ax 
 
     def stats_bonds_adj(self):
         """
