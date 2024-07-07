@@ -264,6 +264,7 @@ class StrategyFormation:
                         It2 = tab_ex_post_wins[(tab_ex_post_wins['date'] == self.datelist[t + h]) & (~tab_ex_post_wins[ret_var].isna())]
                     else:
                         It2 = tab[(tab['date'] == self.datelist[t + h]) & (~tab[ret_var + "_" + adj].isna())]
+
                     
                     port_ret_ep = self.port_sorted_ret(It0, It2,ret_var + "_" + adj, sort_var,DoubleSort=DoubleSort,sig2 = sort_var2,nport2 = nport2 )
                     
@@ -673,6 +674,49 @@ class StrategyFormation:
         else:
             ax.set_title("Equally-weighted cumulative performance") 
         ax.legend()
+
+    def bonds_stats_filtered(self):
+        """
+        get the bonds filtered out
+        
+        """
+        adj = self.adj
+        if f"ret_{adj}" in self.data.columns:
+            df = self.data[(self.data[f"ret_{adj}"].isna()) & (self.data["ret"].notna())]
+
+            # stats whole sample
+            stats_all_ret = df['ret'].describe().to_frame("ALL")
+            stats_all_tmt = df['TMT'].describe().loc[['mean']].to_frame("Avg. TMT").rename(index={'mean':'ALL'})
+            stats_all_amt = df['AMOUNT_OUTSTANDING'].describe().loc[['mean']].to_frame("Avg. AMT. OUT").rename(index={'mean':'ALL'})
+            if self.rating is None:
+                df['rating_cat'] = np.where(df['RATING_NUM']>10, 'NIG','IG')
+                # df['tmt_cat'] = pd.cut(df['TMT'], bins=[-float('inf'), 5, 12, float('inf')], labels=['short', 'med', 'long'])
+
+                # group by rating category
+                stats_cat_ret = df.groupby(['rating_cat'])['ret'].describe()
+                stats_cat_tmt = df.groupby(['rating_cat'])['TMT'].describe().loc[:,'mean'].to_frame("Avg. TMT")
+                stats_cat_amt = df.groupby(['rating_cat'])['AMOUNT_OUTSTANDING'].describe().loc[:,'mean'].to_frame("Avg. AMT. OUT")
+                # concatenate dfs
+                
+                stats_cat_tmt = pd.concat([stats_cat_tmt,stats_all_tmt])
+                stats_cat_ret = pd.concat([stats_cat_ret,stats_all_ret.T])
+                stats_cat_amt = pd.concat([stats_cat_amt,stats_all_amt])
+
+            stats = pd.concat([stats_cat_amt,stats_cat_tmt,stats_cat_ret],axis=1)
+            col_perc = ['mean', 'std', 'min', '25%', '50%', '75%', 'max']
+
+            total_count = stats.loc['ALL','count'].sum()
+
+            stats['count'] = stats['count'].apply(lambda x: f"{int(x)} ({x / total_count * 100:.2f}%)")
+            stats[col_perc] = (stats[col_perc]).applymap(lambda x: f"{x * 100:.2f}%")
+            stats['Avg. AMT. OUT'] = stats['Avg. AMT. OUT'].apply(lambda x: f"{x:,.0f}")
+            stats['Avg. TMT'] = stats['Avg. TMT'].round(3)
+
+            # rearranging and renaming columns
+
+            stats = stats[['count','Avg. AMT. OUT', 'Avg. TMT' ,'mean', 'std', 'min', '25%', '50%', '75%', 'max', ]]
+            stats.rename(columns={'count':'# Bonds', 'mean':'Avg. Ret', 'std':'Std. Dev.', 'min':'Min', '25%':'25$^{th}$', '50%':'Median', '75%':'75$^{th}$', 'max':'Max'}, inplace=True)
+            return stats
 
 
         
