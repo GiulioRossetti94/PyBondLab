@@ -69,8 +69,7 @@ Filtering out bonds whose prices are above/below a certain threshold level. When
 - `{'adj':'price,'level':[20, 150]}` excludes prices < 20 and prices > 150
 
 By default, the threshold for below/above exclusion is set to 25 (by default `'price_threshold':25`).
-
-This implies that if `'level':26` is passed, bonds whose price is above 26 are excluded). To specify a different threshold, include `'price_threshold'` in the dictioinary.
+This implies that if `'level':26` is passed, bonds whose price is above 26 are excluded. To specify a different threshold, include `'price_threshold'` in the dictioinary.
 
 - `{'adj':'price,'level':26}` excludes prices >26
 - `{'adj':'price,'level':26,'price_threshold':30}` excludes prices <26
@@ -83,6 +82,17 @@ Filtering out bonds where the product of their monthly returns $R_t \times R_{t-
 - `{'adj':'bounce,'level':[-0.01, 0.01]}` excludes if $R_t \times R_{t-1}  $ <0.01 and  $R_t \times R_{t-1}  $ >0.01
 
 #### Return winsorization
+**Ex Ante Winsorization**: This affects the formation of long-short portfolios only for strategies that sort bonds into different bins based on signals derived from past returns (e.g., momentum, short-term reversal, long-term reversal).
+
+**Ex Post Winsorization**: This impacts the performance of any characteristic-sorted portfolio, as it modifies the bond returns used to compute the returns of the different portfolios. This introduces a look-ahead bias in the portfolio performance and makes the performance unattainable.
+
+- `{'adj':'wins,'level':98,'location':'right'}`: winsorize the right tail of the distribution at the 98th percentile level.
+- `{'adj':'wins,'level':98,'location':'left'}`: winsorize the left tail of the distribution at the 2nd percentile level.
+- `{'adj':'wins,'level':98,'location':'both'}`: winsorize the left tail of the distribution at the 2nd percentile level and the right tail at 98th percentile level.
+
+
+
+
 
 
 
