@@ -53,7 +53,7 @@ ew,vw = res.get_long_short()
 ```
 ### Data cleaning / filtering options
 Currently, the package provides functionality for four different data cleaning procedures routinely applied in corporate bonds research.
-Data cleaning functionalities are passed with a dictionary `{'adj':"{adjustments}","level":{level}, **options`
+Data cleaning functionalities are passed with a dictionary `{'adj':"{adjustments}","level":{level}, **options}`
 
 #### Return exclusion (trimming)
 Filtering out bonds whose returns are above/below a certain threshold level:
