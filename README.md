@@ -97,8 +97,8 @@ BREAKPOINTS = pd.read_csv('../breakpoints_update.csv',index_col=0)
 BREAKPOINTS.index = pd.to_datetime(BREAKPOINTS.index)
 
 # specify the parameters 
-params = {'strategy':rating_single_sort,'rating':"NIG",
-'filters': {'adj':'wins','level': 98,'location':"both",'df_breakpoints':BREAKPOINTS}}
+params = {'strategy':rating_single_sort,'rating':'NIG',
+'filters': {'adj':'wins','level': 98,'location':'both','df_breakpoints':BREAKPOINTS}}
 
 ```
 ### Data Uncertainty
