@@ -6,10 +6,16 @@ PyBondLab provides tools for computing and evaluating investment strategies. It 
 
 ## Installation
 
+You can install the latest version from GitHub by cloning the repo and running setup
 
-
+```bash
+git clone https://github.com/GiulioRossetti94/PyBondLab.git
+cd PyBondLab
+python setup.py install
+```
 
 ## Usage & Examples
+For a more complete overview, see notebooks and scripts in [example](examples/)
 
 ### Portfolio sorting
 This example demonstrates how to implement a long-short investment strategy using the `PyBondLab` module, based on quintile sorting of corporate bond on credit ratings.
@@ -102,7 +108,7 @@ params = {'strategy':rating_single_sort,'rating':'NIG',
 
 ```
 ### Data Uncertainty
-the scripts [MomentumDataUncertainty.py](examples/MomentumDataUncertainty.py) and [RatingDataUncertainty.py](examples/MomentumDataUncertainty.py) provide replications of Section X in Dickerson, Robotti, and Rossetti, [2024](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=4575879).
+The scripts [MomentumDataUncertainty.py](examples/MomentumDataUncertainty.py) and [RatingDataUncertainty.py](examples/MomentumDataUncertainty.py) provide replications of Section X in Dickerson, Robotti, and Rossetti, [2024](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=4575879).
 
 These scripts allow comparison of the effects of ex-ante and ex-post data cleaning procedures on the expected returns of long-short portfolios sorted by specific variables/characteristics. They highlight the look-ahead bias that is incorrectly introduced when ex-post cleaning procedures are applied.
 
