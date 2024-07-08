@@ -11,7 +11,7 @@ setup(name = 'PyBondLab',
       packages=['PyBondLab'],
     #   packages=find_packages(),
       url='https://github.com/GiulioRossetti94/PyBondLab',
-      python_requires='>=3.6',
+      python_requires='>=3.11',
       install_requires=[
           'numpy','pandas','statsmodels','matplotlib'],
 )

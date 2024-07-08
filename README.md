@@ -120,5 +120,14 @@ Dickerson, Robotti, and Rossetti, [2024](https://papers.ssrn.com/sol3/papers.cfm
 [Open Source Bond Asset Pricing project](https://openbondassetpricing.com/)
 
 ## Requirements
+The following requirements were used for testing. It is possible that older versions would work as well
+- Python(3.11+)
+- NumPy(1.26+)
+- Pandas(2.2+)
+- statsmodels(0.14+)
+- matplotlib(3+)
 
 ## Contact
+Giulio Rossetti giulio.rossetti.1@wbs.ac.uk
+
+Alex Dickerson alexander.dickerson1@unsw.edu.au
