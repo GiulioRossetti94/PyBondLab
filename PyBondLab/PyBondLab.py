@@ -643,8 +643,6 @@ class StrategyFormation:
     
     def plot(self,vw = False, ax=None):
         # plot cumulative returns
-        from matplotlib.axes import Axes
-        from matplotlib.pyplot import figure
 
         if ax is None:
             fig, ax = plt.subplots()
