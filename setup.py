@@ -11,6 +11,11 @@ setup(name = 'PyBondLab',
       packages=['PyBondLab'],
     #   packages=find_packages(),
       url='https://github.com/GiulioRossetti94/PyBondLab',
+      project_urls={
+        'Open Source Bond Asset Pricing project': 'https://openbondassetpricing.com/',
+        'Source Code': 'https://github.com/GiulioRossetti94/PyBondLab',
+        'Bug Tracker': 'https://github.com/GiulioRossetti94/PyBondLab/issues',
+    },
       python_requires='>=3.11',
       install_requires=[
           'numpy','pandas','statsmodels','matplotlib'],
