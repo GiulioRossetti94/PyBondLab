@@ -31,8 +31,8 @@ tbl1 = tbl1[tbl1['date'] >= "2002-08-31"]
 tbl1['VW'] = (tbl1['PRICE_L5M'] * tbl1['AMOUNT_OUTSTANDING'])/1000
 
 # renaming. could be skipped but then specify the ID and Ret variable in the .fit() method
-tbl1.rename({"ISSUE_ID":"ID","PRICE_L5M":"PRICE","RET_L5M":"ret"},axis=1)
-tbl1.rename({"ISSUE_ID":"ID","PRICE_L5M":"PRICE"},axis=1,inplace=True)
+tbl1.rename({"ISSUE_ID":"ID","PRICE_L5M":"PRICE","RET_L5M":"ret"},axis=1,inplace=True)
+# tbl1.rename({"ISSUE_ID":"ID","PRICE_L5M":"PRICE"},axis=1,inplace=True)
 
 # Specify the universe of bonds based on Ratings: "NIG", "IG", None -> "NIG" + "IG"
 RATING = None
@@ -71,8 +71,10 @@ mom66 = pbl.Momentum(K = 6,J = 6, skip = skip ,nport = n_portf)
 # at time t, we winsorize returns given the percentile of the distribution of bond returns from the beginning
 # of the sample up to date t
 
-BREAKPOINTS = pd.read_csv('breakpoints_update.csv',index_col=0)
+BREAKPOINTS = pd.read_csv('examples/breakpoints_update.csv',index_col=0)
 BREAKPOINTS.index = pd.to_datetime(BREAKPOINTS.index)
+# Loading from the package
+
 winsorization_level_up      = np.arange(98.0,99.8,0.5)
 
 
@@ -169,7 +171,7 @@ for x in [mom33,mom66]:
 del bounce_filter_up, bounce_filter_down
 
 # create a list with all the params specifications     
-params_all = param_return + param_price + param_bounce + param_wins
+params_all = param_wins + param_return + param_price + param_bounce 
 
 print(len(params_all)) # Total number of strategies
 
