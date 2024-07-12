@@ -1,4 +1,4 @@
-from setuptools import setup
+from setuptools import setup, find_packages
 
 setup(name = 'PyBondLab',
       version = '0.0.1',
@@ -8,8 +8,12 @@ setup(name = 'PyBondLab',
       author_email = 'Giulio.Rossetti.1@wbs.ac.uk, alexander.dickerson1@unsw.edu.au',
       license='MIT',
       keywords='corporate bonds, portfolio sorting, data cleaning',
-      packages=['PyBondLab'],
-    #   packages=find_packages(),
+      # packages=['PyBondLab'],
+      packages=find_packages(),
+      include_package_data=True,
+      package_data={
+          '': ['data/wrds/*.csv'],
+      },
       url='https://github.com/GiulioRossetti94/PyBondLab',
       project_urls={
         'Open Source Bond Asset Pricing project': 'https://openbondassetpricing.com/',

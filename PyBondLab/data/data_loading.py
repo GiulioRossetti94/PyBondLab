@@ -20,7 +20,7 @@ def load_data(file_root:str,file_name: str) -> pd.DataFrame:
     file_path = os.path.split(os.path.abspath(file_root))[0]
     data = pd.read_csv(os.path.join(file_path,file_name))
     if "date" in data.columns:
-        data["date"] = pd.to_datetime(data["date"])
+        data["date"] = pd.to_datetime(data["date"], dayfirst=True)
         data = data.set_index("date")
 
     for col in data:

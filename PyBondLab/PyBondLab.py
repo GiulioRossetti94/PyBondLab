@@ -13,6 +13,14 @@ import warnings
 import statsmodels.api as sm
 import matplotlib.pyplot as plt
 
+from PyBondLab.data.WRDS import load
+
+def load_breakpoints_WRDS() -> pd.DataFrame:
+    """
+    Load the breakpoints (rolling percentiles) WRDS data
+    """
+    return load()
+
 class StrategyFormation:
     def __init__(self, data: pd.DataFrame,strategy: Strategy, rating: str = None, filters: dict = None):
         
