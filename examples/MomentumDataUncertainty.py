@@ -71,9 +71,11 @@ mom66 = pbl.Momentum(K = 6,J = 6, skip = skip ,nport = n_portf)
 # at time t, we winsorize returns given the percentile of the distribution of bond returns from the beginning
 # of the sample up to date t
 
-BREAKPOINTS = pd.read_csv('examples/breakpoints_update.csv',index_col=0)
-BREAKPOINTS.index = pd.to_datetime(BREAKPOINTS.index)
+# BREAKPOINTS = pd.read_csv('breakpoints_update.csv',index_col=0)
+# BREAKPOINTS.index = pd.to_datetime(BREAKPOINTS.index)
 # Loading from the package
+BREAKPOINTS = pbl.load_breakpoints_WRDS()
+
 
 winsorization_level_up      = np.arange(98.0,99.8,0.5)
 
