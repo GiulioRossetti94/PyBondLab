@@ -58,7 +58,7 @@ tbl1['VW'] = (tbl1['PRICE_L5M'] * tbl1['AMOUNT_OUTSTANDING'])/1000
 tbl1.rename(columns={"PRICE_L5M":"PRICE","ISSUE_ID":"ID","RET_L5M":"ret"},inplace=True)
 
 # Specify the universe of bonds based on Ratings: "NIG", "IG", None -> "NIG" + "IG"
-# In this example, we specify NIG, which includes high-yield bonds only 
+# In this example, we specify None, which includes ALL bonds only 
 # i.e., we use ALL bonds, so we set RATING = None
 RATING = None
 #==============================================================================
