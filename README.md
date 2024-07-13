@@ -114,9 +114,9 @@ This implies that if `'level':26` is passed, bonds whose price is above 26 are e
 #### Return bounce-back exclusion
 Filtering out bonds where the product of their monthly returns $R_t \times R_{t-1}$ meets a pre-defined threshold.
 
-- `{'adj':'bounce,'level':0.01}` excludes if $R_t \times R_{t-1}   $ > 0.01
-- `{'adj':'bounce,'level':-0.01}` excludes if $R_t \times R_{t-1}  $ < 0.01 
-- `{'adj':'bounce,'level':[-0.01, 0.01]}` excludes if $R_t \times R_{t-1}  $ <0.01 and  $R_t \times R_{t-1}  $ >0.01
+- `{'adj':'bounce,'level':0.01}` excludes if $R_t \times R_{t-1}$ > 0.01
+- `{'adj':'bounce,'level':-0.01}` excludes if $R_t \times R_{t-1}$ < 0.01 
+- `{'adj':'bounce,'level':[-0.01, 0.01]}` excludes if $R_t \times R_{t-1}$ <0.01 and  $R_t \times R_{t-1}$ >0.01
 
 #### Return winsorization
 **Ex Ante Winsorization**: This affects the formation of long-short portfolios only for strategies that sort bonds into different bins based on signals derived from past returns (e.g., momentum, short-term reversal, long-term reversal).
