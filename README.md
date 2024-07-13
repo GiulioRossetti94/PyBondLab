@@ -29,6 +29,8 @@ The strategy involves:
 ```python
 import PyBondLab as pbl
 import pandas as pd
+import numpy as np
+import wrds
 
 # read bond dataset
 # use a pandas DataFrame with columns:
@@ -49,6 +51,7 @@ tbl1 = db.raw_sql("""SELECT  DATE, ISSUE_ID,CUSIP, RATING_NUM, RET_L5M,AMOUNT_OU
                                 TMT, N_SP, PRICE_L5M                         
                         FROM wrdsapps.bondret
                   """)
+                  
 # Required because the WRDS data comes with "duplicates" in the index
 # does not affect data, but the "index" needs to be re-defined #                 
 tbl1 = tbl1.reset_index()
@@ -80,7 +83,7 @@ params = {'strategy': single_sort,
   }
 
 # Fit the strategy to the data. Specify ID identifier and column of returns 
-res = pbl.StrategyFormation(data, **params).fit(IDvar = "ISSUE_ID",RETvar = "RET_L5M")
+res = pbl.StrategyFormation(tbl1, **params).fit(IDvar = "ISSUE_ID",RETvar = "RET_L5M")
 
 # Get long-short portfolios (equal- and value-weighted)
 ew,vw = res.get_long_short()
