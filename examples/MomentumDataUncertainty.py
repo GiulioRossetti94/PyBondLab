@@ -18,7 +18,7 @@ import PyBondLab as pbl
 # Assumes you have a valid WRDS account and have set-up your cloud access #
 # See:
 # https://wrds-www.wharton.upenn.edu/pages/support/programming-wrds/programming-python/python-wrds-cloud/
-wrds_username = 'phd18ad1' # Input your WRDS username
+wrds_username = '' # Input your WRDS username
 db = wrds.Connection(wrds_username = wrds_username )
 
 tbl1 = db.raw_sql("""SELECT  DATE, ISSUE_ID,CUSIP, RATING_NUM, RET_L5M,AMOUNT_OUTSTANDING,
