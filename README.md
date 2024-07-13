@@ -37,7 +37,35 @@ import pandas as pd
 # "date": the date
 # "RET_L5M": bond returns used to compute portfolio returns
 # "VW":  weights used to compute value-weighted performnace
-data = pd.read_csv("bond_data.csv")
+
+# Read in data directly from WRDS
+# Assumes you have a valid WRDS account and have set-up your cloud access #
+# See:
+# https://wrds-www.wharton.upenn.edu/pages/support/programming-wrds/programming-python/python-wrds-cloud/
+wrds_username = '' # Input your WRDS username
+db = wrds.Connection(wrds_username = wrds_username )
+
+tbl1 = db.raw_sql("""SELECT  DATE, ISSUE_ID,CUSIP, RATING_NUM, RET_L5M,AMOUNT_OUTSTANDING,
+                                TMT, N_SP, PRICE_L5M                         
+                        FROM wrdsapps.bondret
+                  """)
+# Required because the WRDS data comes with "duplicates" in the index
+# does not affect data, but the "index" needs to be re-defined #                 
+tbl1 = tbl1.reset_index()
+tbl1['index'] = range(1,(len(tbl1)+1))
+
+# Format the data
+tbl1.columns = tbl1.columns.str.upper()
+tbl1['date'] = pd.to_datetime(tbl1['DATE'])
+tbl1['AMOUNT_OUTSTANDING'] = np.abs(tbl1['AMOUNT_OUTSTANDING'])
+tbl1['PRICE_L5M'] = np.abs(tbl1['PRICE_L5M'])
+tbl1 = tbl1.sort_values(['ISSUE_ID','DATE'])
+
+# WRDS data "starts" officially on "2002-08-31"
+tbl1 = tbl1[tbl1['date'] >= "2002-08-31"]
+
+# Column used for value weigted returns
+tbl1['VW'] = (tbl1['PRICE_L5M'] * tbl1['AMOUNT_OUTSTANDING'])/1000
 
 holding_period = 1             # holding period returns
 n_portf        = 5             # number of portfolios
