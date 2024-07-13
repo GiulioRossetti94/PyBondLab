@@ -1,9 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Mon Jun 24 10:32:52 2024
-
-@author: phd19gr
-"""
 # Momentum data uncertainty.
 # The script replicates the results in Dickerson, Robotti, Rossetti 2024
 # It computes a total of n momentum strategies with different data cleaning (ex ante and ex post) procedures
@@ -11,31 +5,62 @@ Created on Mon Jun 24 10:32:52 2024
 
 import numpy as np
 import pandas as pd
+import wrds
 import PyBondLab as pbl
 
 #==============================================================================
 #   Load Data
 #==============================================================================
-tbl1         =  pd.read_csv(r'~/Dropbox/NIG_momentum/bondret_new.csv')#.reset_index()
 
+# =============================================================================
+# Option 1: access data directly from WRDS
+# =============================================================================
+# Assumes you have a valid WRDS account and have set-up your cloud access #
+# See:
+# https://wrds-www.wharton.upenn.edu/pages/support/programming-wrds/programming-python/python-wrds-cloud/
+wrds_username = 'phd18ad1' # Input your WRDS username
+db = wrds.Connection(wrds_username = wrds_username )
+
+tbl1 = db.raw_sql("""SELECT  DATE, ISSUE_ID,CUSIP, RATING_NUM, RET_L5M,AMOUNT_OUTSTANDING,
+                                TMT, N_SP, PRICE_L5M                         
+                        FROM wrdsapps.bondret
+                  """)
+# Required because the WRDS data comes with "duplicates" in the index
+# does not affect data, but the "index" needs to be re-defined #                 
+tbl1 = tbl1.reset_index()
+tbl1['index'] = range(1,(len(tbl1)+1))
+
+# =============================================================================
+# Option 2: Load any bond dataset you have saved to file
+# =============================================================================
+# file = '' # Input your file name, assumed to be saved as .csv #
+# tbl1         =  pd.read_csv(file)
+
+tbl1['index'] = range(1,(len(tbl1)+1))
+# =============================================================================
+# Format the data
+# =============================================================================
 tbl1.columns = tbl1.columns.str.upper()
 tbl1['date'] = pd.to_datetime(tbl1['DATE'])
-
 tbl1['AMOUNT_OUTSTANDING'] = np.abs(tbl1['AMOUNT_OUTSTANDING'])
 tbl1['PRICE_L5M'] = np.abs(tbl1['PRICE_L5M'])
 tbl1 = tbl1.sort_values(['ISSUE_ID','DATE'])
 
-# starting point "2002-08-31"
+# WRDS data "starts" officially on "2002-08-31"
 tbl1 = tbl1[tbl1['date'] >= "2002-08-31"]
-# column used for value weigted returns
+
+# Column used for value weigted returns
 tbl1['VW'] = (tbl1['PRICE_L5M'] * tbl1['AMOUNT_OUTSTANDING'])/1000
 
 # renaming. could be skipped but then specify the ID and Ret variable in the .fit() method
-tbl1.rename({"ISSUE_ID":"ID","PRICE_L5M":"PRICE","RET_L5M":"ret"},axis=1,inplace=True)
-# tbl1.rename({"ISSUE_ID":"ID","PRICE_L5M":"PRICE"},axis=1,inplace=True)
+# rename your primary bond identifier (i.e., ISSUE_ID or CUSIP) as simply "ID"
+# rename your return variable to 'ret'
+# rename your price variable to 'PRICE'
+tbl1.rename(columns={"PRICE_L5M":"PRICE","ISSUE_ID":"ID","RET_L5M":"ret"},inplace=True)
 
 # Specify the universe of bonds based on Ratings: "NIG", "IG", None -> "NIG" + "IG"
-RATING = None
+# In this example, we specify NIG, which includes high-yield bonds only 
+RATING = 'NIG'
 #==============================================================================
 #   USAGE: Single Sort Rating
 #==============================================================================
@@ -53,30 +78,12 @@ mom33 = pbl.Momentum(K = 3,J = 3, skip = skip ,nport = n_portf)
 #(6,6): signal is computed as the cumulative return over the J=6 previous months skipping the most recent observation (skip = 1). 
 mom66 = pbl.Momentum(K = 6,J = 6, skip = skip ,nport = n_portf)
 
-#==============================================================================
-#   Parameter
-#==============================================================================
-# here we create a dictionary in which we specify the adjustments that we are going to apply to the bond data
-# eg: this compute the Momentum (3,3) excluding all bonds whose returns is higher than 20%
-# param = {'strategy': mom33,
-#  'rating': None,
-#  'filters': {'adj': 'trim', 'level': 0.2}}
-
 
 #==============================================================================
 #   Param Specs: Winsorization
 #==============================================================================
-# to speed up computations, we input a df with the rolling percentile of the pooled cross section of bonds
-# rolling percentile is needed to winsorize the signal. 
-# at time t, we winsorize returns given the percentile of the distribution of bond returns from the beginning
-# of the sample up to date t
-
-# BREAKPOINTS = pd.read_csv('breakpoints_update.csv',index_col=0)
-# BREAKPOINTS.index = pd.to_datetime(BREAKPOINTS.index)
-# Loading from the package
 BREAKPOINTS = pbl.load_breakpoints_WRDS()
-
-
+BREAKPOINTS.index = pd.to_datetime(BREAKPOINTS.index)
 winsorization_level_up      = np.arange(98.0,99.8,0.5)
 
 
@@ -90,7 +97,6 @@ for x in [mom33,mom66]:
                 'filters': {'adj':'wins','level': w,'location':loc,'df_breakpoints':BREAKPOINTS}, # "df_breakpoints" can be omitted. the function will automatically compute the rolling percentile but it will slow everything down
                 }   
             param_wins.append(params)
-
 
 #==============================================================================
 #   Param Specs: Price Exclusion
@@ -172,17 +178,21 @@ for x in [mom33,mom66]:
       
 del bounce_filter_up, bounce_filter_down
 
-# create a list with all the params specifications     
-params_all = param_wins + param_return + param_price + param_bounce 
+#==============================================================================
+#   Param Specs: 
+#==============================================================================     
+# Adds up all of the filtering dictionaries into a single container    
+params_all = param_return + param_price + param_bounce + param_wins
 
 print(len(params_all)) # Total number of strategies
 
 # initialize empty lists to store the results
-l_ew_ea = []
-l_ew_ep = []
 
-l_vw_ea = []
-l_vw_ep = []
+l_ew_ea = [] # Equal-Weight (ew) _ Ex ante (ea) filtered strategies
+l_ew_ep = [] # Equal-Weight (ew) _ Ex post (ep) filtered strategies
+
+l_vw_ea = [] # Value-Weight (vw) _ Ex ante (ea) filtered strategies
+l_vw_ep = [] # Value-Weight (vw) _ Ex post (ea) filtered strategies
 
 
 for i, params in enumerate(params_all):
@@ -196,30 +206,22 @@ for i, params in enumerate(params_all):
     # get the long short portfolios ex ante and ex post
     ew_ea, vw_ea = mom_res.get_long_short() 
     ew_ep, vw_ep = mom_res.get_long_short_ex_post()
-    
-    
-    ## get the portfolios in a different way
-    # ew_ea = mom_res.ewls_ea_df
-    # ew_ep = mom_res.ewls_ep_df
-    # vw_ea = mom_res.vwls_ea_df
-    # vw_ep = mom_res.vwls_ep_df     
-
-    # store the results
+       
+    # Append to a large list
     l_ew_ea.append(ew_ea)
     l_ew_ep.append(ew_ep)
 
     l_vw_ea.append(vw_ea)
     l_vw_ep.append(vw_ep)
  
-# concatenate the results
-dfEWEA = pd.concat(l_ew_ea,axis=1)   # df with all the Equal-weighted ex ante strategies
-dfEWEP = pd.concat(l_ew_ep,axis=1)   # df with all the Value-weighted ex ante strategies
+# =============================================================================
+# Export to file
+# =============================================================================
+# Equal-Weight
+pd.concat(l_ew_ea, axis = 1).to_csv(r'exante_momentum_uncertainty_ew.csv')
+pd.concat(l_ew_ep, axis = 1).to_csv(r'expost_momentum_uncertainty_ew.csv')
 
-dfVWEA = pd.concat(l_vw_ea,axis=1)   # df with all the Equal-weighted ex post strategies
-dfVWEP = pd.concat(l_vw_ep,axis=1)   # df with all the Value-weighted ex post strategies
-    
-# dfEWEA = pd.concat(l_ew_ea,axis=1).to_csv('~/Desktop/EWEAmom_ALL_10w.csv')
-# dfEWEP = pd.concat(l_ew_ep,axis=1).to_csv('~/Desktop/EWEPmom_ALL_10w.csv')
-
-# dfVWEA = pd.concat(l_vw_ea,axis=1).to_csv('~/Desktop/VWEAmom_ALL_10w.csv')
-# dfVWEP = pd.concat(l_vw_ep,axis=1).to_csv('~/Desktop/VWEPmom_ALL_10w.csv')    
+# Value-Weight
+pd.concat(l_vw_ea, axis = 1).to_csv(r'exante_momentum_uncertainty_ew.csv')
+pd.concat(l_vw_ep, axis = 1).to_csv(r'expost_momentum_uncertainty_ew.csv')
+# =============================================================================
