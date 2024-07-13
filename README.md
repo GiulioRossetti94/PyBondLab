@@ -162,3 +162,6 @@ The following requirements were used for testing. It is possible that older vers
 Giulio Rossetti giulio.rossetti.1@wbs.ac.uk
 
 Alex Dickerson alexander.dickerson1@unsw.edu.au
+
+## License
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
