@@ -23,8 +23,8 @@ This example demonstrates how to implement a long-short investment strategy usin
 At each month $t$, corporate bonds are sorted into five portfolios according to their credit rating (`RATING_NUM` column). 
 The strategy involves:
 
-1. **Long Position**: buy the portfolio containing bonds with the lowest credit rating
-2. **Short Position**: sell the portfolio containing bonds with the highest credit rating
+1. **Long Position**: buy the bonds in the quintile portfolio containing bonds with the lowest credit rating (i.e., long bonds with higher default risk)
+2. **Short Position**: sell (short-sell) the bonds in the quintile portfolio containing bonds with the highest credit rating (i.e., short/sell bonds with low default risk)
 
 ```python
 import PyBondLab as pbl
@@ -119,9 +119,9 @@ Filtering out bonds where the product of their monthly returns $R_t \times R_{t-
 - `{'adj':'bounce,'level':[-0.01, 0.01]}` excludes if $R_t \times R_{t-1}$ <0.01 and  $R_t \times R_{t-1}$ >0.01
 
 #### Return winsorization
-**Ex Ante Winsorization**: This affects the formation of long-short portfolios only for strategies that sort bonds into different bins based on signals derived from past returns (e.g., momentum, short-term reversal, long-term reversal).
+**Ex Ante Winsorization**: This affects the formation of long-short portfolios only for strategies that sort bonds into different bins based on signals derived from past returns (e.g., momentum, short-term reversal, long-term reversal). These returns are winsorized up until the portfolio formation month $t$, and the corresponding signal is then computed with these winsorized returns.
 
-**Ex Post Winsorization**: This impacts the performance of any characteristic-sorted portfolio, as it modifies the bond returns used to compute the returns of the different portfolios. This introduces a look-ahead bias in the portfolio performance and makes the performance unattainable.
+**Ex Post Winsorization**: This impacts the performance of any characteristic-sorted portfolio, as it modifies the bond returns used to compute the returns of the different portfolios. This introduces a look-ahead bias in the portfolio performance and makes the performance unattainable or 'infeasible'. 
 
 - `{'adj':'wins,'level':98,'location':'right'}`: winsorize the right tail of the distribution at the 98th percentile level.
 - `{'adj':'wins,'level':98,'location':'left'}`: winsorize the left tail of the distribution at the 2nd percentile level.
@@ -130,7 +130,7 @@ Filtering out bonds where the product of their monthly returns $R_t \times R_{t-
 For ex ante winsorization, returns at time $t$ are winsorized based on the pooled distribution of returns from $t_0$ up until $t$. This means that for every $t$, percentile levels must be recomputed, which can impact the performance of the scripts. This is particularly relevant when running hundreds of different strategies (see Data Uncertainty section). To mitigate this issue, there is an option to pass a pandas DataFrame with precomputed rolling percentiles, thereby avoiding the need to compute the winsorization threshold at each iteration.
 Example:
 ```python
-BREAKPOINTS = pd.read_csv('../breakpoints_update.csv',index_col=0)
+BREAKPOINTS = pbl.load_breakpoints_WRDS()
 BREAKPOINTS.index = pd.to_datetime(BREAKPOINTS.index)
 
 # specify the parameters 
