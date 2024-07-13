@@ -191,7 +191,7 @@ for idx, w in enumerate(bounce_filter_down):
 del bounce_filter_up, bounce_filter_down
 
 #==============================================================================
-#   Param Specs: Trim Comb
+#   Param Specs: 
 #==============================================================================     
 # Adds up all of the filtering dictionaries into a single container    
 params_all = param_return + param_price + param_bounce + param_wins
