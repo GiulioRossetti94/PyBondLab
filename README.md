@@ -19,7 +19,7 @@ python setup.py install
 ```
 
 ## Usage & Examples
-For a more complete overview, see notebooks and scripts in [example](examples/)
+For a more complete overview, see notebooks and scripts in [example](https://github.com/GiulioRossetti94/PyBondLab/tree/main/examples)
 
 ### Portfolio sorting
 This example demonstrates how to implement a long-short investment strategy using the `PyBondLab` module, based on quintile sorting of corporate bond on credit ratings.
