@@ -13,7 +13,7 @@ setup(name = 'PyBondLab',
       packages=find_packages(),
       include_package_data=True,
       package_data={
-          '': ['data/wrds/*.csv'],
+          'PyBondLab': ['data/WRDS/*.csv'],
       },
       url='https://github.com/GiulioRossetti94/PyBondLab',
       project_urls={
