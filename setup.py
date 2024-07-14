@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(name = 'PyBondLab',
-      version = '0.0.1',
+      version = '0.0.2',
       description = ('Performs portfolio sorting and strategy evaluation for corporate bonds'),
       long_description=open('README.md').read(),
       long_description_content_type='text/markdown',
