@@ -5,8 +5,12 @@ PyBondLab is a Python module designed for portfolio sorting and other tools tail
 PyBondLab provides tools for computing and evaluating investment strategies. It features look-ahead bias free data cleaning procedures to ensure the integrity and reliability of empirical results.
 
 ## Installation
+You can install the latest release using pip
+```bash
+pip install PyBondLab
+```
 
-You can install the latest version from GitHub by cloning the repo and running setup
+Or you can install the master branch from GitHub by cloning the repo and running setup
 
 ```bash
 git clone https://github.com/GiulioRossetti94/PyBondLab.git
