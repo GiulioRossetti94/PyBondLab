@@ -1,5 +1,5 @@
 from .PyBondLab import StrategyFormation, load_breakpoints_WRDS
-from .StrategyClass import SingleSort, DoubleSort, Momentum
+from .StrategyClass import SingleSort, DoubleSort, Momentum, LTreversal
 
 
 __version__ = '0.0.2'
