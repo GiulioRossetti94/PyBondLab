@@ -238,3 +238,64 @@ class Momentum(Strategy):
             The name of the variable to use for sorting.
         """
         pass
+
+#==============================================================================
+#   Long Term Reversal: SingleSorting
+#==============================================================================
+
+class LTreversal(Strategy):   
+    def __init__(self, K,nport, J=None, skip=None):
+        """
+        Initializes the SingleSort strategy with required parameters.
+
+        Parameters
+        ----------
+        nport : int
+            The number of portfolios to sort into.
+        K : int
+            The holding period for the primary strategy.
+        sort_var : str
+            The variable to use for sorting.
+        J : any, optional
+            An additional parameter for strategy customization.
+        skip : any, optional
+            An additional parameter for strategy customization.
+        """
+        super().__init__(nport, K, J, skip)
+        
+        #self.sort_var = None  # Sorting variable
+        
+        print("-" * 35)
+        print(f"Initializing Long Term reversal ({self.J},{self.K}) strategy (single sort):\nHolding period: {self.K} \nNumber of portfolios: {self.nport} \nSorting on: past returns")
+        print("-" * 35) 
+        
+    def compute_signal(self, data):
+        varname = "ret"
+        # data['logret'] = np.log(data[varname] + 1)
+        data['signal'] = data.groupby(['ID'], group_keys=False)[varname]\
+            .apply(lambda x:  x.rolling(window = self.J).sum()) - \
+                   data.groupby(['ID'], group_keys=False)[varname]\
+            .apply(lambda x:  x.rolling(window = self.skip).sum())
+                   
+        return data
+    
+    def get_sort_var(self, adj=None):
+        """
+        Returns the variable used for sorting.
+        -------
+        str
+            The name of the variable used for sorting.
+        """
+        self.sort_var = f'signal_{adj}' if adj else 'signal'
+        return f'signal_{adj}' if adj else 'signal'
+        
+    def set_sort_var(self, sort_var):
+        """
+        Sets the variable to be used for sorting.
+
+        Parameters
+        ----------
+        sort_var : str
+            The name of the variable to use for sorting.
+        """
+        pass
