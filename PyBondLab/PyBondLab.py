@@ -123,8 +123,8 @@ class StrategyFormation:
     def compute_signal(self):
         # compute signal
         self.data = self.strategy.compute_signal(self.data) 
-        # get params from strategy
-        
+        # get params from strategy(
+        print(self.strategy.__strategy_name__)
         if self.filters and self.adj in ["trim", "wins", "price", "bounce"]:
             filter_obj = Filter(self.data, self.adj, self.w, self.loc, self.percentile_breakpoints,self.price_threshold)
             self.name += filter_obj.name_filt
@@ -137,25 +137,35 @@ class StrategyFormation:
                 self.data_winsorized_ex_post = filter_obj.data_winsorized_ex_post# this is a df w/ wisorized returns
             
             if 'signal' in sort_var:
-                J = self.strategy.J
-                skip = self.strategy.skip
-                varname = f'ret_{self.adj}'
-                self.data['logret'] = np.log(self.data[varname] + 1)
-                self.data[f'signal_{self.adj}'] = self.data.groupby(['ID'], group_keys=False)['logret']\
-                    .rolling(J, min_periods=J).sum().values
-                self.data[f'signal_{self.adj}'] = np.exp(self.data[f'signal_{self.adj}']) - 1
-                self.data[f'signal_{self.adj}'] = self.data.groupby("ID")[f'signal_{self.adj}'].shift(skip)
+                if self.strategy.__strategy_name__ == "MOMENTUM":
+                    J = self.strategy.J
+                    skip = self.strategy.skip
+                    varname = f'ret_{self.adj}'
+                    self.data['logret'] = np.log(self.data[varname] + 1)
+                    self.data[f'signal_{self.adj}'] = self.data.groupby(['ID'], group_keys=False)['logret']\
+                        .rolling(J, min_periods=J).sum().values
+                    self.data[f'signal_{self.adj}'] = np.exp(self.data[f'signal_{self.adj}']) - 1
+                    self.data[f'signal_{self.adj}'] = self.data.groupby("ID")[f'signal_{self.adj}'].shift(skip)
+                elif self.strategy.__strategy_name__ == "LT-REVERSAL":
+                    J = self.strategy.J
+                    skip = self.strategy.skip
+                    varname = f'ret_{self.adj}'
+                    self.data[f'signal_{self.adj}'] = self.data.groupby(['ID'], group_keys=False)[varname]\
+                        .apply(lambda x:  x.rolling(window = J).sum()) - \
+                               self.data.groupby(['ID'], group_keys=False)[varname]\
+                        .apply(lambda x:  x.rolling(window = skip).sum())
+                    
          
         else:
             sort_var = self.strategy.get_sort_var()
-            if sort_var == 'signal':
-                J = self.strategy.J
-                skip = self.strategy.skip
-                self.data['logret'] = np.log(self.data['ret'] + 1)
-                self.data['signal'] = self.data.groupby(['ID'], group_keys=False)['logret']\
-                    .rolling(J, min_periods=J).sum().values            
-                self.data['signal'] = np.exp(self.data['signal']) - 1
-                self.data['signal'] = self.data.groupby("ID")['signal'].shift(skip)
+            # if sort_var == 'signal':
+            #     J = self.strategy.J
+            #     skip = self.strategy.skip
+            #     self.data['logret'] = np.log(self.data['ret'] + 1)
+            #     self.data['signal'] = self.data.groupby(['ID'], group_keys=False)['logret']\
+            #         .rolling(J, min_periods=J).sum().values            
+            #     self.data['signal'] = np.exp(self.data['signal']) - 1
+            #     self.data['signal'] = self.data.groupby("ID")['signal'].shift(skip)
             
             
                 

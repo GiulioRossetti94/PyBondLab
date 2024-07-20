@@ -19,7 +19,7 @@ class Strategy:
         self.J = J
         self.skip = skip
         self.str_name = f"{self.K}"
-        
+        self.__strategy_name__ = None
         if self.J is not None:
             self.str_name += f"_{self.J}"
         if self.skip is not None:
@@ -202,7 +202,7 @@ class Momentum(Strategy):
             An additional parameter for strategy customization.
         """
         super().__init__(nport, K, J, skip)
-        
+        self.__strategy_name__ = "MOMENTUM"
         #self.sort_var = None  # Sorting variable
         
         print("-" * 35)
@@ -262,11 +262,11 @@ class LTreversal(Strategy):
             An additional parameter for strategy customization.
         """
         super().__init__(nport, K, J, skip)
-        
+        self.__strategy_name__ = "LT-REVERSAL"
         #self.sort_var = None  # Sorting variable
         
         print("-" * 35)
-        print(f"Initializing Long Term reversal ({self.J},{self.K}) strategy (single sort):\nHolding period: {self.K} \nNumber of portfolios: {self.nport} \nSorting on: past returns")
+        print(f"Initializing Long Term reversal ({self.J},{self.skip}) strategy (single sort):\nHolding period: {self.K} \nNumber of portfolios: {self.nport} \nSorting on: past returns")
         print("-" * 35) 
         
     def compute_signal(self, data):
