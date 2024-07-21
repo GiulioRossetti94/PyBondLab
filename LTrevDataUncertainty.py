@@ -64,7 +64,7 @@ tbl1.rename(columns={"PRICE_L5M":"PRICE","ISSUE_ID":"ID","RET_L5M":"ret"},inplac
 
 # Specify the universe of bonds based on Ratings: "NIG", "IG", None -> "NIG" + "IG"
 # In this example, we specify NIG, which includes high-yield bonds only 
-RATING = 'NIG'
+RATING = "IG"
 #==============================================================================
 #   USAGE: Single Sort Rating
 #==============================================================================
