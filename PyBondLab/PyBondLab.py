@@ -87,7 +87,13 @@ class StrategyFormation:
         missing_columns = [col for col in required_columns if col not in self.data.columns]    
         if missing_columns:
             raise ValueError(f"Missing required columns: {', '.join(missing_columns)}")         
-            
+        
+        # force the IDs to be numbers. Needed to facilitate storing results
+        N = len(np.unique(self.data["ID"]))
+        ID = dict(zip(np.unique(self.data["ID"]).tolist(),np.arange(1,N+1)))
+        self.unique_bonds = N
+        self.data["ID"] = self.data["ID"].apply(lambda x: ID[x])
+        
         self.compute_signal()
         self.portfolio_formation()
         return self
@@ -170,6 +176,8 @@ class StrategyFormation:
             
                 
     def portfolio_formation(self):
+        unique_bonds = self.unique_bonds
+        
         nport = self.nport
         adj = self.adj
         ret_var  = 'ret'                             # this is the column used to compute the returns of portfolios
@@ -201,9 +209,18 @@ class StrategyFormation:
         # initialize storing   
         ewport_hor_ea = np.full((TM, hor, tot_nport), np.nan)
         vwport_hor_ea = np.full((TM, hor, tot_nport), np.nan)
+        
+        # weights
+        self.ewport_weight_hor_ea = np.zeros((TM, hor, tot_nport,unique_bonds))
+        self.vwport_weight_hor_ea = np.zeros((TM, hor, tot_nport,unique_bonds))
+
         if adj:
             ewport_hor_ep = np.full((TM, hor, tot_nport), np.nan)
             vwport_hor_ep = np.full((TM, hor, tot_nport), np.nan) 
+            
+            # weights
+            self.ewport_weight_hor_ep = np.zeros((TM, hor, tot_nport,unique_bonds))
+            self.vwport_weight_hor_ep = np.zeros((TM, hor, tot_nport,unique_bonds))
         
         # for t in range((hor+1), TM - hor): to discuss this!
         for t in range( TM - hor):
@@ -275,8 +292,14 @@ class StrategyFormation:
                     # if signal is not in sort_var, we do not use winsorized returns to sort portfolios
                     port_ret_ea = self.port_sorted_ret(It0, It1,ret_var, sort_var,DoubleSort=DoubleSort,sig2 = sort_var2,nport2 = nport2 )
                 
+                # storing returns
                 ewport_hor_ea[t + h, h - 1, :] = port_ret_ea[0]
-                vwport_hor_ea[t + h, h - 1, :] = port_ret_ea[1]                
+                vwport_hor_ea[t + h, h - 1, :] = port_ret_ea[1]
+                # storing weights: todo give option for this
+                weights = port_ret_ea[2]
+                self.fill_weights(weights, self.ewport_weight_hor_ea,self.vwport_weight_hor_ea, t, h)
+
+                
                 
                 if adj:
                     if adj == 'wins':
@@ -287,8 +310,13 @@ class StrategyFormation:
                     
                     port_ret_ep = self.port_sorted_ret(It0, It2,ret_var + "_" + adj, sort_var,DoubleSort=DoubleSort,sig2 = sort_var2,nport2 = nport2 )
                     
+                    # storing returns
                     ewport_hor_ep[t + h, h - 1, :] = port_ret_ep[0]
                     vwport_hor_ep[t + h, h - 1, :] = port_ret_ep[1]
+                    # storing weights: 
+                    weights_ep = port_ret_ep[2]
+                    self.fill_weights(weights_ep, self.ewport_weight_hor_ep,self.vwport_weight_hor_ep, t, h)
+                        
                 
         self.ewport_ea = np.mean(ewport_hor_ea, axis=1)
         self.vwport_ea = np.mean(vwport_hor_ea, axis=1)
@@ -497,6 +525,17 @@ class StrategyFormation:
         #     ptf_count_df.to_csv(csv_file_path, mode='w', index=False, header=True)
         # else:
         #     ptf_count_df.to_csv(csv_file_path, mode='a', index=False, header=False)
+        # =====================================================================
+        # store the weights:  return the column with ID 
+        # =====================================================================  
+        rank_ = It1[['ID','ptf_rank']]
+        rank = rank_.copy()
+        rank['count'] = rank.groupby('ptf_rank')['ID'].transform('count')
+        rank['eweights'] = 1 / rank['count']
+        rank = rank.merge(It1[['ID', 'weights']], on='ID')
+        rank = rank.rename(columns={"weights":"vweights"})
+        
+        _weights = rank[['ID','ptf_rank','eweights','vweights']]
                 
         nport_idx = range(1,int(nportmax+1))
         ptf_ret_ew = ptf_ret_ew.reindex(nport_idx)
@@ -505,7 +544,7 @@ class StrategyFormation:
         ewl = ptf_ret_ew.to_list()
         vwl = ptf_ret_vw.to_list()
         
-        return ewl, vwl    
+        return ewl, vwl,_weights
     
     @staticmethod
     def compute_rank_idx(sortvar,thres,nport):
@@ -558,6 +597,19 @@ class StrategyFormation:
             n2 = int(np.nanmax(temp_ind))
             idx[(idx1 == i) & (temp_ind > 0)] = temp_ind[(idx1 == i) & (temp_ind > 0)] + n2 * (i - 1)
         return idx
+    
+    @staticmethod
+    def fill_weights(weights, array_ew,array_vw, t, h):
+        for _, row in weights.iterrows():
+            p = int(row['ptf_rank'])
+            ID = int(row['ID'])
+            eweights = row['eweights']
+            vweights = row['vweights']
+            
+            array_ew[t + h - 1, h - 1, p - 1, ID - 1] = eweights
+            array_vw[t + h - 1, h - 1, p - 1, ID - 1] = vweights
+            
+
     
     # getters 
     def get_long_leg(self):
