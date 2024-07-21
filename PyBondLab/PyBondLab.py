@@ -387,7 +387,14 @@ class StrategyFormation:
       
         self.ewls_ea_df = pd.DataFrame(self.ewls_ea,index = self.datelist, columns = ['EWEA_' + self.name]) 
         self.vwls_ea_df = pd.DataFrame(self.vwls_ea,index = self.datelist, columns = ['VWEA_' + self.name]) 
-
+        
+        # computing turnover
+        ew_port_turn_ea = self.compute_turnover(self.ewport_weight_hor_ea)
+        vw_port_turn_ea = self.compute_turnover(self.vwport_weight_hor_ea)
+        
+        self.ewturnover_ea_df = pd.DataFrame(ew_port_turn_ea,index = self.datelist[1:], columns = [f"Q{x}" for x in range(1,nport_tot+1)])
+        self.vwturnover_ea_df = pd.DataFrame(vw_port_turn_ea,index = self.datelist[1:], columns = [f"Q{x}" for x in range(1,nport_tot+1)])
+        
         if adj:
             if DoubleSort:
                 avg_res_ew = []
@@ -445,7 +452,16 @@ class StrategyFormation:
                 self.vwls_ep_short_df = pd.DataFrame(VWshort_leg_ep,index = self.datelist, columns = ['SHORT_VWEP_' + self.name])  
                                 
             self.ewls_ep_df = pd.DataFrame(self.ewls_ep,index = self.datelist,columns = ['EWEP_' + self.name])   
-            self.vwls_ep_df = pd.DataFrame(self.vwls_ep,index = self.datelist,columns = ['VWEP_' + self.name])   
+            self.vwls_ep_df = pd.DataFrame(self.vwls_ep,index = self.datelist,columns = ['VWEP_' + self.name])  
+            
+            # turnovocer
+            ew_port_turn_ep = self.compute_turnover(self.ewport_weight_hor_ep)
+            vw_port_turn_ep = self.compute_turnover(self.vwport_weight_hor_ep)
+            
+            self.ewturnover_ep_df = pd.DataFrame(ew_port_turn_ep,index = self.datelist[1:], columns = [f"Q{x}" for x in range(1,nport_tot+1)])
+            self.vwturnover_ep_df = pd.DataFrame(vw_port_turn_ep,index = self.datelist[1:], columns = [f"Q{x}" for x in range(1,nport_tot+1)])
+            
+            
                 
     def port_sorted_ret(self, It0, It1, ret_col, sig,**kwargs):
         """
@@ -609,7 +625,14 @@ class StrategyFormation:
             array_ew[t + h - 1, h - 1, p - 1, ID - 1] = eweights
             array_vw[t + h - 1, h - 1, p - 1, ID - 1] = vweights
             
-
+    @staticmethod  
+    def compute_turnover(weights):
+        #  Portfolio weight changes: Subtract return-adjusted weights (lagged) from weights;
+        abs_dewport_weight = abs(weights[1:,:,:,:] - weights[:-1,:,:,:])
+        port_turn_hor    = np.sum(abs_dewport_weight, axis=3)
+        mean_port_turn_hor = np.mean(port_turn_hor, axis=1)
+        port_turn = np.squeeze(mean_port_turn_hor)
+        return port_turn
     
     # getters 
     def get_long_leg(self):
@@ -666,6 +689,31 @@ class StrategyFormation:
             warnings.warn("The DataFrame has not been initialized.", UserWarning)
             return None           
         return self.ewport_ep,self.vwport_ep
+    
+    def get_ptf_weights(self):
+        if self.ewport_weight_hor_ea is None or self.vwport_weight_hor_ea is None:
+            warnings.warn("The DataFrame has not been initialized.", UserWarning)
+            return None           
+        return self.ewport_weight_hor_ea,self.vwport_weight_hor_ea   
+    
+    def get_ptf_weights_ex_post(self):
+        if self.ewport_weight_hor_ep is None or self.vwport_weight_hor_ep is None:
+            warnings.warn("The DataFrame has not been initialized.", UserWarning)
+            return None           
+        return self.ewport_weight_hor_ep,self.vwport_weight_hor_ep  
+    
+    def get_ptf_turnover(self):
+        if self.ewturnover_ea_df is None or self.vwturnover_ea_df is None:
+            warnings.warn("The DataFrame has not been initialized.", UserWarning)
+            return None           
+        return self.ewturnover_ea_df,self.vwturnover_ea_df
+
+    def get_ptf_turnover_ex_post(self):
+        if self.ewturnover_ep_df is None or self.vwturnover_ep_df is None:
+            warnings.warn("The DataFrame has not been initialized.", UserWarning)
+            return None           
+        return self.ewturnover_ep_df,self.vwturnover_ep_df
+    
     
     def set_factors(self,factors):
         """
