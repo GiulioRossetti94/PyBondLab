@@ -136,7 +136,7 @@ class StrategyFormation:
         # compute signal
         self.data = self.strategy.compute_signal(self.data) 
         # get params from strategy(
-        print(self.strategy.__strategy_name__)
+        # print(self.strategy.__strategy_name__)
         if self.filters and self.adj in ["trim", "wins", "price", "bounce"]:
             filter_obj = Filter(self.data, self.adj, self.w, self.loc, self.percentile_breakpoints,self.price_threshold)
             self.name += filter_obj.name_filt
@@ -215,7 +215,9 @@ class StrategyFormation:
         # initialize storing   
         ewport_hor_ea = np.full((TM, hor, tot_nport), np.nan)
         vwport_hor_ea = np.full((TM, hor, tot_nport), np.nan)
-        
+        # for turnover compute scaled returns
+        self.ewport_weight_hor_ea_scaled = np.zeros((TM, hor, tot_nport,unique_bonds))
+        self.vwport_weight_hor_ea_scaled = np.zeros((TM, hor, tot_nport,unique_bonds))     
         # weights
         self.ewport_weight_hor_ea = np.zeros((TM, hor, tot_nport,unique_bonds))
         self.vwport_weight_hor_ea = np.zeros((TM, hor, tot_nport,unique_bonds))
@@ -231,7 +233,9 @@ class StrategyFormation:
         if adj:
             ewport_hor_ep = np.full((TM, hor, tot_nport), np.nan)
             vwport_hor_ep = np.full((TM, hor, tot_nport), np.nan) 
-            
+            # for turnover compute scaled returns
+            self.ewport_weight_hor_ep_scaled = np.zeros((TM, hor, tot_nport,unique_bonds))
+            self.vwport_weight_hor_ep_scaled = np.zeros((TM, hor, tot_nport,unique_bonds))       
             # weights
             self.ewport_weight_hor_ep = np.zeros((TM, hor, tot_nport,unique_bonds))
             self.vwport_weight_hor_ep = np.zeros((TM, hor, tot_nport,unique_bonds))
@@ -245,7 +249,9 @@ class StrategyFormation:
         
         # for t in range((hor+1), TM - hor): to discuss this!
         for t in range( TM - hor):
-            print(t)
+            if t==10:
+                print(self.datelist[t])
+            # print(t)
             # =====================================================================
             # Filter based on ratings and signal != nan
             # =====================================================================
@@ -320,8 +326,11 @@ class StrategyFormation:
                 ewport_hor_ea[t + h, h - 1, :] = port_ret_ea[0]
                 vwport_hor_ea[t + h, h - 1, :] = port_ret_ea[1]
                 # storing weights: todo give option for this
-                weights = port_ret_ea[2]
+                weights, weights_scaled = port_ret_ea[2]
                 self.fill_weights(weights, self.ewport_weight_hor_ea,self.vwport_weight_hor_ea, t, h)
+                self.fill_weights(weights_scaled, self.ewport_weight_hor_ea_scaled,self.vwport_weight_hor_ea_scaled, t, h)
+                
+                
                 # storing chars
                 if self.chars:
                     # unpack
@@ -344,8 +353,11 @@ class StrategyFormation:
                     ewport_hor_ep[t + h, h - 1, :] = port_ret_ep[0]
                     vwport_hor_ep[t + h, h - 1, :] = port_ret_ep[1]
                     # storing weights: 
-                    weights_ep = port_ret_ep[2]
+                    weights_ep, weights_scaled_ep = port_ret_ep[2]
                     self.fill_weights(weights_ep, self.ewport_weight_hor_ep,self.vwport_weight_hor_ep, t, h)
+                    self.fill_weights(weights_scaled_ep, self.ewport_weight_hor_ep_scaled,self.vwport_weight_hor_ep_scaled, t, h)
+                    
+                    
                     # storing chars
                     if self.chars:
                         # unpack
@@ -426,8 +438,14 @@ class StrategyFormation:
         self.vwls_ea_df = pd.DataFrame(self.vwls_ea,index = self.datelist, columns = ['VWEA_' + self.name]) 
         
         # computing turnover
-        ew_port_turn_ea = self.compute_turnover(self.ewport_weight_hor_ea)
-        vw_port_turn_ea = self.compute_turnover(self.vwport_weight_hor_ea)
+        # fill with nan
+        # self.ewport_weight_hor_ea = np.where(self.ewport_weight_hor_ea==0,np.nan,self.ewport_weight_hor_ea)
+        # self.vwport_weight_hor_ea = np.where(self.vwport_weight_hor_ea==0,np.nan,self.vwport_weight_hor_ea)
+        # self.ewport_weight_hor_ea_scaled = np.where(self.ewport_weight_hor_ea_scaled==0,np.nan,self.ewport_weight_hor_ea_scaled)
+        # self.vwport_weight_hor_ea_scaled = np.where(self.vwport_weight_hor_ea_scaled==0,np.nan,self.vwport_weight_hor_ea_scaled)
+        
+        ew_port_turn_ea = self.compute_turnover(self.ewport_weight_hor_ea,self.ewport_weight_hor_ea_scaled)
+        vw_port_turn_ea = self.compute_turnover(self.vwport_weight_hor_ea,self.vwport_weight_hor_ea_scaled)
         
         self.ewturnover_ea_df = pd.DataFrame(ew_port_turn_ea,index = self.datelist[1:], columns = [f"Q{x}" for x in range(1,nport_tot+1)])
         self.vwturnover_ea_df = pd.DataFrame(vw_port_turn_ea,index = self.datelist[1:], columns = [f"Q{x}" for x in range(1,nport_tot+1)])
@@ -499,8 +517,13 @@ class StrategyFormation:
             self.vwls_ep_df = pd.DataFrame(self.vwls_ep,index = self.datelist,columns = ['VWEP_' + self.name])  
             
             # turnovocer
-            ew_port_turn_ep = self.compute_turnover(self.ewport_weight_hor_ep)
-            vw_port_turn_ep = self.compute_turnover(self.vwport_weight_hor_ep)
+            # self.ewport_weight_hor_ep = np.where(self.ewport_weight_hor_ep==0,np.nan,self.ewport_weight_hor_ep)
+            # self.vwport_weight_hor_ep = np.where(self.vwport_weight_hor_ep==0,np.nan,self.vwport_weight_hor_ep)
+            # self.ewport_weight_hor_ep_scaled = np.where(self.ewport_weight_hor_ep_scaled==0,np.nan,self.ewport_weight_hor_ep_scaled)
+            # self.vwport_weight_hor_ep_scaled = np.where(self.vwport_weight_hor_ep_scaled==0,np.nan,self.vwport_weight_hor_ep_scaled)
+            
+            ew_port_turn_ep = self.compute_turnover(self.ewport_weight_hor_ep,self.ewport_weight_hor_ep_scaled)
+            vw_port_turn_ep = self.compute_turnover(self.vwport_weight_hor_ep,self.vwport_weight_hor_ep_scaled)
             
             self.ewturnover_ep_df = pd.DataFrame(ew_port_turn_ep,index = self.datelist[1:], columns = [f"Q{x}" for x in range(1,nport_tot+1)])
             self.vwturnover_ep_df = pd.DataFrame(vw_port_turn_ep,index = self.datelist[1:], columns = [f"Q{x}" for x in range(1,nport_tot+1)])
@@ -562,7 +585,6 @@ class StrategyFormation:
             It1['VW'] = It1m['VW'].values
         else:
             It1['VW'] = It0['VW'].values
-
         
         sortvar = It0[sig]
         # =====================================================================
@@ -590,6 +612,10 @@ class StrategyFormation:
         # It1[ret_col] = It1[ret_col].fillna(0)
         ptf_ret_ew = It1.groupby('ptf_rank')[ret_col].mean()
         ptf_ret_vw = It1.groupby('ptf_rank').apply(lambda x: (x[ret_col] * x['weights']).sum())
+
+        # =====================================================================
+        # Scale returns
+        # =====================================================================
         
         # =====================================================================
         # Create csv with number of assets in each bin
@@ -607,14 +633,25 @@ class StrategyFormation:
         # =====================================================================
         # store the weights:  return the column with ID 
         # =====================================================================  
-        rank_ = It1[['ID','ptf_rank']]
+        rank_ = It1[['ID','ptf_rank','ret']]
         rank = rank_.copy()
         rank['count'] = rank.groupby('ptf_rank')['ID'].transform('count')
         rank['eweights'] = 1 / rank['count']
         rank = rank.merge(It1[['ID', 'weights']], on='ID')
         rank = rank.rename(columns={"weights":"vweights"})
         _weights = rank[['ID','ptf_rank','eweights','vweights']]
-                        
+        
+        # scale returns
+        retscaled = rank.copy()
+        # merge with bins returns
+        retscaled = retscaled.merge(ptf_ret_ew.to_frame(name='ewret').reset_index(), on ="ptf_rank",how="left")
+        retscaled = retscaled.merge(ptf_ret_vw.to_frame(name='vwret').reset_index(), on ="ptf_rank",how="left")    
+        
+        retscaled["ewret_scaled"] = ((1 + retscaled['ret'])/ (1+retscaled['ewret']))/retscaled["count"]
+        retscaled["vwret_scaled"] = ((1 + retscaled['ret'])/ (1+retscaled['vwret'])) * retscaled["vweights"]
+        _weights_scaled = retscaled[['ID','ptf_rank','ewret_scaled','vwret_scaled']]
+        _weights_scaled = _weights_scaled.rename(columns={'ewret_scaled':'eweights','vwret_scaled':'vweights'})
+         
         # reindex         
         nport_idx = range(1,int(nportmax+1))
         ptf_ret_ew = ptf_ret_ew.reindex(nport_idx)
@@ -647,9 +684,9 @@ class StrategyFormation:
                 vw_chars = pd.concat([vw_chars,c_vw],axis=1)
             
             vw_chars.columns = ew_chars.columns
-            return ewl, vwl,_weights, (ew_chars,vw_chars)
+            return ewl, vwl,(_weights,_weights_scaled), (ew_chars,vw_chars)
         else:
-            return ewl, vwl,_weights
+            return ewl, vwl,(_weights,_weights_scaled)
     
     @staticmethod
     def compute_rank_idx(sortvar,thres,nport):
@@ -715,11 +752,11 @@ class StrategyFormation:
             array_vw[t + h - 1, h - 1, p - 1, ID - 1] = vweights
             
     @staticmethod  
-    def compute_turnover(weights):
+    def compute_turnover(w,w_scaled):
         #  Portfolio weight changes: Subtract return-adjusted weights (lagged) from weights;
-        abs_dewport_weight = abs(weights[1:,:,:,:] - weights[:-1,:,:,:])
+        abs_dewport_weight = np.abs(w[1:,:,:,:] - w_scaled[:-1,:,:,:])
         port_turn_hor    = np.sum(abs_dewport_weight, axis=3)
-        mean_port_turn_hor = np.mean(port_turn_hor, axis=1)
+        mean_port_turn_hor = np.nanmean(port_turn_hor, axis=1)
         port_turn = np.squeeze(mean_port_turn_hor)
         return port_turn
     
@@ -803,7 +840,20 @@ class StrategyFormation:
             return None           
         return self.ewturnover_ep_df,self.vwturnover_ep_df
     
-    
+    def get_chars(self):
+        if self.chars:
+            return self.ew_chars_ea, self.vw_chars_ea
+        else:
+            warnings.warn("No characteristic specified", UserWarning)
+            return None, None
+        
+    def get_chars_ex_post(self):
+        if self.chars and self.adj:
+            return self.ew_chars_ep, self.vw_chars_ep
+        else:
+            warnings.warn("No characteristic specified / no filtering", UserWarning)
+            return None, None  
+         
     def set_factors(self,factors):
         """
         set K factors
