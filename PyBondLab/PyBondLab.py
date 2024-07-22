@@ -22,32 +22,37 @@ def load_breakpoints_WRDS() -> pd.DataFrame:
     return load()
 
 class StrategyFormation:
-    def __init__(self, data: pd.DataFrame,strategy: Strategy, rating: str = None, filters: dict = None):
+    def __init__(self, data: pd.DataFrame,strategy: Strategy, rating: str = None, chars: dict = None, dynamic_weights: bool = False, filters: dict = None):
         
         self.data_raw = data.copy()
         self.data = data.copy()
         # self.datelist = pd.Series(self.data['date'].unique()).sort_values().tolist()
         self.datelist = pd.Series(self.data['date'].unique()).sort_values().tolist() if 'date' in self.data.columns else None
-            
+        
+        # STRATEGY PARAMETERS
         self.strategy = strategy
         self.nport = strategy.nport
-        self.rating = rating
-        self.filters = filters if filters else {}
         
+        # RATING, CHARS, WEIGHTS
+        self.rating = rating                  # All, Investment Grade or Non-Investment grade bonds
+        self.chars = chars if chars else {}   # used to compute stats for portfolio bins
+        self.dynamic_weights = dynamic_weights 
+        
+        # PARAMETERS FOR FILTERS/ADJUSTMENTS
+        self.filters = filters if filters else {}
         self.adj = self.filters.get('adj')
         self.w = self.filters.get('level')
         self.loc = self.filters.get('location')
         self.percentile_breakpoints = self.filters.get('df_breakpoints') if self.adj == 'wins' else None
         self.price_threshold = self.filters.get('price_threshold', 25) if self.adj == 'price' else None
-        # stratey params
-                
+        
+        # CREATE NAMES         
         if self.rating is None:
             self.name = "ALL_" + self.strategy.str_name
         else:
             self.name = f"{self.rating}_" + self.strategy.str_name
             
-        # initialize df 
-        
+        # INITIALIZE DFs      
         self.ewls_ep_df = None 
         self.vwls_ep_df = None
     
@@ -93,6 +98,7 @@ class StrategyFormation:
         ID = dict(zip(np.unique(self.data["ID"]).tolist(),np.arange(1,N+1)))
         self.unique_bonds = N
         self.data["ID"] = self.data["ID"].apply(lambda x: ID[x])
+        self.data_raw["ID"] = self.data_raw["ID"].apply(lambda x: ID[x])
         
         self.compute_signal()
         self.portfolio_formation()
@@ -213,7 +219,15 @@ class StrategyFormation:
         # weights
         self.ewport_weight_hor_ea = np.zeros((TM, hor, tot_nport,unique_bonds))
         self.vwport_weight_hor_ea = np.zeros((TM, hor, tot_nport,unique_bonds))
-
+        
+        # storing for chars of bins
+        if self.chars:
+            ew_ea_chars_dict = {}
+            vw_ea_chars_dict = {}
+            for char in self.chars:
+                ew_ea_chars_dict[char] = np.full((TM, hor, tot_nport), np.nan)
+                vw_ea_chars_dict[char] = np.full((TM, hor, tot_nport), np.nan)
+            
         if adj:
             ewport_hor_ep = np.full((TM, hor, tot_nport), np.nan)
             vwport_hor_ep = np.full((TM, hor, tot_nport), np.nan) 
@@ -221,9 +235,17 @@ class StrategyFormation:
             # weights
             self.ewport_weight_hor_ep = np.zeros((TM, hor, tot_nport,unique_bonds))
             self.vwport_weight_hor_ep = np.zeros((TM, hor, tot_nport,unique_bonds))
+            
+            if self.chars:
+                ew_ep_chars_dict = {}
+                vw_ep_chars_dict = {}
+                for char in self.chars:
+                    ew_ep_chars_dict[char] = np.full((TM, hor, tot_nport), np.nan)
+                    vw_ep_chars_dict[char] = np.full((TM, hor, tot_nport), np.nan)
         
         # for t in range((hor+1), TM - hor): to discuss this!
         for t in range( TM - hor):
+            print(t)
             # =====================================================================
             # Filter based on ratings and signal != nan
             # =====================================================================
@@ -283,14 +305,16 @@ class StrategyFormation:
             for h in range(1, hor + 1):
                 # Investment universe for ret computation
                 It1 = self.data_raw[(self.data_raw['date'] == self.datelist[t + h])& (~self.data_raw[ret_var].isna())]
+                # Dynamically get the mv for different horizons
+                It1m = tab[(tab['date'] == self.datelist[t + h - 1]) & (~tab['VW'].isna())]   
                 
                 if adj == 'wins' and 'signal' in sort_var:
                     # TODO can be removed
                     # use winsorized returns to assign to ptfs
-                    port_ret_ea = self.port_sorted_ret(It0, It1,ret_var, sort_var,DoubleSort=DoubleSort,sig2 = sort_var2,nport2 = nport2 )
+                    port_ret_ea = self.port_sorted_ret(It0, It1,It1m,ret_var, sort_var,DoubleSort=DoubleSort,sig2 = sort_var2,nport2 = nport2 )
                 else:
                     # if signal is not in sort_var, we do not use winsorized returns to sort portfolios
-                    port_ret_ea = self.port_sorted_ret(It0, It1,ret_var, sort_var,DoubleSort=DoubleSort,sig2 = sort_var2,nport2 = nport2 )
+                    port_ret_ea = self.port_sorted_ret(It0, It1,It1m,ret_var, sort_var,DoubleSort=DoubleSort,sig2 = sort_var2,nport2 = nport2 )
                 
                 # storing returns
                 ewport_hor_ea[t + h, h - 1, :] = port_ret_ea[0]
@@ -298,9 +322,15 @@ class StrategyFormation:
                 # storing weights: todo give option for this
                 weights = port_ret_ea[2]
                 self.fill_weights(weights, self.ewport_weight_hor_ea,self.vwport_weight_hor_ea, t, h)
-
-                
-                
+                # storing chars
+                if self.chars:
+                    # unpack
+                    chars_ea = port_ret_ea[3]
+                    for idx, c in enumerate(self.chars):
+                        # store 
+                        ew_ea_chars_dict[c][t + h,h-1,:] = chars_ea[0][c]
+                        vw_ea_chars_dict[c][t + h,h-1,:] = chars_ea[1][c]
+            
                 if adj:
                     if adj == 'wins':
                         It2 = tab_ex_post_wins[(tab_ex_post_wins['date'] == self.datelist[t + h]) & (~tab_ex_post_wins[ret_var].isna())]
@@ -308,7 +338,7 @@ class StrategyFormation:
                         It2 = tab[(tab['date'] == self.datelist[t + h]) & (~tab[ret_var + "_" + adj].isna())]
 
                     
-                    port_ret_ep = self.port_sorted_ret(It0, It2,ret_var + "_" + adj, sort_var,DoubleSort=DoubleSort,sig2 = sort_var2,nport2 = nport2 )
+                    port_ret_ep = self.port_sorted_ret(It0, It2,It1m,ret_var + "_" + adj, sort_var,DoubleSort=DoubleSort,sig2 = sort_var2,nport2 = nport2 )
                     
                     # storing returns
                     ewport_hor_ep[t + h, h - 1, :] = port_ret_ep[0]
@@ -316,8 +346,15 @@ class StrategyFormation:
                     # storing weights: 
                     weights_ep = port_ret_ep[2]
                     self.fill_weights(weights_ep, self.ewport_weight_hor_ep,self.vwport_weight_hor_ep, t, h)
+                    # storing chars
+                    if self.chars:
+                        # unpack
+                        chars_ep = port_ret_ep[3]
+                        for idx, c in enumerate(self.chars):
+                            # store 
+                            ew_ep_chars_dict[c][t + h,h-1,:] = chars_ep[0][c]
+                            vw_ep_chars_dict[c][t + h,h-1,:] = chars_ep[1][c]                 
                         
-                
         self.ewport_ea = np.mean(ewport_hor_ea, axis=1)
         self.vwport_ea = np.mean(vwport_hor_ea, axis=1)
         if adj:
@@ -395,6 +432,14 @@ class StrategyFormation:
         self.ewturnover_ea_df = pd.DataFrame(ew_port_turn_ea,index = self.datelist[1:], columns = [f"Q{x}" for x in range(1,nport_tot+1)])
         self.vwturnover_ea_df = pd.DataFrame(vw_port_turn_ea,index = self.datelist[1:], columns = [f"Q{x}" for x in range(1,nport_tot+1)])
         
+        # computing chars stats
+        if self.chars:
+            self.ew_chars_ea = {}
+            self.vw_chars_ea = {}
+            for c in self.chars:
+                self.ew_chars_ea[c] = pd.DataFrame(np.mean(ew_ea_chars_dict[c],axis=1),index = self.datelist,columns = [f"Q{x}" for x in range(1,nport_tot+1)]) # mean across horizon
+                self.vw_chars_ea[c] = pd.DataFrame(np.mean(vw_ea_chars_dict[c],axis=1),index = self.datelist,columns = [f"Q{x}" for x in range(1,nport_tot+1)]) # mean across horizon
+        
         if adj:
             if DoubleSort:
                 avg_res_ew = []
@@ -430,8 +475,7 @@ class StrategyFormation:
                 # computing short leg df 
                 self.ewls_ep_short_df = pd.DataFrame(np.vstack(short_leg_ew_ep).T,index = self.datelist, columns = [[str(x)+'_SHORT_EWEP_' + self.name for x in range(1,nport+1)]])
                 self.vwls_ep_short_df = pd.DataFrame(np.vstack(short_leg_vw_ep).T,index = self.datelist, columns = [[str(x)+'_SHORT_VWEP_' + self.name for x in range(1,nport+1)]])
-
-            
+           
             else:      
                 # Long short portfolio
                 self.ewls_ep = self.ewport_ep[:, nport_tot - 1] - self.ewport_ep[:, 0]
@@ -461,9 +505,17 @@ class StrategyFormation:
             self.ewturnover_ep_df = pd.DataFrame(ew_port_turn_ep,index = self.datelist[1:], columns = [f"Q{x}" for x in range(1,nport_tot+1)])
             self.vwturnover_ep_df = pd.DataFrame(vw_port_turn_ep,index = self.datelist[1:], columns = [f"Q{x}" for x in range(1,nport_tot+1)])
             
+            #characteristics
+            if self.chars:
+                self.ew_chars_ep = {}
+                self.vw_chars_ep = {}
+                for c in self.chars:
+                    self.ew_chars_ep[c] = pd.DataFrame(np.mean(ew_ep_chars_dict[c],axis=1),index = self.datelist,columns = [f"Q{x}" for x in range(1,nport_tot+1)]) # mean across horizon
+                    self.vw_chars_ep[c] = pd.DataFrame(np.mean(vw_ep_chars_dict[c],axis=1),index = self.datelist,columns = [f"Q{x}" for x in range(1,nport_tot+1)]) # mean across horizon
+            
             
                 
-    def port_sorted_ret(self, It0, It1, ret_col, sig,**kwargs):
+    def port_sorted_ret(self, It0, It1, It1m, ret_col, sig,**kwargs):
         """
         It0: investment universe that is going to be sorted in portfolios
         It1: investment universe at t+h. Used to compute returns on ptfs
@@ -494,13 +546,23 @@ class StrategyFormation:
         
         id0 = It0['ID']
         id1 = It1['ID']
+        id2 = It1m['ID']
         
-        intersect_ids = id0[id0.isin(id1)]
-        It0 = It0[id0.isin(intersect_ids)].copy()
-        It1 = It1[id1.isin(intersect_ids)].copy() 
+        intersect_ids  = id0[id0.isin(id1)]                     # i1
+        intersect_idsm = intersect_ids[intersect_ids.isin(id2)] # i1m
+        
+        It0  = It0[id0.isin(intersect_idsm)].copy()
+        It1  = It1[id1.isin(intersect_idsm)].copy() 
+        It1m = It1m[id2.isin(intersect_idsm)].copy()
+        
         
         # missing_ids = id0[~id0.isin(id1)]
-        It1['VW'] = It0['VW'].values
+        # It1['VW'] = It0['VW'].values
+        if self.dynamic_weights:
+            It1['VW'] = It1m['VW'].values
+        else:
+            It1['VW'] = It0['VW'].values
+
         
         sortvar = It0[sig]
         # =====================================================================
@@ -541,6 +603,7 @@ class StrategyFormation:
         #     ptf_count_df.to_csv(csv_file_path, mode='w', index=False, header=True)
         # else:
         #     ptf_count_df.to_csv(csv_file_path, mode='a', index=False, header=False)
+        
         # =====================================================================
         # store the weights:  return the column with ID 
         # =====================================================================  
@@ -550,9 +613,9 @@ class StrategyFormation:
         rank['eweights'] = 1 / rank['count']
         rank = rank.merge(It1[['ID', 'weights']], on='ID')
         rank = rank.rename(columns={"weights":"vweights"})
-        
         _weights = rank[['ID','ptf_rank','eweights','vweights']]
-                
+                        
+        # reindex         
         nport_idx = range(1,int(nportmax+1))
         ptf_ret_ew = ptf_ret_ew.reindex(nport_idx)
         ptf_ret_vw = ptf_ret_vw.reindex(nport_idx)
@@ -560,7 +623,33 @@ class StrategyFormation:
         ewl = ptf_ret_ew.to_list()
         vwl = ptf_ret_vw.to_list()
         
-        return ewl, vwl,_weights
+        # =====================================================================
+        # store the chars:  return the column with ID 
+        # =====================================================================  
+        if self.chars:
+            nm = ['ID','ptf_rank','weights']
+            # merge weights and ptf rank
+            sub = It1[nm]
+            It1m = It1m.merge(sub,on="ID")
+            
+            # augment with chars
+            nm += self.chars
+            
+            chars = It1m[nm]
+            ew_chars = pd.DataFrame()
+            vw_chars = pd.DataFrame()
+            
+            for e, c in enumerate(self.chars):
+                c_ew = chars.groupby('ptf_rank')[c].mean()
+                c_vw = chars.groupby('ptf_rank').apply(lambda x: (x[c] * x['weights']).sum())
+                
+                ew_chars = pd.concat([ew_chars,c_ew],axis=1)
+                vw_chars = pd.concat([vw_chars,c_vw],axis=1)
+            
+            vw_chars.columns = ew_chars.columns
+            return ewl, vwl,_weights, (ew_chars,vw_chars)
+        else:
+            return ewl, vwl,_weights
     
     @staticmethod
     def compute_rank_idx(sortvar,thres,nport):
