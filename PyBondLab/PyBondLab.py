@@ -573,7 +573,7 @@ class StrategyFormation:
         
         intersect_ids  = id0[id0.isin(id1)]                     # i1
         intersect_idsm = intersect_ids[intersect_ids.isin(id2)] # i1m
-        
+        # This to go in the if dynamic weights #
         It0  = It0[id0.isin(intersect_idsm)].copy()
         It1  = It1[id1.isin(intersect_idsm)].copy() 
         It1m = It1m[id2.isin(intersect_idsm)].copy()
@@ -584,7 +584,7 @@ class StrategyFormation:
         if self.dynamic_weights:
             It1['VW'] = It1m['VW'].values
         else:
-            It1['VW'] = It0['VW'].values
+            It1['VW'] = It0['VW'].values # Adjust this!
         
         sortvar = It0[sig]
         # =====================================================================
@@ -756,7 +756,9 @@ class StrategyFormation:
         #  Portfolio weight changes: Subtract return-adjusted weights (lagged) from weights;
         abs_dewport_weight = np.abs(w[1:,:,:,:] - w_scaled[:-1,:,:,:])
         port_turn_hor    = np.sum(abs_dewport_weight, axis=3)
-        mean_port_turn_hor = np.nanmean(port_turn_hor, axis=1)
+        # Set any 0 values to np.NaN
+        port_turn_hor[port_turn_hor == 0] = np.nan           # Alex added 23-07-2024 #
+        mean_port_turn_hor = np.mean(port_turn_hor, axis=1)  # Alex changed to np.mean 23-07-2024 #
         port_turn = np.squeeze(mean_port_turn_hor)
         return port_turn
     
