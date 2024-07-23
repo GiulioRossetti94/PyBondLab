@@ -551,7 +551,7 @@ class StrategyFormation:
         # =====================================================================
         # Unpacking if double sorting
         # =====================================================================
-        doubleSort = kwargs.get('DoubleSort', None)
+        double_sort = kwargs.get('DoubleSort', None)
         sig2 = kwargs.get('sig2', None)
         nport2 = kwargs.get('nport2', None)
         
@@ -563,7 +563,7 @@ class StrategyFormation:
         thres = np.percentile(It0[sig], np.linspace(0, 100, nport + 1))        # compute edges for signal
         thres[0] = -np.inf
         
-        if doubleSort:
+        if double_sort:
             thres2 = np.percentile(It0[sig2], np.linspace(0, 100, nport2 + 1))# compute edges for signal2
             thres2[0] = -np.inf
         
@@ -590,7 +590,7 @@ class StrategyFormation:
         # =====================================================================
         # Rank bonds based on signals
         # =====================================================================
-        if doubleSort:
+        if double_sort:
             nportmax = nport * nport2 
             # Double sorting: compute the rank independently
             sortvar2 = It0[sig2]
