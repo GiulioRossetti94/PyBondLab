@@ -249,9 +249,6 @@ class StrategyFormation:
         
         # for t in range((hor+1), TM - hor): to discuss this!
         for t in range( TM - hor):
-            if t==10:
-                print(self.datelist[t])
-            # print(t)
             # =====================================================================
             # Filter based on ratings and signal != nan
             # =====================================================================
@@ -573,17 +570,16 @@ class StrategyFormation:
         
         intersect_ids  = id0[id0.isin(id1)]                     # i1
         intersect_idsm = intersect_ids[intersect_ids.isin(id2)] # i1m
-        # This to go in the if dynamic weights #
-        It0  = It0[id0.isin(intersect_idsm)].copy()
-        It1  = It1[id1.isin(intersect_idsm)].copy() 
-        It1m = It1m[id2.isin(intersect_idsm)].copy()
         
-        
-        # missing_ids = id0[~id0.isin(id1)]
-        # It1['VW'] = It0['VW'].values
         if self.dynamic_weights:
-            It1['VW'] = It1m['VW'].values
+        # This to go in the if dynamic weights #
+            It0  = It0[id0.isin(intersect_idsm)].copy()
+            It1  = It1[id1.isin(intersect_idsm)].copy() 
+            It1m = It1m[id2.isin(intersect_idsm)].copy()
+            It1['VW'] = It1m['VW'].values    
         else:
+            It0 = It0[id0.isin(intersect_ids)].copy()
+            It1 = It1[id1.isin(intersect_ids)].copy() 
             It1['VW'] = It0['VW'].values # Adjust this!
         
         sortvar = It0[sig]
@@ -594,8 +590,8 @@ class StrategyFormation:
             nportmax = nport * nport2 
             # Double sorting: compute the rank independently
             sortvar2 = It0[sig2]
-            idx1 = self.compute_rank_idx(sortvar,thres,nport)
-            idx2 = self.compute_rank_idx(sortvar2,thres2,nport2)      
+            idx1 = self.assign_bond_bins(sortvar,thres,nport)
+            idx2 = self.assign_bond_bins(sortvar2,thres2,nport2)      
             # if condSort:
             # It1['ptf_rank'] = self.cond_sort(sortvar2, idx1, nport, nport2)#(sortvar2, idx1, n1, n2)
             
@@ -605,7 +601,7 @@ class StrategyFormation:
                     
         else:
             nportmax = nport
-            It1['ptf_rank'] = self.compute_rank_idx(sortvar,thres,nport)
+            It1['ptf_rank'] = self.assign_bond_bins(sortvar,thres,nport)
                                
         It1['weights'] = It1.groupby('ptf_rank')['VW'].apply(lambda x: x / x.sum()).reset_index(level=0, drop=True)
         
@@ -689,7 +685,7 @@ class StrategyFormation:
             return ewl, vwl,(_weights,_weights_scaled)
     
     @staticmethod
-    def compute_rank_idx(sortvar,thres,nport):
+    def assign_bond_bins(sortvar,thres,nport):
         idx = np.full(sortvar.shape, np.nan)
         for p in range(nport):
             f = (sortvar > thres[p]) & (sortvar <= thres[p + 1])
@@ -735,7 +731,7 @@ class StrategyFormation:
             # Sort within each of the portfolios sorted based on the first variable
             temp = np.copy(sortvar2)
             temp[idx1 != i] = np.nan
-            temp_ind = StrategyFormation.compute_rank_idx(temp,thres, n2)
+            temp_ind = StrategyFormation.assign_bond_bins(temp,thres, n2)
             n2 = int(np.nanmax(temp_ind))
             idx[(idx1 == i) & (temp_ind > 0)] = temp_ind[(idx1 == i) & (temp_ind > 0)] + n2 * (i - 1)
         return idx
