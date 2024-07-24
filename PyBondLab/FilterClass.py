@@ -61,22 +61,22 @@ class Filter:
         adj = 'trim'
         if isinstance(w, list) and len(w) == 2:
             lower_bound, upper_bound = w
-            self.data[f"ret_{adj}"] = np.where((self.data['ret'] > upper_bound) | (self.data['ret'] < lower_bound), np.NaN, self.data['ret'])          
+            self.data[f"ret_{adj}"] = np.where((self.data['ret'] > upper_bound) | (self.data['ret'] < lower_bound), np.nan, self.data['ret'])          
         elif w >= 0:
-            self.data[f"ret_{adj}"] = np.where(self.data['ret'] > w, np.NaN, self.data['ret'])
+            self.data[f"ret_{adj}"] = np.where(self.data['ret'] > w, np.nan, self.data['ret'])
         else:
-            self.data[f"ret_{adj}"] = np.where(self.data['ret'] < w, np.NaN, self.data['ret'])
+            self.data[f"ret_{adj}"] = np.where(self.data['ret'] < w, np.nan, self.data['ret'])
         self.data[f"ret_{adj}"] = pd.to_numeric(self.data[f"ret_{adj}"])
 
     def _pricefilter(self, w):
         adj = 'price'
         if isinstance(w, list) and len(w) == 2:
             lower_bound, upper_bound = w
-            self.data[f"ret_{adj}"] = np.where((self.data['PRICE'] > upper_bound) | (self.data['PRICE'] < lower_bound), np.NaN, self.data['ret'])              
+            self.data[f"ret_{adj}"] = np.where((self.data['PRICE'] > upper_bound) | (self.data['PRICE'] < lower_bound), np.nan, self.data['ret'])              
         elif w >= self.price_threshold:
-            self.data[f"ret_{adj}"] = np.where(self.data['PRICE'] > w, np.NaN, self.data['ret'])
+            self.data[f"ret_{adj}"] = np.where(self.data['PRICE'] > w, np.nan, self.data['ret'])
         else:
-            self.data[f"ret_{adj}"] = np.where(self.data['PRICE'] < w, np.NaN, self.data['ret'])
+            self.data[f"ret_{adj}"] = np.where(self.data['PRICE'] < w, np.nan, self.data['ret'])
 
     def _bounce(self, w):
         adj = 'bounce'
@@ -84,11 +84,11 @@ class Filter:
         self.data['bounce'] = self.data['ret_LAG'] * self.data['ret']
         if isinstance(w, list) and len(w) == 2:
             lower_bound, upper_bound = w
-            self.data[f"ret_{adj}"] = np.where((self.data['bounce'] > upper_bound) | (self.data['bounce'] < lower_bound), np.NaN, self.data['ret'])              
+            self.data[f"ret_{adj}"] = np.where((self.data['bounce'] > upper_bound) | (self.data['bounce'] < lower_bound), np.nan, self.data['ret'])              
         elif w >= 0:
-            self.data[f"ret_{adj}"] = np.where(self.data['bounce'] > w, np.NaN, self.data['ret'])
+            self.data[f"ret_{adj}"] = np.where(self.data['bounce'] > w, np.nan, self.data['ret'])
         else:
-            self.data[f"ret_{adj}"] = np.where(self.data['bounce'] < w, np.NaN, self.data['ret'])
+            self.data[f"ret_{adj}"] = np.where(self.data['bounce'] < w, np.nan, self.data['ret'])
 
     def _winsorizing(self, w):
         adj = 'wins'
