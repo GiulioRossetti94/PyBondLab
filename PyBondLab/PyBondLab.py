@@ -374,8 +374,6 @@ class StrategyFormation:
         if adj:
             self.ewport_ep = np.mean(ewport_hor_ep, axis=1)
             self.vwport_ep = np.mean(vwport_hor_ep, axis=1)    
-            
-        nport_tot = len(port_ret_ea[0][0])   # this is nport1 x nport2
 
         # Compute portfolio returns
         if DoubleSort:  
@@ -416,14 +414,14 @@ class StrategyFormation:
             self.vwls_ea_short_df = pd.DataFrame(np.vstack(short_leg_vw_ea).T,index = self.datelist, columns = [[str(x)+'_SHORT_VWEA_' + self.name for x in range(1,nport+1)]])
         else:           
             # computing long leg
-            EWlong_leg_ea = self.ewport_ea[:, nport_tot - 1]
-            VWlong_leg_ea = self.vwport_ea[:, nport_tot - 1]
+            EWlong_leg_ea = self.ewport_ea[:, tot_nport - 1]
+            VWlong_leg_ea = self.vwport_ea[:, tot_nport - 1]
             # computing short leg            
             EWshort_leg_ea = self.ewport_ea[:, 0]
             VWshort_leg_ea = self.vwport_ea[:, 0]          
             # Long short portfolio
-            self.vwls_ea = self.vwport_ea[:, nport_tot - 1] - self.vwport_ea[:, 0]
-            self.ewls_ea = self.ewport_ea[:, nport_tot - 1] - self.ewport_ea[:, 0]
+            self.vwls_ea = self.vwport_ea[:, tot_nport - 1] - self.vwport_ea[:, 0]
+            self.ewls_ea = self.ewport_ea[:, tot_nport - 1] - self.ewport_ea[:, 0]
             # computing long leg df
             self.ewls_ea_long_df = pd.DataFrame(EWlong_leg_ea,index = self.datelist, columns = ['LONG_EWEA_' + self.name]) 
             self.vwls_ea_long_df = pd.DataFrame(VWlong_leg_ea,index = self.datelist, columns = ['LONG_VWEA_' + self.name]) 
@@ -444,16 +442,16 @@ class StrategyFormation:
             ew_port_turn_ea = self.compute_turnover(self.ewport_weight_hor_ea,self.ewport_weight_hor_ea_scaled)
             vw_port_turn_ea = self.compute_turnover(self.vwport_weight_hor_ea,self.vwport_weight_hor_ea_scaled)
         
-            self.ewturnover_ea_df = pd.DataFrame(ew_port_turn_ea,index = self.datelist[1:], columns = [f"Q{x}" for x in range(1,nport_tot+1)])
-            self.vwturnover_ea_df = pd.DataFrame(vw_port_turn_ea,index = self.datelist[1:], columns = [f"Q{x}" for x in range(1,nport_tot+1)])
+            self.ewturnover_ea_df = pd.DataFrame(ew_port_turn_ea,index = self.datelist[1:], columns = [f"Q{x}" for x in range(1,tot_nport+1)])
+            self.vwturnover_ea_df = pd.DataFrame(vw_port_turn_ea,index = self.datelist[1:], columns = [f"Q{x}" for x in range(1,tot_nport+1)])
         
         # computing chars stats
         if self.chars:
             self.ew_chars_ea = {}
             self.vw_chars_ea = {}
             for c in self.chars:
-                self.ew_chars_ea[c] = pd.DataFrame(np.mean(ew_ea_chars_dict[c],axis=1),index = self.datelist,columns = [f"Q{x}" for x in range(1,nport_tot+1)]) # mean across horizon
-                self.vw_chars_ea[c] = pd.DataFrame(np.mean(vw_ea_chars_dict[c],axis=1),index = self.datelist,columns = [f"Q{x}" for x in range(1,nport_tot+1)]) # mean across horizon
+                self.ew_chars_ea[c] = pd.DataFrame(np.mean(ew_ea_chars_dict[c],axis=1),index = self.datelist,columns = [f"Q{x}" for x in range(1,tot_nport+1)]) # mean across horizon
+                self.vw_chars_ea[c] = pd.DataFrame(np.mean(vw_ea_chars_dict[c],axis=1),index = self.datelist,columns = [f"Q{x}" for x in range(1,tot_nport+1)]) # mean across horizon
         
         if adj:
             if DoubleSort:
@@ -493,12 +491,12 @@ class StrategyFormation:
            
             else:      
                 # Long short portfolio
-                self.ewls_ep = self.ewport_ep[:, nport_tot - 1] - self.ewport_ep[:, 0]
-                self.vwls_ep = self.vwport_ep[:, nport_tot - 1] - self.vwport_ep[:, 0]
+                self.ewls_ep = self.ewport_ep[:, tot_nport - 1] - self.ewport_ep[:, 0]
+                self.vwls_ep = self.vwport_ep[:, tot_nport - 1] - self.vwport_ep[:, 0]
                 
                 # computing long leg
-                EWlong_leg_ep = self.ewport_ep[:, nport_tot - 1]
-                VWlong_leg_ep = self.vwport_ep[:, nport_tot - 1]
+                EWlong_leg_ep = self.ewport_ep[:, tot_nport - 1]
+                VWlong_leg_ep = self.vwport_ep[:, tot_nport - 1]
                 
                 # computing short leg            
                 EWshort_leg_ep = self.ewport_ep[:, 0]
@@ -522,16 +520,16 @@ class StrategyFormation:
                 ew_port_turn_ep = self.compute_turnover(self.ewport_weight_hor_ep,self.ewport_weight_hor_ep_scaled)
                 vw_port_turn_ep = self.compute_turnover(self.vwport_weight_hor_ep,self.vwport_weight_hor_ep_scaled)
             
-                self.ewturnover_ep_df = pd.DataFrame(ew_port_turn_ep,index = self.datelist[1:], columns = [f"Q{x}" for x in range(1,nport_tot+1)])
-                self.vwturnover_ep_df = pd.DataFrame(vw_port_turn_ep,index = self.datelist[1:], columns = [f"Q{x}" for x in range(1,nport_tot+1)])
+                self.ewturnover_ep_df = pd.DataFrame(ew_port_turn_ep,index = self.datelist[1:], columns = [f"Q{x}" for x in range(1,tot_nport+1)])
+                self.vwturnover_ep_df = pd.DataFrame(vw_port_turn_ep,index = self.datelist[1:], columns = [f"Q{x}" for x in range(1,tot_nport+1)])
             
             #characteristics
             if self.chars:
                 self.ew_chars_ep = {}
                 self.vw_chars_ep = {}
                 for c in self.chars:
-                    self.ew_chars_ep[c] = pd.DataFrame(np.mean(ew_ep_chars_dict[c],axis=1),index = self.datelist,columns = [f"Q{x}" for x in range(1,nport_tot+1)]) # mean across horizon
-                    self.vw_chars_ep[c] = pd.DataFrame(np.mean(vw_ep_chars_dict[c],axis=1),index = self.datelist,columns = [f"Q{x}" for x in range(1,nport_tot+1)]) # mean across horizon
+                    self.ew_chars_ep[c] = pd.DataFrame(np.mean(ew_ep_chars_dict[c],axis=1),index = self.datelist,columns = [f"Q{x}" for x in range(1,tot_nport+1)]) # mean across horizon
+                    self.vw_chars_ep[c] = pd.DataFrame(np.mean(vw_ep_chars_dict[c],axis=1),index = self.datelist,columns = [f"Q{x}" for x in range(1,tot_nport+1)]) # mean across horizon
             
             
     def port_sorted_ret(self, It0, It1, It1m, ret_col, sig,**kwargs):
