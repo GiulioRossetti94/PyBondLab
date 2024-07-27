@@ -57,8 +57,8 @@ class StrategyFormation:
         self.ewls_ep_df = None 
         self.vwls_ep_df = None
     
-    def fit(self, *, IDvar=None, DATEvar=None, RETvar=None, PRICEvar=None, Wvar = None):
-        if IDvar or DATEvar or RETvar or PRICEvar:
+    def fit(self, *, IDvar=None, DATEvar=None, RETvar=None, PRICEvar=None, RATINGvar = None ,Wvar = None):
+        if IDvar or DATEvar or RETvar or PRICEvar or RATINGvar or Wvar:
             # here check if a "ret" column is present 
             if RETvar and "ret" in self.data.columns:
                 self.data.drop(columns="ret", inplace=True)
@@ -75,6 +75,10 @@ class StrategyFormation:
             if DATEvar and "date" in self.data.columns: 
                 self.data.drop(columns="date", inplace=True)
                 self.data_raw.drop(columns="date", inplace=True)
+            if RATINGvar and "RATING_NUM" in self.data.columns:
+                self.data.drop(columns="RATING_NUM", inplace=True)
+                self.data_raw.drop(columns="RATING_NUM", inplace=True)
+                warnings.warn("Column 'RATING_NUM' already exists. It will be overwritten.", UserWarning)
             if Wvar and "VW" in self.data.columns:
                 self.data.drop(columns="VW", inplace=True)
                 self.data_raw.drop(columns="VW", inplace=True)
@@ -84,9 +88,11 @@ class StrategyFormation:
                 self.data_raw['VW'] = 1
                 warnings.warn("Column 'VW' does not exist. Setting VW = 1 (i.e. equal weights)", UserWarning)
 
-            self.rename_id(IDvar=IDvar, DATEvar=DATEvar, RETvar=RETvar, PRICEvar=PRICEvar, Wvar = Wvar)
+            self.rename_id(IDvar=IDvar, DATEvar=DATEvar, RETvar=RETvar, RATINGvar=RATINGvar, PRICEvar=PRICEvar, Wvar = Wvar)
         
-        required_columns = ['ID', 'date', 'ret']               
+        required_columns = ['ID', 'date', 'ret']       
+        if self.rating:
+            required_columns.append('RATING_NUM')        
         if self.adj == 'price':
             required_columns.append('PRICE')
             
@@ -100,12 +106,14 @@ class StrategyFormation:
         self.unique_bonds = N
         self.data["ID"] = self.data["ID"].apply(lambda x: ID[x])
         self.data_raw["ID"] = self.data_raw["ID"].apply(lambda x: ID[x])
+
+        # select relevant columns
         
         self.compute_signal()
         self.portfolio_formation()
         return self
     
-    def rename_id(self, *, IDvar=None, DATEvar=None,RETvar=None, PRICEvar=None, Wvar = None):
+    def rename_id(self, *, IDvar=None, DATEvar=None,RETvar=None,RATINGvar=None, PRICEvar=None, Wvar = None):
         """
         rename columns to ensure consistency with col names
 
@@ -118,6 +126,8 @@ class StrategyFormation:
             mapping[DATEvar] = 'date'
         if RETvar:
             mapping[RETvar] = 'ret'
+        if RATINGvar:
+            mapping[RATINGvar] = 'RATING_NUM'
         if PRICEvar:
             mapping[PRICEvar] = 'PRICE'
         if Wvar:
