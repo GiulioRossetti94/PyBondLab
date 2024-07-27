@@ -90,9 +90,9 @@ class StrategyFormation:
 
             self.rename_id(IDvar=IDvar, DATEvar=DATEvar, RETvar=RETvar, RATINGvar=RATINGvar, PRICEvar=PRICEvar, Wvar = Wvar)
         
-        required_columns = ['ID', 'date', 'ret']       
-        if self.rating:
-            required_columns.append('RATING_NUM')        
+        required_columns = ['ID', 'date', 'ret','RATING_NUM']       
+        # if self.rating:
+        #     required_columns.append('RATING_NUM')        
         if self.adj == 'price':
             required_columns.append('PRICE')
             
@@ -628,6 +628,8 @@ class StrategyFormation:
         ptf_ret_ew = It1.groupby('ptf_rank')[ret_col].mean()
         ptf_ret_vw = It1.groupby('ptf_rank').apply(lambda x: (x[ret_col] * x['weights']).sum())
 
+        nport_idx = range(1,int(nportmax+1))  # index for the number of portfolios
+
         # =====================================================================
         # Create csv with number of assets in each bin
         # =====================================================================
@@ -665,7 +667,7 @@ class StrategyFormation:
             _weights_scaled = _weights_scaled.rename(columns={'ewret_scaled':'eweights','vwret_scaled':'vweights'})
          
         # reindex         
-        nport_idx = range(1,int(nportmax+1))
+        
         ptf_ret_ew = ptf_ret_ew.reindex(nport_idx)
         ptf_ret_vw = ptf_ret_vw.reindex(nport_idx)
        
@@ -691,7 +693,10 @@ class StrategyFormation:
             for e, c in enumerate(self.chars):
                 c_ew = chars.groupby('ptf_rank')[c].mean()
                 c_vw = chars.groupby('ptf_rank').apply(lambda x: (x[c] * x['weights']).sum())
-                
+                # reindex to avoid problems when one of the bins is empty
+                c_ew = c_ew.reindex(nport_idx)
+                c_vw = c_vw.reindex(nport_idx)
+
                 ew_chars = pd.concat([ew_chars,c_ew],axis=1)
                 vw_chars = pd.concat([vw_chars,c_vw],axis=1)
             
