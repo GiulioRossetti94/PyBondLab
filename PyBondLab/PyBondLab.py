@@ -35,7 +35,7 @@ class StrategyFormation:
         
         # RATING, CHARS, WEIGHTS
         self.rating = rating                  # All, Investment Grade or Non-Investment grade bonds
-        self.chars = chars if chars else {}   # used to compute stats for portfolio bins
+        self.chars = chars if chars else None   # used to compute stats for portfolio bins
         self.dynamic_weights = dynamic_weights 
         self.turnover = turnover              # compute turnover. False by default to speed up computations
         
@@ -90,11 +90,13 @@ class StrategyFormation:
 
             self.rename_id(IDvar=IDvar, DATEvar=DATEvar, RETvar=RETvar, RATINGvar=RATINGvar, PRICEvar=PRICEvar, Wvar = Wvar)
         
-        required_columns = ['ID', 'date', 'ret','RATING_NUM']       
+        required_columns = ['ID', 'date', 'ret','RATING_NUM','VW']       
         # if self.rating:
         #     required_columns.append('RATING_NUM')        
         if self.adj == 'price':
             required_columns.append('PRICE')
+        if self.chars:
+            required_columns += self.chars 
             
         missing_columns = [col for col in required_columns if col not in self.data.columns]    
         if missing_columns:
@@ -102,12 +104,24 @@ class StrategyFormation:
         
         # force the IDs to be numbers. Needed to facilitate storing results
         N = len(np.unique(self.data["ID"]))
-        ID = dict(zip(np.unique(self.data["ID"]).tolist(),np.arange(1,N+1)))
         self.unique_bonds = N
-        self.data["ID"] = self.data["ID"].apply(lambda x: ID[x])
-        self.data_raw["ID"] = self.data_raw["ID"].apply(lambda x: ID[x])
+        # ID = dict(zip(np.unique(self.data["ID"]).tolist(),np.arange(1,N+1)))
+        
+        # self.data["ID"] = self.data["ID"].apply(lambda x: ID[x])
+        # self.data_raw["ID"] = self.data_raw["ID"].apply(lambda x: ID[x])
 
         # select relevant columns
+        signal_col = self.strategy.get_sort_var()
+        if signal_col in self.data.columns and signal_col not in required_columns:
+            required_columns.append(signal_col)
+
+        self.data = self.data[required_columns]
+        self.data_raw = self.data_raw[required_columns]
+
+        # self.data['index'] = range(1,(len(self.data)+1))
+        # self.data_raw['index'] = range(1,(len(self.data_raw)+1))
+
+        self.required_columns = required_columns
         
         self.compute_signal()
         self.portfolio_formation()
@@ -323,6 +337,10 @@ class StrategyFormation:
                 It1 = self.data_raw[(self.data_raw['date'] == self.datelist[t + h])& (~self.data_raw[ret_var].isna())]
                 # Dynamically get the mv for different horizons
                 It1m = tab[(tab['date'] == self.datelist[t + h - 1]) & (~tab['VW'].isna())]   
+                # if It1.shape[0] == 0:
+                #     if t > hor:
+                #         print(f"no bonds at time {t}:{self.datelist[t]}. Going to next period.")      
+                #     continue
                 
                 if adj == 'wins' and 'signal' in sort_var:
                     # TODO can be removed
@@ -562,8 +580,8 @@ class StrategyFormation:
         # =====================================================================
         # compute edges for first and second signals
         # =====================================================================
-        time_t   = It0["date"].iloc[0]
-        time_t1 = It1["date"].iloc[0]
+        time_t = It0["date"].iloc[0] if not It0.empty else "no bonds"
+        time_t1 = It1["date"].iloc[0] if not It1.empty else "no bonds"
         nport = self.nport    # number of portfolios
         thres = np.percentile(It0[sig], np.linspace(0, 100, nport + 1))        # compute edges for signal
         thres[0] = -np.inf
@@ -709,7 +727,7 @@ class StrategyFormation:
             if self.turnover:
                 return (ewl, vwl),(_weights,_weights_scaled)
             else:
-                return (ewl, vwl)
+                return (ewl, vwl),(None,None)
     
     @staticmethod
     def assign_bond_bins(sortvar,thres,nport):
@@ -965,9 +983,14 @@ class StrategyFormation:
 
     def stats_bonds_adj(self):
         """
-        get the bonds filtered out
-        
+        Get the bonds filtered out and compute statistics for specified characteristics.
+
+        Returns:
+        pd.DataFrame: DataFrame containing the computed statistics.
         """
+        if self.chars is None:
+            raise ValueError("Please include 'chars' in the parameters.")
+
         adj = self.adj
         if f"ret_{adj}" in self.data.columns:
             if adj == 'wins':
@@ -987,37 +1010,43 @@ class StrategyFormation:
             col_perc = ['mean', 'std', 'min', '25%', '50%', '75%', 'max']
 
             stats_all_ret = df['ret'].describe().to_frame("ALL")
-            stats_all_tmt = df['TMT'].describe().loc[['mean']].to_frame("Avg. TMT").rename(index={'mean':'ALL'})
-            stats_all_amt = df['AMOUNT_OUTSTANDING'].describe().loc[['mean']].to_frame("Avg. AMT. OUT").rename(index={'mean':'ALL'})
+
+            stats_list = []
+            for col in self.chars:
+                stats_col = df[col].describe().loc[['mean']].to_frame(f"Avg. {col.replace('_', ' ').title()}").rename(index={'mean': 'ALL'})
+                stats_list.append(stats_col)
+
             if self.rating is None:
                 df['rating_cat'] = np.where(df['RATING_NUM']>10, 'NIG','IG')
 
-                # df['tmt_cat'] = pd.cut(df['TMT'], bins=[-float('inf'), 5, 12, float('inf')], labels=['short', 'med', 'long'])
-
                 # group by rating category
                 stats_cat_ret = df.groupby(['rating_cat'])['ret'].describe()
-                stats_cat_tmt = df.groupby(['rating_cat'])['TMT'].describe().loc[:,'mean'].to_frame("Avg. TMT")
-                stats_cat_amt = df.groupby(['rating_cat'])['AMOUNT_OUTSTANDING'].describe().loc[:,'mean'].to_frame("Avg. AMT. OUT")
+                stats_cat_list = []
+                for col in self.chars:
+                    stats_cat_col = df.groupby(['rating_cat'])[col].describe().loc[:, 'mean'].to_frame(f"Avg. {col.replace('_', ' ').title()}")
+                    stats_cat_col = pd.concat([stats_cat_col, stats_list[self.chars.index(col)]])
+                    stats_cat_list.append(stats_cat_col)
+
                 # concatenate dfs
-                
-                stats_cat_tmt = pd.concat([stats_cat_tmt,stats_all_tmt])
-                stats_cat_ret = pd.concat([stats_cat_ret,stats_all_ret.T])
-                stats_cat_amt = pd.concat([stats_cat_amt,stats_all_amt])
-                stats = pd.concat([stats_cat_amt,stats_cat_tmt,stats_cat_ret],axis=1)
-                total_count = stats.loc['ALL','count'].sum()
+                stats_cat_ret = pd.concat([stats_cat_ret, stats_all_ret.T])
+                stats = pd.DataFrame()
+                for x in range(len(self.chars)):
+                    stats = pd.concat([stats,stats_cat_list[x]], axis=1)
+                stats = pd.concat([stats,stats_cat_ret],axis =1)
+                total_count = stats.loc['ALL', 'count'].sum()
 
                 stats['count'] = stats['count'].apply(lambda x: f"{int(x)} ({x / total_count * 100:.2f}%)")
             else:
-                stats = pd.concat([stats_all_amt,stats_all_tmt,stats_all_ret.T],axis=1)
+                stats = pd.concat(stats_list + [stats_all_ret.T], axis=1)
             # rearranging and renaming columns
 
             stats[col_perc] = (stats[col_perc]).map(lambda x: f"{x * 100:.2f}%")
-            stats['Avg. AMT. OUT'] = stats['Avg. AMT. OUT'].apply(lambda x: f"{x:,.0f}")
-            stats['Avg. TMT'] = stats['Avg. TMT'].round(3)
+            for col in self.chars:
+                stats[f"Avg. {col.replace('_', ' ').title()}"] = stats[f"Avg. {col.replace('_', ' ').title()}"].apply(lambda x: f"{x:,.2f}")
+            # stats['Avg. TMT'] = stats['Avg. TMT'].round(3)
 
-            stats = stats[['count','Avg. AMT. OUT', 'Avg. TMT' ,'mean', 'std', 'min', '25%', '50%', '75%', 'max', ]]
+            stats = stats[['count'] + [f"Avg. {col.replace('_', ' ').title()}" for col in self.chars] + col_perc]            
             stats.rename(columns={'count':'# Bonds', 'mean':'Avg. Ret', 'std':'Std. Dev.', 'min':'Min', '25%':'25$^{th}$', '50%':'Median', '75%':'75$^{th}$', 'max':'Max'}, inplace=True)
-
 
             return stats
 
