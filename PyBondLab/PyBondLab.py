@@ -110,6 +110,10 @@ class StrategyFormation:
         self.data_raw["ID"] = self.data_raw["ID"].apply(lambda x: ID[x])
 
         # select relevant columns
+        signal_col = self.strategy.get_sort_var()
+        if signal_col in self.data.columns:
+            required_columns.append(signal_col)
+
         self.data = self.data[required_columns]
         self.data_raw = self.data_raw[required_columns]
 
