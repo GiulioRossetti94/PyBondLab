@@ -161,7 +161,7 @@ class StrategyFormation:
         # compute signal
         self.data = self.strategy.compute_signal(self.data) 
         # get params from strategy(
-        print(self.strategy.__strategy_name__)
+        # print(self.strategy.__strategy_name__)
         if self.filters and self.adj in ["trim", "wins", "price", "bounce"]:
             filter_obj = Filter(self.data, self.adj, self.w, self.loc, self.percentile_breakpoints,self.price_threshold)
             self.name += filter_obj.name_filt
