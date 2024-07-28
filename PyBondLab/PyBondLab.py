@@ -103,11 +103,11 @@ class StrategyFormation:
             raise ValueError(f"Missing required columns: {', '.join(missing_columns)}")         
         
         # force the IDs to be numbers. Needed to facilitate storing results
-        N = len(np.unique(self.data["ID"]))
-        ID = dict(zip(np.unique(self.data["ID"]).tolist(),np.arange(1,N+1)))
-        self.unique_bonds = N
-        self.data["ID"] = self.data["ID"].apply(lambda x: ID[x])
-        self.data_raw["ID"] = self.data_raw["ID"].apply(lambda x: ID[x])
+        # N = len(np.unique(self.data["ID"]))
+        # ID = dict(zip(np.unique(self.data["ID"]).tolist(),np.arange(1,N+1)))
+        # self.unique_bonds = N
+        # self.data["ID"] = self.data["ID"].apply(lambda x: ID[x])
+        # self.data_raw["ID"] = self.data_raw["ID"].apply(lambda x: ID[x])
 
         # select relevant columns
         signal_col = self.strategy.get_sort_var()
