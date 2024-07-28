@@ -134,7 +134,7 @@ plt.ylabel('Cumulative ($) Value ', fontsize=14)
 plt.grid(True)
 plt.tight_layout()
 # Customize the plot style
-plt.style.use('seaborn-darkgrid')
+#plt.style.use('seaborn-darkgrid')
 plt.show()
 
 # Import factors for risk-adjustment #
