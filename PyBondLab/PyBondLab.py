@@ -118,6 +118,9 @@ class StrategyFormation:
         self.data = self.data[required_columns]
         self.data_raw = self.data_raw[required_columns]
 
+        # self.data['index'] = range(1,(len(self.data)+1))
+        # self.data_raw['index'] = range(1,(len(self.data_raw)+1))
+
         self.required_columns = required_columns
         
         self.compute_signal()
@@ -158,7 +161,7 @@ class StrategyFormation:
         # compute signal
         self.data = self.strategy.compute_signal(self.data) 
         # get params from strategy(
-        # print(self.strategy.__strategy_name__)
+        print(self.strategy.__strategy_name__)
         if self.filters and self.adj in ["trim", "wins", "price", "bounce"]:
             filter_obj = Filter(self.data, self.adj, self.w, self.loc, self.percentile_breakpoints,self.price_threshold)
             self.name += filter_obj.name_filt
@@ -334,10 +337,10 @@ class StrategyFormation:
                 It1 = self.data_raw[(self.data_raw['date'] == self.datelist[t + h])& (~self.data_raw[ret_var].isna())]
                 # Dynamically get the mv for different horizons
                 It1m = tab[(tab['date'] == self.datelist[t + h - 1]) & (~tab['VW'].isna())]   
-                if It1.shape[0] == 0:
-                    if t > hor:
-                        print(f"no bonds at time {t}:{self.datelist[t]}. Going to next period.")      
-                    continue
+                # if It1.shape[0] == 0:
+                #     if t > hor:
+                #         print(f"no bonds at time {t}:{self.datelist[t]}. Going to next period.")      
+                #     continue
                 
                 if adj == 'wins' and 'signal' in sort_var:
                     # TODO can be removed
