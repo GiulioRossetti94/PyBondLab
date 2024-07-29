@@ -105,10 +105,10 @@ class StrategyFormation:
         # force the IDs to be numbers. Needed to facilitate storing results
         N = len(np.unique(self.data["ID"]))
         self.unique_bonds = N
-        # ID = dict(zip(np.unique(self.data["ID"]).tolist(),np.arange(1,N+1)))
+        ID = dict(zip(np.unique(self.data["ID"]).tolist(),np.arange(1,N+1)))
         
-        # self.data["ID"] = self.data["ID"].apply(lambda x: ID[x])
-        # self.data_raw["ID"] = self.data_raw["ID"].apply(lambda x: ID[x])
+        self.data["ID"] = self.data["ID"].apply(lambda x: ID[x])
+        self.data_raw["ID"] = self.data_raw["ID"].apply(lambda x: ID[x])
 
         # select relevant columns
         signal_col = self.strategy.get_sort_var()
@@ -763,14 +763,18 @@ class StrategyFormation:
     
     @staticmethod
     def fill_weights(weights, array_ew,array_vw, t, h):
-        for _, row in weights.iterrows():
-            p = int(row['ptf_rank'])
-            ID = int(row['ID'])
-            eweights = row['eweights']
-            vweights = row['vweights']
+        p = weights['ptf_rank'].values.astype(int)
+        ID = weights['ID'].values.astype(int)
+        eweights = weights['eweights'].values
+        vweights = weights['vweights'].values
+        # for _, row in weights.iterrows():
+        #     p = int(row['ptf_rank'])
+        #     ID = int(row['ID'])
+        #     eweights = row['eweights']
+        #     vweights = row['vweights']
             
-            array_ew[t + h - 1, h - 1, p - 1, ID - 1] = eweights
-            array_vw[t + h - 1, h - 1, p - 1, ID - 1] = vweights
+        array_ew[t + h - 1, h - 1, p - 1, ID - 1] = eweights
+        array_vw[t + h - 1, h - 1, p - 1, ID - 1] = vweights
             
     @staticmethod  
     def compute_turnover(w,w_scaled):
