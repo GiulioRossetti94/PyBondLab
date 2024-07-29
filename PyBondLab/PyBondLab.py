@@ -105,10 +105,10 @@ class StrategyFormation:
         # force the IDs to be numbers. Needed to facilitate storing results
         N = len(np.unique(self.data["ID"]))
         self.unique_bonds = N
-        # ID = dict(zip(np.unique(self.data["ID"]).tolist(),np.arange(1,N+1)))
+        ID = dict(zip(np.unique(self.data["ID"]).tolist(),np.arange(1,N+1)))
         
-        # self.data["ID"] = self.data["ID"].apply(lambda x: ID[x])
-        # self.data_raw["ID"] = self.data_raw["ID"].apply(lambda x: ID[x])
+        self.data["ID"] = self.data["ID"].apply(lambda x: ID[x])
+        self.data_raw["ID"] = self.data_raw["ID"].apply(lambda x: ID[x])
 
         # select relevant columns
         signal_col = self.strategy.get_sort_var()
@@ -195,15 +195,6 @@ class StrategyFormation:
          
         else:
             sort_var = self.strategy.get_sort_var()
-            # if sort_var == 'signal':
-            #     J = self.strategy.J
-            #     skip = self.strategy.skip
-            #     self.data['logret'] = np.log(self.data['ret'] + 1)
-            #     self.data['signal'] = self.data.groupby(['ID'], group_keys=False)['logret']\
-            #         .rolling(J, min_periods=J).sum().values            
-            #     self.data['signal'] = np.exp(self.data['signal']) - 1
-            #     self.data['signal'] = self.data.groupby("ID")['signal'].shift(skip)
-            
             
                 
     def portfolio_formation(self):
@@ -460,12 +451,6 @@ class StrategyFormation:
         self.ewls_ea_df = pd.DataFrame(self.ewls_ea,index = self.datelist, columns = ['EWEA_' + self.name]) 
         self.vwls_ea_df = pd.DataFrame(self.vwls_ea,index = self.datelist, columns = ['VWEA_' + self.name]) 
         
-        # computing turnover
-        # fill with nan
-        # self.ewport_weight_hor_ea = np.where(self.ewport_weight_hor_ea==0,np.nan,self.ewport_weight_hor_ea)
-        # self.vwport_weight_hor_ea = np.where(self.vwport_weight_hor_ea==0,np.nan,self.vwport_weight_hor_ea)
-        # self.ewport_weight_hor_ea_scaled = np.where(self.ewport_weight_hor_ea_scaled==0,np.nan,self.ewport_weight_hor_ea_scaled)
-        # self.vwport_weight_hor_ea_scaled = np.where(self.vwport_weight_hor_ea_scaled==0,np.nan,self.vwport_weight_hor_ea_scaled)
         if self.turnover:
             ew_port_turn_ea = self.compute_turnover(self.ewport_weight_hor_ea,self.ewport_weight_hor_ea_scaled)
             vw_port_turn_ea = self.compute_turnover(self.vwport_weight_hor_ea,self.vwport_weight_hor_ea_scaled)
@@ -539,11 +524,6 @@ class StrategyFormation:
             self.ewls_ep_df = pd.DataFrame(self.ewls_ep,index = self.datelist,columns = ['EWEP_' + self.name])   
             self.vwls_ep_df = pd.DataFrame(self.vwls_ep,index = self.datelist,columns = ['VWEP_' + self.name])  
             
-            # turnovocer
-            # self.ewport_weight_hor_ep = np.where(self.ewport_weight_hor_ep==0,np.nan,self.ewport_weight_hor_ep)
-            # self.vwport_weight_hor_ep = np.where(self.vwport_weight_hor_ep==0,np.nan,self.vwport_weight_hor_ep)
-            # self.ewport_weight_hor_ep_scaled = np.where(self.ewport_weight_hor_ep_scaled==0,np.nan,self.ewport_weight_hor_ep_scaled)
-            # self.vwport_weight_hor_ep_scaled = np.where(self.vwport_weight_hor_ep_scaled==0,np.nan,self.vwport_weight_hor_ep_scaled)
             if self.turnover:
                 ew_port_turn_ep = self.compute_turnover(self.ewport_weight_hor_ep,self.ewport_weight_hor_ep_scaled)
                 vw_port_turn_ep = self.compute_turnover(self.vwport_weight_hor_ep,self.vwport_weight_hor_ep_scaled)
@@ -783,14 +763,18 @@ class StrategyFormation:
     
     @staticmethod
     def fill_weights(weights, array_ew,array_vw, t, h):
-        for _, row in weights.iterrows():
-            p = int(row['ptf_rank'])
-            ID = int(row['ID'])
-            eweights = row['eweights']
-            vweights = row['vweights']
+        p = weights['ptf_rank'].values.astype(int)
+        ID = weights['ID'].values.astype(int)
+        eweights = weights['eweights'].values
+        vweights = weights['vweights'].values
+        # for _, row in weights.iterrows():
+        #     p = int(row['ptf_rank'])
+        #     ID = int(row['ID'])
+        #     eweights = row['eweights']
+        #     vweights = row['vweights']
             
-            array_ew[t + h - 1, h - 1, p - 1, ID - 1] = eweights
-            array_vw[t + h - 1, h - 1, p - 1, ID - 1] = vweights
+        array_ew[t + h - 1, h - 1, p - 1, ID - 1] = eweights
+        array_vw[t + h - 1, h - 1, p - 1, ID - 1] = vweights
             
     @staticmethod  
     def compute_turnover(w,w_scaled):

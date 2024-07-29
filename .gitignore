@@ -6,7 +6,8 @@ CornerCase_ILLIQ_Characteristics.py
 LTrevDataUncertainty.py
 new_functionlaities.py
 Test_file.py
-
+Test_file_nolog.py
+performance.log
 
 # Distribution / packaging
 .Python
