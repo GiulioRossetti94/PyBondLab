@@ -1,7 +1,11 @@
 .testenv
+.venv
 *.pyc
 
 CornerCase_ILLIQ_Characteristics.py
+LTrevDataUncertainty.py
+new_functionlaities.py
+Test_file.py
 
 
 # Distribution / packaging
