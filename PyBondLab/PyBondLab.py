@@ -305,7 +305,7 @@ class StrategyFormation:
                 else:
                     It0 = It0[It0[ret_var] <= self.w] if self.w > 0 else It0[It0[ret_var] >= self.w]
                     
-            elif adj == ' bounce' and self.w:
+            elif adj == 'bounce' and self.w:
                 if isinstance(self.w, list) and len(self.w) == 2:
                     lower_bound, upper_bound = self.w
                     It0 = It0[(It0['bounce'] <= upper_bound) & (It0['bounce'] >= lower_bound)]
@@ -318,6 +318,11 @@ class StrategyFormation:
                     It0 = It0[(It0['PRICE'] <= upper_bound) & (It0['PRICE'] >= lower_bound)]
                 else:
                     It0 = It0[It0['PRICE'] <= self.w] if self.w > self.price_threshold else It0[It0['PRICE'] >= self.w]
+            # check if after the filter we have bonds
+            if It0.shape[0] == 0:
+                if t > hor:
+                    print(f"no bonds at time {t}:{self.datelist[t]} after adjustment ({self.adj}). Going to next period.")      
+                continue
 
             # =====================================================================
             # start sorting procedure
