@@ -267,28 +267,13 @@ class StrategyFormation:
         
         # for t in range((hor+1), TM - hor): to discuss this!
         for t in range( TM - hor):
-            # =====================================================================
+            date_t = self.datelist[t]
+
             # Filter based on ratings and signal != nan
-            # =====================================================================
-            if self.rating == "NIG":
-                It0 = tab[(tab['date'] == self.datelist[t]) & (~tab[sort_var].isna()) & 
-                          (tab['RATING_NUM'] > 10) & (tab['RATING_NUM'] <= 22)]
-            elif self.rating == "IG":
-                It0 = tab[(tab['date'] == self.datelist[t]) & (~tab[sort_var].isna()) & 
-                          (tab['RATING_NUM'] >= 1) & (tab['RATING_NUM'] <= 10)]
-            else:
-                It0 = tab[(tab['date'] == self.datelist[t]) & (~tab[sort_var].isna())]                 
-        
             if DoubleSort:
-                # here also signal2 != nan
-                if self.rating == "NIG":
-                    It0 = tab[(tab['date'] == self.datelist[t]) & (~tab[sort_var].isna()) & (~tab[sort_var2].isna()) &
-                              (tab['RATING_NUM'] > 10) & (tab['RATING_NUM'] <= 22)]
-                elif self.rating == "IG":
-                    It0 = tab[(tab['date'] == self.datelist[t]) & (~tab[sort_var].isna()) & (~tab[sort_var2].isna()) &
-                              (tab['RATING_NUM'] >= 1) & (tab['RATING_NUM'] <= 10)]
-                else:
-                    It0 = tab[(tab['date'] == self.datelist[t]) & (~tab[sort_var].isna()) & (~tab[sort_var2].isna()) ]                 
+                It0 = self.filter_by_rating(tab, date_t, sort_var, sort_var2)
+            else:
+                It0 = self.filter_by_rating(tab, date_t, sort_var)              
             
             if It0.shape[0] == 0:
                 if t > hor:
@@ -791,6 +776,23 @@ class StrategyFormation:
         mean_port_turn_hor = np.mean(port_turn_hor, axis=1)  # Alex changed to np.mean 23-07-2024 #
         port_turn = np.squeeze(mean_port_turn_hor)
         return port_turn
+    
+    def filter_by_rating(self, tab, date, sort_var, sort_var2=None):
+        # Basic filtering conditions
+        conditions = (tab['date'] == date) & (~tab[sort_var].isna())
+
+        # Add additional conditions based on the rating
+        if self.rating == "NIG":
+            conditions &= (tab['RATING_NUM'] > 10) & (tab['RATING_NUM'] <= 22)
+        elif self.rating == "IG":
+            conditions &= (tab['RATING_NUM'] >= 1) & (tab['RATING_NUM'] <= 10)
+
+        # Add conditions for the second sort variable if DoubleSort is True
+        if sort_var2 is not None:
+            conditions &= ~tab[sort_var2].isna()
+
+        return tab[conditions]
+
     
     # getters 
     def get_long_leg(self):
