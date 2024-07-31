@@ -4,10 +4,23 @@
 
 CornerCase_ILLIQ_Characteristics.py
 LTrevDataUncertainty.py
+LTrevDataUncertainty2.py
 new_functionlaities.py
 Test_file.py
 Test_file_nolog.py
 performance.log
+bounce_debug.py
+OSBAP_Uncertainty.py
+MomDataUncertainty.py 
+ParallelOSBAP.py
+OSBAP_Uncertainty_BOND_AGE.py
+UncertaintyTable/*
+UncertaintyTableRerun/*
+/OLD
+baseline_results/*
+unit_test.py
+unite_test_ep.py
+unite_test_ep_changes.py
 
 # Distribution / packaging
 .Python
