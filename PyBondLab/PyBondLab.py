@@ -275,38 +275,20 @@ class StrategyFormation:
             else:
                 It0 = self.filter_by_rating(tab, date_t, sort_var)              
             
+            # check if at time t we have bonds
             if It0.shape[0] == 0:
                 if t > hor:
-                    print(f"no bonds at time {t}:{self.datelist[t]}. Going to next period.")      
+                    print(f"no bonds at time {t}:{date_t}. Going to next period.")      
                 continue
             
-            # =====================================================================
             # Investment Universe matching
-            # =====================================================================
-            if adj == 'trim' and self.w:
-                if isinstance(self.w, list) and len(self.w) == 2:
-                    lower_bound, upper_bound = self.w
-                    It0 = It0[(It0[ret_var] <= upper_bound) & (It0[ret_var] >= lower_bound)]
-                else:
-                    It0 = It0[It0[ret_var] <= self.w] if self.w > 0 else It0[It0[ret_var] >= self.w]
-                    
-            elif adj == 'bounce' and self.w:
-                if isinstance(self.w, list) and len(self.w) == 2:
-                    lower_bound, upper_bound = self.w
-                    It0 = It0[(It0['bounce'] <= upper_bound) & (It0['bounce'] >= lower_bound)]
-                else:
-                    It0 = It0[It0['bounce'] >= self.w] if self.w < 0 else It0[It0['bounce']<= self.w]
-                    
-            elif adj == 'price' and self.w:
-                if isinstance(self.w, list) and len(self.w) == 2:
-                    lower_bound, upper_bound = self.w
-                    It0 = It0[(It0['PRICE'] <= upper_bound) & (It0['PRICE'] >= lower_bound)]
-                else:
-                    It0 = It0[It0['PRICE'] <= self.w] if self.w > self.price_threshold else It0[It0['PRICE'] >= self.w]
+            if adj in ['trim', 'bounce', 'price']:
+                It0 = self.filter_by_universe_matching(It0, adj, ret_var)
+
             # check if after the filter we have bonds
             if It0.shape[0] == 0:
                 if t > hor:
-                    print(f"no bonds at time {t}:{self.datelist[t]} after adjustment ({self.adj}). Going to next period.")      
+                    print(f"no bonds at time {t}: {date_t} after adjustment ({adj}). Going to next period.")      
                 continue
 
             # =====================================================================
@@ -318,10 +300,6 @@ class StrategyFormation:
                 It1 = self.data_raw[(self.data_raw['date'] == self.datelist[t + h])& (~self.data_raw[ret_var].isna())]
                 # Dynamically get the mv for different horizons
                 It1m = tab[(tab['date'] == self.datelist[t + h - 1]) & (~tab['VW'].isna())]   
-                # if It1.shape[0] == 0:
-                #     if t > hor:
-                #         print(f"no bonds at time {t}:{self.datelist[t]}. Going to next period.")      
-                #     continue
                 
                 if adj == 'wins' and 'signal' in sort_var:
                     # TODO can be removed
@@ -792,6 +770,30 @@ class StrategyFormation:
             conditions &= ~tab[sort_var2].isna()
 
         return tab[conditions]
+    
+    def filter_by_universe_matching(self, It0, adj, ret_var):
+        if adj == 'trim' and self.w:
+            if isinstance(self.w, list) and len(self.w) == 2:
+                lower_bound, upper_bound = self.w
+                It0 = It0[(It0[ret_var] <= upper_bound) & (It0[ret_var] >= lower_bound)]
+            else:
+                It0 = It0[It0[ret_var] <= self.w] if self.w > 0 else It0[It0[ret_var] >= self.w]
+
+        elif adj == 'bounce' and self.w:
+            if isinstance(self.w, list) and len(self.w) == 2:
+                lower_bound, upper_bound = self.w
+                It0 = It0[(It0['bounce'] <= upper_bound) & (It0['bounce'] >= lower_bound)]
+            else:
+                It0 = It0[It0['bounce'] >= self.w] if self.w < 0 else It0[It0['bounce'] <= self.w]
+
+        elif adj == 'price' and self.w:
+            if isinstance(self.w, list) and len(self.w) == 2:
+                lower_bound, upper_bound = self.w
+                It0 = It0[(It0['PRICE'] <= upper_bound) & (It0['PRICE'] >= lower_bound)]
+            else:
+                It0 = It0[It0['PRICE'] <= self.w] if self.w > self.price_threshold else It0[It0['PRICE'] >= self.w]
+                
+        return It0
 
     
     # getters 
