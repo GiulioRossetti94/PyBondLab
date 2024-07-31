@@ -20,7 +20,7 @@ UncertaintyTableRerun/*
 baseline_results/*
 new_results/*
 unit_test.py
-unite_test_ep_single.py
+unit_test_ep_single.py
 unite_test_ep_ALL.py
 unite_test_ep_changes_ALL.py
 
