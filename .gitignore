@@ -1,7 +1,7 @@
 .testenv
 .venv
 *.pyc
-
+.DS_Store
 CornerCase_ILLIQ_Characteristics.py
 LTrevDataUncertainty.py
 LTrevDataUncertainty2.py
