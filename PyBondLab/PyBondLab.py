@@ -284,12 +284,11 @@ class StrategyFormation:
             # Investment Universe matching
             if adj in ['trim', 'bounce', 'price']:
                 It0 = self.filter_by_universe_matching(It0, adj, ret_var)
-
-            # check if after the filter we have bonds
-            if It0.shape[0] == 0:
-                if t > hor:
-                    print(f"no bonds at time {t}: {date_t} after adjustment ({adj}). Going to next period.")      
-                continue
+                # check if after the filter we have bonds
+                if It0.shape[0] == 0:
+                    if t > hor:
+                        print(f"no bonds at time {t}: {date_t} after adjustment ({adj}). Going to next period.")      
+                    continue
 
             # =====================================================================
             # start sorting procedure
