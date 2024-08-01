@@ -26,7 +26,7 @@ class StrategyFormation:
         
         self.data_raw = data.copy()
         self.data = data.copy()
-        # self.datelist = pd.Series(self.data['date'].unique()).sort_values().tolist()
+        # Check if 'date' column exists before creating datelist
         self.datelist = pd.Series(self.data['date'].unique()).sort_values().tolist() if 'date' in self.data.columns else None
         
         # STRATEGY PARAMETERS
@@ -54,8 +54,38 @@ class StrategyFormation:
             self.name = f"{self.rating}_" + self.strategy.str_name
             
         # INITIALIZE DFs      
-        self.ewls_ep_df = None 
-        self.vwls_ep_df = None
+        # ex ante dfs
+        self.ewls_ea_long_df = None
+        self.vwls_ea_long_df = None
+        self.ewls_ea_short_df = None
+        self.vwls_ea_short_df = None
+        self.ewls_ea_df = None
+        self.vwls_ea_df = None
+        self.ewport_ea = None
+        self.vwport_ea = None
+        self.ewport_weight_hor_ea = None
+        self.vwport_weight_hor_ea = None
+        self.ewturnover_ea_df = None
+        self.vwturnover_ea_df = None
+        self.ew_chars_ea = None
+        self.vw_chars_ea = None
+        # es post dfs
+        if filters:
+            self.ewls_ep_df = None 
+            self.vwls_ep_df = None
+            self.ewls_ep_long_df = None
+            self.vwls_ep_long_df = None
+            self.ewls_ep_short_df = None
+            self.vwls_ep_short_df = None
+            self.ewport_ep = None
+            self.vwport_ep = None
+            self.ewport_weight_hor_ep = None
+            self.vwport_weight_hor_ep = None
+            self.ewturnover_ep_df = None
+            self.vwturnover_ep_df = None
+            self.ew_chars_ep = None
+            self.vw_chars_ep = None            
+
     
     def fit(self, *, IDvar=None, DATEvar=None, RETvar=None, PRICEvar=None, RATINGvar = None ,Wvar = None):
         if IDvar or DATEvar or RETvar or PRICEvar or RATINGvar or Wvar:
@@ -795,107 +825,67 @@ class StrategyFormation:
         return It0
 
     
-    # getters 
+    # helper function for getters
+    def _get_dataframes(self, *keys, **kwargs):
+        checks = {
+            'require_filters': lambda: self.filters,
+            'require_turnover': lambda: self.turnover,
+            'require_chars': lambda: self.chars,
+        }
+        
+        for check, condition in checks.items():
+            if kwargs.get(check, False) and not condition():
+                warnings.warn(f"{check.replace('require_', '').capitalize()} are not specified.", UserWarning)
+                return None
+
+        dfs = [getattr(self, key) for key in keys]
+        if any(df is None for df in dfs):
+            warnings.warn("One or more DataFrames have not been initialized.", UserWarning)
+            return None
+        return dfs
+
+    # getters for the results
     def get_long_leg(self):
-        if self.ewls_ea_long_df is None or self.vwls_ea_long_df is None:
-            warnings.warn("The DataFrame has not been initialized.", UserWarning)
-            return None  
-        else:
-            return self.ewls_ea_long_df, self.vwls_ea_long_df
+        return self._get_dataframes("ewls_ea_long_df", "vwls_ea_long_df")
 
     def get_long_leg_ex_post(self):
-        if self.ewls_ea_long_df is None:
-            warnings.warn("The DataFrame has not been initialized.", UserWarning)
-            return None     
-        else:
-            return self.ewls_ep_long_df, self.vwls_ep_long_df
+        return self._get_dataframes("ewls_ep_long_df", "vwls_ep_long_df", require_filters=True)
 
     def get_short_leg(self):
-        if self.ewls_ea_short_df is None or self.vwls_ea_short_df is None:
-            warnings.warn("The DataFrame has not been initialized.", UserWarning)
-            return None     
-        else:
-            return self.ewls_ea_short_df, self.vwls_ea_short_df
+        return self._get_dataframes("ewls_ea_short_df", "vwls_ea_short_df")
 
     def get_short_leg_ex_post(self):
-        if self.ewls_ep_short_df is None or self.vwls_ep_short_df is None:
-            warnings.warn("The DataFrame has not been initialized.", UserWarning)
-            return None   
-        else:
-            return self.ewls_ep_short_df, self.vwls_ep_short_df
-    
-    # Long-Short ptf
+        return self._get_dataframes("ewls_ep_short_df", "vwls_ep_short_df", require_filters=True)
+
     def get_long_short(self):
-        if self.ewls_ea_df is None or self.vwls_ea_df is None:
-            warnings.warn("The DataFrame has not been initialized.", UserWarning)
-            return None   
-        else:
-            return self.ewls_ea_df, self.vwls_ea_df
+        return self._get_dataframes("ewls_ea_df", "vwls_ea_df")
 
     def get_long_short_ex_post(self):
-        if self.ewls_ep_df is None or self.vwls_ep_df is None:
-            warnings.warn("The DataFrame has not been initialized.", UserWarning)
-            return None   
-        else:
-            return self.ewls_ep_df, self.vwls_ep_df
-        
+        return self._get_dataframes("ewls_ep_df", "vwls_ep_df", require_filters=True)
+
     def get_ptf(self):
-        if self.ewport_ea is None or self.vwport_ea is None:
-            warnings.warn("The DataFrame has not been initialized.", UserWarning)
-            return None           
-        return self.ewport_ea,self.vwport_ea
+        return self._get_dataframes("ewport_ea", "vwport_ea")
 
     def get_ptf_ex_post(self):
-        if self.ewport_ep is None or self.vwport_ep is None:
-            warnings.warn("The DataFrame has not been initialized.", UserWarning)
-            return None           
-        return self.ewport_ep,self.vwport_ep
-    
+        return self._get_dataframes("ewport_ep", "vwport_ep", require_filters=True)
+
     def get_ptf_weights(self):
-        if self.ewport_weight_hor_ea is None or self.vwport_weight_hor_ea is None:
-            warnings.warn("The DataFrame has not been initialized.", UserWarning)
-            return None           
-        return self.ewport_weight_hor_ea,self.vwport_weight_hor_ea   
-    
+        return self._get_dataframes("ewport_weight_hor_ea", "vwport_weight_hor_ea")
+
     def get_ptf_weights_ex_post(self):
-        if self.ewport_weight_hor_ep is None or self.vwport_weight_hor_ep is None:
-            warnings.warn("The DataFrame has not been initialized.", UserWarning)
-            return None           
-        return self.ewport_weight_hor_ep,self.vwport_weight_hor_ep  
-    
+        return self._get_dataframes("ewport_weight_hor_ep", "vwport_weight_hor_ep", require_filters=True)
+
     def get_ptf_turnover(self):
-        if self.turnover == False:
-            warnings.warn("Turnover has not been computed.", UserWarning)
-            return None, None
-        elif self.ewturnover_ea_df is None or self.vwturnover_ea_df is None:
-            warnings.warn("The DataFrame has not been initialized.", UserWarning)
-            return None, None
-        else:          
-            return self.ewturnover_ea_df,self.vwturnover_ea_df
+        return self._get_dataframes("ewturnover_ea_df", "vwturnover_ea_df", require_turnover=True)
 
     def get_ptf_turnover_ex_post(self):
-        if self.turnover == False:
-            warnings.warn("Turnover has not been computed.", UserWarning)
-            return None, None
-        elif self.ewturnover_ep_df is None or self.vwturnover_ep_df is None:
-            warnings.warn("The DataFrame has not been initialized.", UserWarning)
-            return None, None
-        else:          
-            return self.ewturnover_ep_df,self.vwturnover_ep_df
-    
+        return self._get_dataframes("ewturnover_ep_df", "vwturnover_ep_df", require_filters=True, require_turnover=True)
+
     def get_chars(self):
-        if self.chars:
-            return self.ew_chars_ea, self.vw_chars_ea
-        else:
-            warnings.warn("No characteristic specified", UserWarning)
-            return None, None
-        
+        return self._get_dataframes("ew_chars_ea", "vw_chars_ea", require_chars=True)
+
     def get_chars_ex_post(self):
-        if self.chars and self.adj:
-            return self.ew_chars_ep, self.vw_chars_ep
-        else:
-            warnings.warn("No characteristic specified / no filtering", UserWarning)
-            return None, None  
+        return self._get_dataframes("ew_chars_ep", "vw_chars_ep", require_filters=True, require_chars=True)
          
     def set_factors(self,factors):
         """
