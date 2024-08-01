@@ -2,28 +2,9 @@
 .venv
 *.pyc
 .DS_Store
-CornerCase_ILLIQ_Characteristics.py
-LTrevDataUncertainty.py
-LTrevDataUncertainty2.py
-new_functionlaities.py
-Test_file.py
-Test_file_nolog.py
-performance.log
-bounce_debug.py
-OSBAP_Uncertainty.py
-MomDataUncertainty.py 
-ParallelOSBAP.py
-OSBAP_Uncertainty_BOND_AGE.py
-UncertaintyTable/*
-UncertaintyTableRerun/*
+
 /OLD
-baseline_results/*
-new_results/*
-new_results_ep/*
-unit_test.py
-unit_test_ep_single.py
-unite_test_ep_ALL.py
-unite_test_ep_changes_ALL.py
+/TEST
 
 # Distribution / packaging
 .Python
