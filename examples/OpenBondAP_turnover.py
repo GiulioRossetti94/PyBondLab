@@ -147,23 +147,23 @@ plt.show()
 
 # Plotting bond_yield
 fig, axes = plt.subplots(3, 2, figsize=(15, 15))
-fig.suptitle('Bond Yield')
+fig.suptitle('Avg Bond Yield for Equal-Weighted Portfolios')
 
 for i, data in enumerate(char_results_ew):
     row, col = divmod(i, 2)
-    data['bond_yield'].plot(ax=axes[row, col], title=Sort_Vars[i])
+    data['bond_yield'].plot(ax=axes[row, col], title=f"portfolio sorted on: {Sort_Vars[i]}")
 fig.subplots_adjust(hspace=0.5)
 
-plt.figure()
+plt.show()
 
 # Plotting cs
 fig, axes = plt.subplots(3, 2, figsize=(15, 15))
-fig.suptitle('CS')
+fig.suptitle('Avg CS for Equal-Weighted Portfolios')
 
 # Plotting cs
 for i, data in enumerate(char_results_ew):
     row, col = divmod(i, 2)
-    data['cs'].plot(ax=axes[row, col], title=Sort_Vars[i])
+    data['cs'].plot(ax=axes[row, col], title=f"portfolio sorted on: {Sort_Vars[i]}")
 fig.subplots_adjust(hspace=0.5)
 
 plt.show()
