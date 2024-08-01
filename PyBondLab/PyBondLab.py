@@ -71,7 +71,6 @@ class StrategyFormation:
             raise ValueError(f"Invalid filtering option: {adj}. Valid options are {valid_adj}")
         return filters
 
-    
     def _create_name(self, rating, strategy_name):
         if rating is None:
             return f"ALL_{strategy_name}"
@@ -111,31 +110,22 @@ class StrategyFormation:
             self.vw_chars_ep = None         
     
     def fit(self, *, IDvar=None, DATEvar=None, RETvar=None, PRICEvar=None, RATINGvar = None ,Wvar = None):
-        if IDvar or DATEvar or RETvar or PRICEvar or RATINGvar or Wvar:
-            # here check if a "ret" column is present 
-            if RETvar and "ret" in self.data.columns:
-                self.data.drop(columns="ret", inplace=True)
-                self.data_raw.drop(columns="ret", inplace=True)
-                warnings.warn("Column 'ret' already exists. It will be overwritten.", UserWarning)
-            if PRICEvar and "PRICE" in self.data.columns:
-                self.data.drop(columns="PRICE", inplace=True)
-                self.data_raw.drop(columns="PRICE", inplace=True)
-                warnings.warn("Column 'PRICE' already exists. It will be overwritten.", UserWarning)
-            if IDvar and "ID" in self.data.columns:
-                self.data.drop(columns="ID", inplace=True)
-                self.data_raw.drop(columns="ID", inplace=True)
-                warnings.warn("Column 'ID' already exists. It will be overwritten.", UserWarning)
-            if DATEvar and "date" in self.data.columns: 
-                self.data.drop(columns="date", inplace=True)
-                self.data_raw.drop(columns="date", inplace=True)
-            if RATINGvar and "RATING_NUM" in self.data.columns:
-                self.data.drop(columns="RATING_NUM", inplace=True)
-                self.data_raw.drop(columns="RATING_NUM", inplace=True)
-                warnings.warn("Column 'RATING_NUM' already exists. It will be overwritten.", UserWarning)
-            if Wvar and "VW" in self.data.columns:
-                self.data.drop(columns="VW", inplace=True)
-                self.data_raw.drop(columns="VW", inplace=True)
-                warnings.warn("Column 'VW' already exists. It will be overwritten.", UserWarning)
+        if any([IDvar, DATEvar, RETvar, PRICEvar, RATINGvar, Wvar]):
+            column_mapping = {
+            IDvar: "ID",
+            DATEvar: "date",
+            RETvar: "ret",
+            PRICEvar: "PRICE",
+            RATINGvar: "RATING_NUM",
+            Wvar: "VW"
+            }
+            # Loop through the mapping and drop columns if they exist
+            for var, col in column_mapping.items():
+                if var and col in self.data.columns:
+                    self.data.drop(columns=col, inplace=True)
+                    self.data_raw.drop(columns=col, inplace=True)
+                    warnings.warn(f"Column '{col}' already exists. It will be overwritten.", UserWarning)
+
             if Wvar is None and "VW" not in self.data.columns:
                 self.data['VW'] = 1
                 self.data_raw['VW'] = 1
@@ -160,8 +150,8 @@ class StrategyFormation:
         self.unique_bonds = N
         ID = dict(zip(np.unique(self.data["ID"]).tolist(),np.arange(1,N+1)))
         
-        self.data["ID"] = self.data["ID"].apply(lambda x: ID[x])
-        self.data_raw["ID"] = self.data_raw["ID"].apply(lambda x: ID[x])
+        self.data["ID"] = self.data["ID"].map(ID)
+        self.data_raw["ID"] = self.data_raw["ID"].map(ID)
 
         # select relevant columns
         signal_col = self.strategy.get_sort_var()
@@ -183,7 +173,6 @@ class StrategyFormation:
     def rename_id(self, *, IDvar=None, DATEvar=None,RETvar=None,RATINGvar=None, PRICEvar=None, Wvar = None):
         """
         rename columns to ensure consistency with col names
-
         """
         mapping = {}
         
@@ -802,7 +791,9 @@ class StrategyFormation:
         abs_dewport_weight = np.abs(w[1:,:,:,:] - w_scaled[:-1,:,:,:])
         port_turn_hor    = np.sum(abs_dewport_weight, axis=3)
         # Set any 0 values to np.NaN
-        port_turn_hor[port_turn_hor == 0] = np.nan           # Alex added 23-07-2024 #
+        # port_turn_hor[port_turn_hor == 0] = np.nan           # Alex added 23-07-2024 #
+        port_turn_hor = np.where(port_turn_hor == 0, np.nan, port_turn_hor) # this is slightly faster than the above line
+
         mean_port_turn_hor = np.mean(port_turn_hor, axis=1)  # Alex changed to np.mean 23-07-2024 #
         port_turn = np.squeeze(mean_port_turn_hor)
         return port_turn
