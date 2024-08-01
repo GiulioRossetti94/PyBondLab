@@ -34,26 +34,50 @@ class StrategyFormation:
         self.nport = strategy.nport
         
         # RATING, CHARS, WEIGHTS
-        self.rating = rating                  # All, Investment Grade or Non-Investment grade bonds
-        self.chars = chars if chars else None   # used to compute stats for portfolio bins
+        self.rating = self._validate_rating(rating)     # validate and set ratings
+        self.chars = chars if chars else None           # used to compute stats for portfolio bins
         self.dynamic_weights = dynamic_weights 
-        self.turnover = turnover              # compute turnover. False by default to speed up computations
+        self.turnover = turnover                        # compute turnover. False by default to speed up computations
         
         # PARAMETERS FOR FILTERS/ADJUSTMENTS
-        self.filters = filters if filters else {}
+        self.filters = self._validate_filters(filters)
         self.adj = self.filters.get('adj')
         self.w = self.filters.get('level')
         self.loc = self.filters.get('location')
         self.percentile_breakpoints = self.filters.get('df_breakpoints') if self.adj == 'wins' else None
         self.price_threshold = self.filters.get('price_threshold', 25) if self.adj == 'price' else None
         
-        # CREATE NAMES         
-        if self.rating is None:
-            self.name = "ALL_" + self.strategy.str_name
-        else:
-            self.name = f"{self.rating}_" + self.strategy.str_name
-            
-        # INITIALIZE DFs      
+        # CREATE NAMES    
+        self.name = self._create_name(self.rating, self.strategy.str_name)     
+        # INITIALIZE DFs 
+        self._initialize_dfs(filters)  # initialize variables for storing results
+
+    def _validate_rating(self, rating):
+        valid_ratings = ["NIG", "IG", None]
+        if rating not in valid_ratings:
+            raise ValueError(f"Invalid rating: {rating}. Valid options are {valid_ratings}")
+        return rating
+    
+    def _validate_filters(self, filters):
+        if filters is None:
+            return {}
+        if not isinstance(filters, dict):
+            raise ValueError("Filters should be passed as a dictionary")
+        
+        adj = filters.get('adj')
+        valid_adj = ["trim", "wins", "price", "bounce"]
+        
+        if adj is not None and adj not in valid_adj:
+            raise ValueError(f"Invalid filtering option: {adj}. Valid options are {valid_adj}")
+        return filters
+
+    
+    def _create_name(self, rating, strategy_name):
+        if rating is None:
+            return f"ALL_{strategy_name}"
+        return f"{rating}_{strategy_name}"
+
+    def _initialize_dfs(self, filters):
         # ex ante dfs
         self.ewls_ea_long_df = None
         self.vwls_ea_long_df = None
@@ -84,8 +108,7 @@ class StrategyFormation:
             self.ewturnover_ep_df = None
             self.vwturnover_ep_df = None
             self.ew_chars_ep = None
-            self.vw_chars_ep = None            
-
+            self.vw_chars_ep = None         
     
     def fit(self, *, IDvar=None, DATEvar=None, RETvar=None, PRICEvar=None, RATINGvar = None ,Wvar = None):
         if IDvar or DATEvar or RETvar or PRICEvar or RATINGvar or Wvar:
