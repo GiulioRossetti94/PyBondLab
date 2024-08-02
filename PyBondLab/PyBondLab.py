@@ -26,7 +26,7 @@ class StrategyFormation:
         
         self.data_raw = data.copy()
         self.data = data.copy()
-        # self.datelist = pd.Series(self.data['date'].unique()).sort_values().tolist()
+        # Check if 'date' column exists before creating datelist
         self.datelist = pd.Series(self.data['date'].unique()).sort_values().tolist() if 'date' in self.data.columns else None
         
         # STRATEGY PARAMETERS
@@ -34,55 +34,98 @@ class StrategyFormation:
         self.nport = strategy.nport
         
         # RATING, CHARS, WEIGHTS
-        self.rating = rating                  # All, Investment Grade or Non-Investment grade bonds
-        self.chars = chars if chars else None   # used to compute stats for portfolio bins
+        self.rating = self._validate_rating(rating)     # validate and set ratings
+        self.chars = chars if chars else None           # used to compute stats for portfolio bins
         self.dynamic_weights = dynamic_weights 
-        self.turnover = turnover              # compute turnover. False by default to speed up computations
+        self.turnover = turnover                        # compute turnover. False by default to speed up computations
         
         # PARAMETERS FOR FILTERS/ADJUSTMENTS
-        self.filters = filters if filters else {}
+        self.filters = self._validate_filters(filters)
         self.adj = self.filters.get('adj')
         self.w = self.filters.get('level')
         self.loc = self.filters.get('location')
         self.percentile_breakpoints = self.filters.get('df_breakpoints') if self.adj == 'wins' else None
         self.price_threshold = self.filters.get('price_threshold', 25) if self.adj == 'price' else None
         
-        # CREATE NAMES         
-        if self.rating is None:
-            self.name = "ALL_" + self.strategy.str_name
-        else:
-            self.name = f"{self.rating}_" + self.strategy.str_name
-            
-        # INITIALIZE DFs      
-        self.ewls_ep_df = None 
-        self.vwls_ep_df = None
+        # CREATE NAMES    
+        self.name = self._create_name(self.rating, self.strategy.str_name)     
+        # INITIALIZE DFs 
+        self._initialize_dfs(filters)  # initialize variables for storing results
+
+    def _validate_rating(self, rating):
+        valid_ratings = ["NIG", "IG", None]
+        if rating not in valid_ratings:
+            raise ValueError(f"Invalid rating: {rating}. Valid options are {valid_ratings}")
+        return rating
+    
+    def _validate_filters(self, filters):
+        if filters is None:
+            return {}
+        if not isinstance(filters, dict):
+            raise ValueError("Filters should be passed as a dictionary")
+        
+        adj = filters.get('adj')
+        valid_adj = ["trim", "wins", "price", "bounce"]
+        
+        if adj is not None and adj not in valid_adj:
+            raise ValueError(f"Invalid filtering option: {adj}. Valid options are {valid_adj}")
+        return filters
+
+    def _create_name(self, rating, strategy_name):
+        if rating is None:
+            return f"ALL_{strategy_name}"
+        return f"{rating}_{strategy_name}"
+
+    def _initialize_dfs(self, filters):
+        # ex ante dfs
+        self.ewls_ea_long_df = None
+        self.vwls_ea_long_df = None
+        self.ewls_ea_short_df = None
+        self.vwls_ea_short_df = None
+        self.ewls_ea_df = None
+        self.vwls_ea_df = None
+        self.ewport_ea = None
+        self.vwport_ea = None
+        self.ewport_weight_hor_ea = None
+        self.vwport_weight_hor_ea = None
+        self.ewturnover_ea_df = None
+        self.vwturnover_ea_df = None
+        self.ew_chars_ea = None
+        self.vw_chars_ea = None
+        # es post dfs
+        if filters:
+            self.ewls_ep_df = None 
+            self.vwls_ep_df = None
+            self.ewls_ep_long_df = None
+            self.vwls_ep_long_df = None
+            self.ewls_ep_short_df = None
+            self.vwls_ep_short_df = None
+            self.ewport_ep = None
+            self.vwport_ep = None
+            self.ewport_weight_hor_ep = None
+            self.vwport_weight_hor_ep = None
+            self.ewturnover_ep_df = None
+            self.vwturnover_ep_df = None
+            self.ew_chars_ep = None
+            self.vw_chars_ep = None         
     
     def fit(self, *, IDvar=None, DATEvar=None, RETvar=None, PRICEvar=None, RATINGvar = None ,Wvar = None):
-        if IDvar or DATEvar or RETvar or PRICEvar or RATINGvar or Wvar:
-            # here check if a "ret" column is present 
-            if RETvar and "ret" in self.data.columns:
-                self.data.drop(columns="ret", inplace=True)
-                self.data_raw.drop(columns="ret", inplace=True)
-                warnings.warn("Column 'ret' already exists. It will be overwritten.", UserWarning)
-            if PRICEvar and "PRICE" in self.data.columns:
-                self.data.drop(columns="PRICE", inplace=True)
-                self.data_raw.drop(columns="PRICE", inplace=True)
-                warnings.warn("Column 'PRICE' already exists. It will be overwritten.", UserWarning)
-            if IDvar and "ID" in self.data.columns:
-                self.data.drop(columns="ID", inplace=True)
-                self.data_raw.drop(columns="ID", inplace=True)
-                warnings.warn("Column 'ID' already exists. It will be overwritten.", UserWarning)
-            if DATEvar and "date" in self.data.columns: 
-                self.data.drop(columns="date", inplace=True)
-                self.data_raw.drop(columns="date", inplace=True)
-            if RATINGvar and "RATING_NUM" in self.data.columns:
-                self.data.drop(columns="RATING_NUM", inplace=True)
-                self.data_raw.drop(columns="RATING_NUM", inplace=True)
-                warnings.warn("Column 'RATING_NUM' already exists. It will be overwritten.", UserWarning)
-            if Wvar and "VW" in self.data.columns:
-                self.data.drop(columns="VW", inplace=True)
-                self.data_raw.drop(columns="VW", inplace=True)
-                warnings.warn("Column 'VW' already exists. It will be overwritten.", UserWarning)
+        if any([IDvar, DATEvar, RETvar, PRICEvar, RATINGvar, Wvar]):
+            column_mapping = {
+            IDvar: "ID",
+            DATEvar: "date",
+            RETvar: "ret",
+            PRICEvar: "PRICE",
+            RATINGvar: "RATING_NUM",
+            Wvar: "VW"
+            }
+            # Loop through the mapping and drop columns if they exist
+            for var, col in column_mapping.items():
+                if var and col in self.data.columns:
+                    self.data.drop(columns=col, inplace=True)
+                    self.data_raw.drop(columns=col, inplace=True)
+                    warnings.warn(f"Column '{col}' already exists. It will be overwritten.", UserWarning)
+
             if Wvar is None and "VW" not in self.data.columns:
                 self.data['VW'] = 1
                 self.data_raw['VW'] = 1
@@ -107,8 +150,8 @@ class StrategyFormation:
         self.unique_bonds = N
         ID = dict(zip(np.unique(self.data["ID"]).tolist(),np.arange(1,N+1)))
         
-        self.data["ID"] = self.data["ID"].apply(lambda x: ID[x])
-        self.data_raw["ID"] = self.data_raw["ID"].apply(lambda x: ID[x])
+        self.data["ID"] = self.data["ID"].map(ID)
+        self.data_raw["ID"] = self.data_raw["ID"].map(ID)
 
         # select relevant columns
         signal_col = self.strategy.get_sort_var()
@@ -130,7 +173,6 @@ class StrategyFormation:
     def rename_id(self, *, IDvar=None, DATEvar=None,RETvar=None,RATINGvar=None, PRICEvar=None, Wvar = None):
         """
         rename columns to ensure consistency with col names
-
         """
         mapping = {}
         
@@ -267,62 +309,28 @@ class StrategyFormation:
         
         # for t in range((hor+1), TM - hor): to discuss this!
         for t in range( TM - hor):
-            # =====================================================================
+            date_t = self.datelist[t]
+
             # Filter based on ratings and signal != nan
-            # =====================================================================
-            if self.rating == "NIG":
-                It0 = tab[(tab['date'] == self.datelist[t]) & (~tab[sort_var].isna()) & 
-                          (tab['RATING_NUM'] > 10) & (tab['RATING_NUM'] <= 22)]
-            elif self.rating == "IG":
-                It0 = tab[(tab['date'] == self.datelist[t]) & (~tab[sort_var].isna()) & 
-                          (tab['RATING_NUM'] >= 1) & (tab['RATING_NUM'] <= 10)]
-            else:
-                It0 = tab[(tab['date'] == self.datelist[t]) & (~tab[sort_var].isna())]                 
-        
             if DoubleSort:
-                # here also signal2 != nan
-                if self.rating == "NIG":
-                    It0 = tab[(tab['date'] == self.datelist[t]) & (~tab[sort_var].isna()) & (~tab[sort_var2].isna()) &
-                              (tab['RATING_NUM'] > 10) & (tab['RATING_NUM'] <= 22)]
-                elif self.rating == "IG":
-                    It0 = tab[(tab['date'] == self.datelist[t]) & (~tab[sort_var].isna()) & (~tab[sort_var2].isna()) &
-                              (tab['RATING_NUM'] >= 1) & (tab['RATING_NUM'] <= 10)]
-                else:
-                    It0 = tab[(tab['date'] == self.datelist[t]) & (~tab[sort_var].isna()) & (~tab[sort_var2].isna()) ]                 
+                It0 = self.filter_by_rating(tab, date_t, sort_var, sort_var2)
+            else:
+                It0 = self.filter_by_rating(tab, date_t, sort_var)              
             
+            # check if at time t we have bonds
             if It0.shape[0] == 0:
                 if t > hor:
-                    print(f"no bonds at time {t}:{self.datelist[t]}. Going to next period.")      
+                    print(f"no bonds at time {t}:{date_t}. Going to next period.")      
                 continue
             
-            # =====================================================================
             # Investment Universe matching
-            # =====================================================================
-            if adj == 'trim' and self.w:
-                if isinstance(self.w, list) and len(self.w) == 2:
-                    lower_bound, upper_bound = self.w
-                    It0 = It0[(It0[ret_var] <= upper_bound) & (It0[ret_var] >= lower_bound)]
-                else:
-                    It0 = It0[It0[ret_var] <= self.w] if self.w > 0 else It0[It0[ret_var] >= self.w]
-                    
-            elif adj == 'bounce' and self.w:
-                if isinstance(self.w, list) and len(self.w) == 2:
-                    lower_bound, upper_bound = self.w
-                    It0 = It0[(It0['bounce'] <= upper_bound) & (It0['bounce'] >= lower_bound)]
-                else:
-                    It0 = It0[It0['bounce'] >= self.w] if self.w < 0 else It0[It0['bounce']<= self.w]
-                    
-            elif adj == 'price' and self.w:
-                if isinstance(self.w, list) and len(self.w) == 2:
-                    lower_bound, upper_bound = self.w
-                    It0 = It0[(It0['PRICE'] <= upper_bound) & (It0['PRICE'] >= lower_bound)]
-                else:
-                    It0 = It0[It0['PRICE'] <= self.w] if self.w > self.price_threshold else It0[It0['PRICE'] >= self.w]
-            # check if after the filter we have bonds
-            if It0.shape[0] == 0:
-                if t > hor:
-                    print(f"no bonds at time {t}:{self.datelist[t]} after adjustment ({self.adj}). Going to next period.")      
-                continue
+            if adj in ['trim', 'bounce', 'price']:
+                It0 = self.filter_by_universe_matching(It0, adj, ret_var)
+                # check if after the filter we have bonds
+                if It0.shape[0] == 0:
+                    if t > hor:
+                        print(f"no bonds at time {t}: {date_t} after adjustment ({adj}). Going to next period.")      
+                    continue
 
             # =====================================================================
             # start sorting procedure
@@ -333,10 +341,6 @@ class StrategyFormation:
                 It1 = self.data_raw[(self.data_raw['date'] == self.datelist[t + h])& (~self.data_raw[ret_var].isna())]
                 # Dynamically get the mv for different horizons
                 It1m = tab[(tab['date'] == self.datelist[t + h - 1]) & (~tab['VW'].isna())]   
-                # if It1.shape[0] == 0:
-                #     if t > hor:
-                #         print(f"no bonds at time {t}:{self.datelist[t]}. Going to next period.")      
-                #     continue
                 
                 if adj == 'wins' and 'signal' in sort_var:
                     # TODO can be removed
@@ -787,112 +791,115 @@ class StrategyFormation:
         abs_dewport_weight = np.abs(w[1:,:,:,:] - w_scaled[:-1,:,:,:])
         port_turn_hor    = np.sum(abs_dewport_weight, axis=3)
         # Set any 0 values to np.NaN
-        port_turn_hor[port_turn_hor == 0] = np.nan           # Alex added 23-07-2024 #
+        # port_turn_hor[port_turn_hor == 0] = np.nan           # Alex added 23-07-2024 #
+        port_turn_hor = np.where(port_turn_hor == 0, np.nan, port_turn_hor) # this is slightly faster than the above line
+
         mean_port_turn_hor = np.mean(port_turn_hor, axis=1)  # Alex changed to np.mean 23-07-2024 #
         port_turn = np.squeeze(mean_port_turn_hor)
         return port_turn
     
-    # getters 
+    def filter_by_rating(self, tab, date, sort_var, sort_var2=None):
+        # Basic filtering conditions
+        conditions = (tab['date'] == date) & (~tab[sort_var].isna())
+
+        # Add additional conditions based on the rating
+        if self.rating == "NIG":
+            conditions &= (tab['RATING_NUM'] > 10) & (tab['RATING_NUM'] <= 22)
+        elif self.rating == "IG":
+            conditions &= (tab['RATING_NUM'] >= 1) & (tab['RATING_NUM'] <= 10)
+
+        # Add conditions for the second sort variable if DoubleSort is True
+        if sort_var2 is not None:
+            conditions &= ~tab[sort_var2].isna()
+
+        return tab[conditions]
+    
+    def filter_by_universe_matching(self, It0, adj, ret_var):
+        if adj == 'trim' and self.w:
+            if isinstance(self.w, list) and len(self.w) == 2:
+                lower_bound, upper_bound = self.w
+                It0 = It0[(It0[ret_var] <= upper_bound) & (It0[ret_var] >= lower_bound)]
+            else:
+                It0 = It0[It0[ret_var] <= self.w] if self.w > 0 else It0[It0[ret_var] >= self.w]
+
+        elif adj == 'bounce' and self.w:
+            if isinstance(self.w, list) and len(self.w) == 2:
+                lower_bound, upper_bound = self.w
+                It0 = It0[(It0['bounce'] <= upper_bound) & (It0['bounce'] >= lower_bound)]
+            else:
+                It0 = It0[It0['bounce'] >= self.w] if self.w < 0 else It0[It0['bounce'] <= self.w]
+
+        elif adj == 'price' and self.w:
+            if isinstance(self.w, list) and len(self.w) == 2:
+                lower_bound, upper_bound = self.w
+                It0 = It0[(It0['PRICE'] <= upper_bound) & (It0['PRICE'] >= lower_bound)]
+            else:
+                It0 = It0[It0['PRICE'] <= self.w] if self.w > self.price_threshold else It0[It0['PRICE'] >= self.w]
+                
+        return It0
+
+    
+    # helper function for getters
+    def _get_dataframes(self, *keys, **kwargs):
+        checks = {
+            'require_filters': lambda: self.filters,
+            'require_turnover': lambda: self.turnover,
+            'require_chars': lambda: self.chars,
+        }
+        
+        for check, condition in checks.items():
+            if kwargs.get(check, False) and not condition():
+                warnings.warn(f"{check.replace('require_', '').capitalize()} are not specified.", UserWarning)
+                return None
+
+        dfs = [getattr(self, key) for key in keys]
+        if any(df is None for df in dfs):
+            warnings.warn("One or more DataFrames have not been initialized.", UserWarning)
+            return None
+        return dfs
+
+    # getters for the results
     def get_long_leg(self):
-        if self.ewls_ea_long_df is None or self.vwls_ea_long_df is None:
-            warnings.warn("The DataFrame has not been initialized.", UserWarning)
-            return None  
-        else:
-            return self.ewls_ea_long_df, self.vwls_ea_long_df
+        return self._get_dataframes("ewls_ea_long_df", "vwls_ea_long_df")
 
     def get_long_leg_ex_post(self):
-        if self.ewls_ea_long_df is None:
-            warnings.warn("The DataFrame has not been initialized.", UserWarning)
-            return None     
-        else:
-            return self.ewls_ep_long_df, self.vwls_ep_long_df
+        return self._get_dataframes("ewls_ep_long_df", "vwls_ep_long_df", require_filters=True)
 
     def get_short_leg(self):
-        if self.ewls_ea_short_df is None or self.vwls_ea_short_df is None:
-            warnings.warn("The DataFrame has not been initialized.", UserWarning)
-            return None     
-        else:
-            return self.ewls_ea_short_df, self.vwls_ea_short_df
+        return self._get_dataframes("ewls_ea_short_df", "vwls_ea_short_df")
 
     def get_short_leg_ex_post(self):
-        if self.ewls_ep_short_df is None or self.vwls_ep_short_df is None:
-            warnings.warn("The DataFrame has not been initialized.", UserWarning)
-            return None   
-        else:
-            return self.ewls_ep_short_df, self.vwls_ep_short_df
-    
-    # Long-Short ptf
+        return self._get_dataframes("ewls_ep_short_df", "vwls_ep_short_df", require_filters=True)
+
     def get_long_short(self):
-        if self.ewls_ea_df is None or self.vwls_ea_df is None:
-            warnings.warn("The DataFrame has not been initialized.", UserWarning)
-            return None   
-        else:
-            return self.ewls_ea_df, self.vwls_ea_df
+        return self._get_dataframes("ewls_ea_df", "vwls_ea_df")
 
     def get_long_short_ex_post(self):
-        if self.ewls_ep_df is None or self.vwls_ep_df is None:
-            warnings.warn("The DataFrame has not been initialized.", UserWarning)
-            return None   
-        else:
-            return self.ewls_ep_df, self.vwls_ep_df
-        
+        return self._get_dataframes("ewls_ep_df", "vwls_ep_df", require_filters=True)
+
     def get_ptf(self):
-        if self.ewport_ea is None or self.vwport_ea is None:
-            warnings.warn("The DataFrame has not been initialized.", UserWarning)
-            return None           
-        return self.ewport_ea,self.vwport_ea
+        return self._get_dataframes("ewport_ea", "vwport_ea")
 
     def get_ptf_ex_post(self):
-        if self.ewport_ep is None or self.vwport_ep is None:
-            warnings.warn("The DataFrame has not been initialized.", UserWarning)
-            return None           
-        return self.ewport_ep,self.vwport_ep
-    
+        return self._get_dataframes("ewport_ep", "vwport_ep", require_filters=True)
+
     def get_ptf_weights(self):
-        if self.ewport_weight_hor_ea is None or self.vwport_weight_hor_ea is None:
-            warnings.warn("The DataFrame has not been initialized.", UserWarning)
-            return None           
-        return self.ewport_weight_hor_ea,self.vwport_weight_hor_ea   
-    
+        return self._get_dataframes("ewport_weight_hor_ea", "vwport_weight_hor_ea")
+
     def get_ptf_weights_ex_post(self):
-        if self.ewport_weight_hor_ep is None or self.vwport_weight_hor_ep is None:
-            warnings.warn("The DataFrame has not been initialized.", UserWarning)
-            return None           
-        return self.ewport_weight_hor_ep,self.vwport_weight_hor_ep  
-    
+        return self._get_dataframes("ewport_weight_hor_ep", "vwport_weight_hor_ep", require_filters=True)
+
     def get_ptf_turnover(self):
-        if self.turnover == False:
-            warnings.warn("Turnover has not been computed.", UserWarning)
-            return None, None
-        elif self.ewturnover_ea_df is None or self.vwturnover_ea_df is None:
-            warnings.warn("The DataFrame has not been initialized.", UserWarning)
-            return None, None
-        else:          
-            return self.ewturnover_ea_df,self.vwturnover_ea_df
+        return self._get_dataframes("ewturnover_ea_df", "vwturnover_ea_df", require_turnover=True)
 
     def get_ptf_turnover_ex_post(self):
-        if self.turnover == False:
-            warnings.warn("Turnover has not been computed.", UserWarning)
-            return None, None
-        elif self.ewturnover_ep_df is None or self.vwturnover_ep_df is None:
-            warnings.warn("The DataFrame has not been initialized.", UserWarning)
-            return None, None
-        else:          
-            return self.ewturnover_ep_df,self.vwturnover_ep_df
-    
+        return self._get_dataframes("ewturnover_ep_df", "vwturnover_ep_df", require_filters=True, require_turnover=True)
+
     def get_chars(self):
-        if self.chars:
-            return self.ew_chars_ea, self.vw_chars_ea
-        else:
-            warnings.warn("No characteristic specified", UserWarning)
-            return None, None
-        
+        return self._get_dataframes("ew_chars_ea", "vw_chars_ea", require_chars=True)
+
     def get_chars_ex_post(self):
-        if self.chars and self.adj:
-            return self.ew_chars_ep, self.vw_chars_ep
-        else:
-            warnings.warn("No characteristic specified / no filtering", UserWarning)
-            return None, None  
+        return self._get_dataframes("ew_chars_ep", "vw_chars_ep", require_filters=True, require_chars=True)
          
     def set_factors(self,factors):
         """

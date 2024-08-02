@@ -147,6 +147,40 @@ The scripts [MomentumDataUncertainty.py](examples/MomentumDataUncertainty.py) an
 
 These scripts allow comparison of the effects of ex-ante and ex-post data cleaning procedures on the expected returns of long-short portfolios sorted by specific variables/characteristics. They highlight the look-ahead bias that is incorrectly introduced when ex-post cleaning procedures are applied.
 
+### Portfolio statistics
+## Portfolio Turnover
+
+Portfolio turnover plays a crucial role in unveiling potential anomalies. Ignoring transaction costs and portfolio turnover might render a possible strategy more appealing by showing larger gross alphas and average expected returns. However, these strategies might not improve an investor's opportunity set once transaction costs and portfolio turnover are considered.
+
+To illustrate this, let's consider the following Python code using the PyBondLab library. Before running this snippet, ensure you have executed the previous code snippet that sets up the necessary data and imports.
+
+### Step-by-Step Instructions
+
+1. **Execute Initial Setup**:
+    - Ensure you have run the initial setup code provided in an earlier part of this README, which includes importing libraries, defining the `single_sort` strategy, and loading the data into `tbl1`.
+
+2. **Portfolio Turnover Calculation**:
+    - The following code snippet demonstrates how to compute portfolio turnover, accounting for the given strategy parameters (see [example](https://github.com/GiulioRossetti94/PyBondLab/tree/main/examples) for the complete script). 
+
+```python
+# Define a dictionary with strategy and optional parameters.
+params = {
+    'strategy': single_sort,
+    'rating': None,
+    'turnover': True
+}
+
+# Fit the strategy to the data. Specify ID identifier and column of returns.
+res = pbl.StrategyFormation(tbl1, **params).fit(IDvar="ISSUE_ID", RETvar="RET_L5M")
+
+# Get long-short portfolios (equal- and value-weighted).
+ew, vw = res.get_long_short()
+
+# Compute portfolio turnover.
+ew_turnover, vw_turnover = res.get_ptf_turnover()
+```
+
+
 
 
 ## References
