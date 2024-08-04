@@ -358,8 +358,9 @@ class StrategyFormation:
                 # storing weights
                 if self.turnover:
                     weights_ea, weights_scaled_ea = port_ret_ea[1]
-                    self.fill_weights(weights_ea, self.ewport_weight_hor_ea,self.vwport_weight_hor_ea, t, h)
-                    self.fill_weights(weights_scaled_ea, self.ewport_weight_hor_ea_scaled,self.vwport_weight_hor_ea_scaled, t, h)
+                    if not weights_ea.empty:
+                        self.fill_weights(weights_ea, self.ewport_weight_hor_ea,self.vwport_weight_hor_ea, t, h)
+                        self.fill_weights(weights_scaled_ea, self.ewport_weight_hor_ea_scaled,self.vwport_weight_hor_ea_scaled, t, h)
                 # storing chars
                 if self.chars:
                     # unpack
@@ -384,9 +385,10 @@ class StrategyFormation:
                     # storing weights: 
                     if self.turnover:
                         weights_ep, weights_scaled_ep = port_ret_ep[1]
-                        self.fill_weights(weights_ep, self.ewport_weight_hor_ep,self.vwport_weight_hor_ep, t, h)
-                        self.fill_weights(weights_scaled_ep, self.ewport_weight_hor_ep_scaled,self.vwport_weight_hor_ep_scaled, t, h)
-                    
+                        if not weights_ep.empty:
+                            self.fill_weights(weights_ep, self.ewport_weight_hor_ep,self.vwport_weight_hor_ep, t, h)
+                            self.fill_weights(weights_scaled_ep, self.ewport_weight_hor_ep_scaled,self.vwport_weight_hor_ep_scaled, t, h)
+                        
                     # storing chars
                     if self.chars:
                         # unpack
