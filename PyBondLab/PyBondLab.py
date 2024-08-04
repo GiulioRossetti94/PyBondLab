@@ -309,34 +309,33 @@ class StrategyFormation:
         
         # for t in range((hor+1), TM - hor): to discuss this!
         for t in range( TM - hor):
-            date_t = self.datelist[t]
+            for h in range(1, hor + 1):
+                date_t = self.datelist[t]
 
-            # Filter based on ratings and signal != nan
-            if DoubleSort:
-                It0 = self.filter_by_rating(tab, date_t, sort_var, sort_var2)
-            else:
-                It0 = self.filter_by_rating(tab, date_t, sort_var)              
-            
-            # check if at time t we have bonds
-            if It0.shape[0] == 0:
-                if t > hor:
-                    print(f"no bonds at time {t}:{date_t}. Going to next period.")      
-                continue
-            
-            # Investment Universe matching
-            if adj in ['trim', 'bounce', 'price']:
-                It0 = self.filter_by_universe_matching(It0, adj, ret_var)
-                # check if after the filter we have bonds
+                # Filter based on ratings and signal != nan
+                if DoubleSort:
+                    It0 = self.filter_by_rating(tab, date_t, sort_var, sort_var2)
+                else:
+                    It0 = self.filter_by_rating(tab, date_t, sort_var)              
+                
+                # check if at time t we have bonds
                 if It0.shape[0] == 0:
                     if t > hor:
-                        print(f"no bonds at time {t}: {date_t} after adjustment ({adj}). Going to next period.")      
+                        print(f"no bonds at time {t}:{date_t}. Going to next period.")      
                     continue
+                
+                # Investment Universe matching
+                if adj in ['trim', 'bounce', 'price']:
+                    It0 = self.filter_by_universe_matching(It0, adj, ret_var)
+                    # check if after the filter we have bonds
+                    if It0.shape[0] == 0:
+                        if t > hor:
+                            print(f"no bonds at time {t}: {date_t} after adjustment ({adj}). Going to next period.")      
+                        continue
 
             # =====================================================================
             # start sorting procedure
             # =====================================================================
-            
-            for h in range(1, hor + 1):
                 # Investment universe for ret computation
                 It1 = self.data_raw[(self.data_raw['date'] == self.datelist[t + h])& (~self.data_raw[ret_var].isna())]
                 # Dynamically get the mv for different horizons
