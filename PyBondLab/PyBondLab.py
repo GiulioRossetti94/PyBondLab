@@ -22,7 +22,7 @@ def load_breakpoints_WRDS() -> pd.DataFrame:
     return load()
 
 class StrategyFormation:
-    def __init__(self, data: pd.DataFrame,strategy: Strategy, rating: str = None, chars: dict = None, dynamic_weights: bool = False,turnover: bool = False ,filters: dict = None):
+    def __init__(self, data: pd.DataFrame,strategy: Strategy, rating: str = None, chars: dict = None, dynamic_weights: bool = False,turnover: bool = False ,banding_threshold: float = None,filters: dict = None):
         
         self.data_raw = data.copy()
         self.data = data.copy()
@@ -38,6 +38,7 @@ class StrategyFormation:
         self.chars = chars if chars else None           # used to compute stats for portfolio bins
         self.dynamic_weights = dynamic_weights 
         self.turnover = turnover                        # compute turnover. False by default to speed up computations
+        self.banding_threshold = banding_threshold      # threshold for banding
         
         # PARAMETERS FOR FILTERS/ADJUSTMENTS
         self.filters = self._validate_filters(filters)
@@ -169,6 +170,7 @@ class StrategyFormation:
         
         self.compute_signal()
         self.portfolio_formation()
+
         return self
     
     def rename_id(self, *, IDvar=None, DATEvar=None,RETvar=None,RATINGvar=None, PRICEvar=None, Wvar = None):
@@ -242,7 +244,6 @@ class StrategyFormation:
                 
     def portfolio_formation(self):
         unique_bonds = self.unique_bonds
-        
         nport = self.nport
         adj = self.adj
         ret_var  = 'ret'                             # this is the column used to compute the returns of portfolios
@@ -272,8 +273,8 @@ class StrategyFormation:
             tot_nport = nport
         self.tot_nport = tot_nport 
         # initialize storing   
-        self.ewport_hor_ea = np.full((TM, hor, tot_nport), np.nan)
-        self.vwport_hor_ea = np.full((TM, hor, tot_nport), np.nan)
+        ewport_hor_ea = np.full((TM, hor, tot_nport), np.nan)
+        vwport_hor_ea = np.full((TM, hor, tot_nport), np.nan)
         # for turnover compute scaled returns
         if self.turnover:
             self.ewport_weight_hor_ea_scaled = np.zeros((TM, hor, tot_nport,unique_bonds))
@@ -289,10 +290,16 @@ class StrategyFormation:
             for char in self.chars:
                 ew_ea_chars_dict[char] = np.full((TM, hor, tot_nport), np.nan)
                 vw_ea_chars_dict[char] = np.full((TM, hor, tot_nport), np.nan)
+        
+        # banding: we need to save the ranks
+        if self.banding_threshold is not None:
+            # create a dictionary to store the ranks. This is used to compute the banding
+            # the key of the dictionary is the cohort
+            self.lag_rank = {i: pd.DataFrame for i in range(hor)}
             
         if adj:
-            self.ewport_hor_ep = np.full((TM, hor, tot_nport), np.nan)
-            self.vwport_hor_ep = np.full((TM, hor, tot_nport), np.nan) 
+            ewport_hor_ep = np.full((TM, hor, tot_nport), np.nan)
+            vwport_hor_ep = np.full((TM, hor, tot_nport), np.nan) 
             # for turnover compute scaled returns
             if self.turnover:
                 self.ewport_weight_hor_ep_scaled = np.zeros((TM, hor, tot_nport,unique_bonds))
@@ -312,34 +319,36 @@ class StrategyFormation:
         for t in range( TM - hor):
             # define cohort for turnover computation
             self.cohort = t % hor
-            for h in range(1, hor + 1):
-                # print(self.cohort,h)
-                date_t = self.datelist[t]
+            
+            # print(self.cohort,h)
+            date_t = self.datelist[t]
 
-                # Filter based on ratings and signal != nan
-                if DoubleSort:
-                    It0 = self.filter_by_rating(tab, date_t, sort_var, sort_var2)
-                else:
-                    It0 = self.filter_by_rating(tab, date_t, sort_var)              
-                
-                # check if at time t we have bonds
+            # Filter based on ratings and signal != nan
+            if DoubleSort:
+                It0 = self.filter_by_rating(tab, date_t, sort_var, sort_var2)
+            else:
+                It0 = self.filter_by_rating(tab, date_t, sort_var)              
+            
+            # check if at time t we have bonds
+            if It0.shape[0] == 0:
+                if t > hor:
+                    print(f"no bonds at time {t}:{date_t}. Going to next period.")      
+                continue
+            
+            # Investment Universe matching
+            if adj in ['trim', 'bounce', 'price']:
+                It0 = self.filter_by_universe_matching(It0, adj, ret_var)
+                # check if after the filter we have bonds
                 if It0.shape[0] == 0:
                     if t > hor:
-                        print(f"no bonds at time {t}:{date_t}. Going to next period.")      
+                        print(f"no bonds at time {t}: {date_t} after adjustment ({adj}). Going to next period.")      
                     continue
-                
-                # Investment Universe matching
-                if adj in ['trim', 'bounce', 'price']:
-                    It0 = self.filter_by_universe_matching(It0, adj, ret_var)
-                    # check if after the filter we have bonds
-                    if It0.shape[0] == 0:
-                        if t > hor:
-                            print(f"no bonds at time {t}: {date_t} after adjustment ({adj}). Going to next period.")      
-                        continue
 
-            # =====================================================================
+            
             # start sorting procedure
-            # =====================================================================
+            for h in range(1, hor + 1):
+                # print(t,self.cohort+1,h)
+                It0_h = It0.copy()
                 # Investment universe for ret computation
                 It1 = self.data_raw[(self.data_raw['date'] == self.datelist[t + h])& (~self.data_raw[ret_var].isna())]
                 # Dynamically get the mv for different horizons
@@ -348,17 +357,17 @@ class StrategyFormation:
                 if adj == 'wins' and 'signal' in sort_var:
                     # TODO can be removed
                     # use winsorized returns to assign to ptfs
-                    port_ret_ea = self.port_sorted_ret(It0, It1,It1m,ret_var, sort_var,DoubleSort=DoubleSort,sig2 = sort_var2,nport2 = nport2 )
+                    port_ret_ea = self.port_sorted_ret(It0_h, It1,It1m,ret_var, sort_var,h,DoubleSort=DoubleSort,sig2 = sort_var2,nport2 = nport2 )
                 else:
                     # if signal is not in sort_var, we do not use winsorized returns to sort portfolios
-                    port_ret_ea = self.port_sorted_ret(It0, It1,It1m,ret_var, sort_var,DoubleSort=DoubleSort,sig2 = sort_var2,nport2 = nport2 )
+                    port_ret_ea = self.port_sorted_ret(It0_h, It1,It1m,ret_var, sort_var,h,DoubleSort=DoubleSort,sig2 = sort_var2,nport2 = nport2 )
                 
                 # unpack returns
                 ret_strategy_ea =  port_ret_ea[0]
 
                 # storing returns
-                self.ewport_hor_ea[t + h, self.cohort, :] = ret_strategy_ea[0]
-                self.vwport_hor_ea[t + h, self.cohort, :] = ret_strategy_ea[1]
+                ewport_hor_ea[t + h, self.cohort, :] = ret_strategy_ea[0]
+                vwport_hor_ea[t + h, self.cohort, :] = ret_strategy_ea[1]
                 # storing weights
                 if self.turnover:
                     weights_ea, weights_scaled_ea = port_ret_ea[1]
@@ -380,12 +389,12 @@ class StrategyFormation:
                     else:
                         It2 = tab[(tab['date'] == self.datelist[t + h]) & (~tab[ret_var + "_" + adj].isna())]
                     
-                    port_ret_ep = self.port_sorted_ret(It0, It2,It1m,ret_var + "_" + adj, sort_var,DoubleSort=DoubleSort,sig2 = sort_var2,nport2 = nport2 )
+                    port_ret_ep = self.port_sorted_ret(It0_h, It2,It1m,ret_var + "_" + adj, sort_var,h,DoubleSort=DoubleSort,sig2 = sort_var2,nport2 = nport2 )
                     # unpack returns
                     ret_strategy_ep =  port_ret_ep[0]
                     # storing returns
-                    self.ewport_hor_ep[t + h, h - 1, :] = ret_strategy_ep[0]
-                    self.vwport_hor_ep[t + h, h - 1, :] = ret_strategy_ep[1]
+                    ewport_hor_ep[t + h, h - 1, :] = ret_strategy_ep[0]
+                    vwport_hor_ep[t + h, h - 1, :] = ret_strategy_ep[1]
                     # storing weights: 
                     if self.turnover:
                         weights_ep, weights_scaled_ep = port_ret_ep[1]
@@ -402,11 +411,11 @@ class StrategyFormation:
                             ew_ep_chars_dict[c][t + h,h-1,:] = chars_ep[0][c]
                             vw_ep_chars_dict[c][t + h,h-1,:] = chars_ep[1][c]                 
                         
-        self.ewport_ea = np.mean(self.ewport_hor_ea, axis=1)
-        self.vwport_ea = np.mean(self.vwport_hor_ea, axis=1)
+        self.ewport_ea = np.mean(ewport_hor_ea, axis=1)
+        self.vwport_ea = np.mean(vwport_hor_ea, axis=1)
         if adj:
-            self.ewport_ep = np.mean(self.ewport_hor_ep, axis=1)
-            self.vwport_ep = np.mean(slef.vwport_hor_ep, axis=1)    
+            self.ewport_ep = np.mean(ewport_hor_ep, axis=1)
+            self.vwport_ep = np.mean(vwport_hor_ep, axis=1)    
 
         # Compute portfolio returns
         if DoubleSort:  
@@ -553,7 +562,7 @@ class StrategyFormation:
                     self.ew_chars_ep[c] = pd.DataFrame(np.mean(ew_ep_chars_dict[c],axis=1),index = self.datelist,columns = [f"Q{x}" for x in range(1,tot_nport+1)]) # mean across horizon
                     self.vw_chars_ep[c] = pd.DataFrame(np.mean(vw_ep_chars_dict[c],axis=1),index = self.datelist,columns = [f"Q{x}" for x in range(1,tot_nport+1)]) # mean across horizon
 
-    def port_sorted_ret(self, It0, It1, It1m, ret_col,sig,**kwargs):
+    def port_sorted_ret(self, It0, It1, It1m, ret_col,sig,h,**kwargs):
         """
         It0: investment universe that is going to be sorted in portfolios
         It1: investment universe at t+h. Used to compute returns on ptfs
@@ -621,7 +630,34 @@ class StrategyFormation:
         else:
             nportmax = nport
             It1['ptf_rank'] = self.assign_bond_bins(sortvar,thres,nport)
-            
+
+            # debug = It1[['ID','ptf_rank']]
+            # debug.set_index('ID',inplace=True)
+            # self.c.append(debug)
+        
+        # store It1 if banding 
+        if self.banding_threshold is not None:
+            # we rebalance only at t so when h = 1!
+            if self.lag_rank[self.cohort].empty:
+                # if first period, just save the ranks
+                self.lag_rank[self.cohort] = It1[['ID','ptf_rank']].copy()
+            else:
+                # if not first period, merge the ranks                
+                # rank banding
+                if h == 1:   # we do not do banding at h != 1
+                    # get the ranks from the previous period
+                    prev_rank = self.lag_rank[self.cohort]
+
+                    It1 = It1.merge( prev_rank, how = "left", left_on  = ['ID'],
+                                right_on = ['ID'], suffixes = ('_current','_lag'))
+                    It1["ptf_rank"] = self.rank_banding(It1['ptf_rank_lag'],It1['ptf_rank_current'],self.banding_threshold,nportmax)
+
+                    # df_clean = It1.dropna(subset=['ptf_rank_current', 'ptf_rank_lag'])
+                    # deb = df_clean[df_clean['ptf_rank_current'] != df_clean['ptf_rank_lag']]
+                    # if not deb.empty:
+                    #     print(f"banding at time {time_t1} for {deb.shape[0]} bonds")
+                self.lag_rank[self.cohort] = It1[['ID','ptf_rank']].copy()
+
         # check if dfs are empty
         if It0.shape[0] == 0:
             print(f"no bonds matched between time {time_t} and {time_t1}. Setting return to nan and going to next period.")   
@@ -653,16 +689,6 @@ class StrategyFormation:
             
             # scale returns
             retscaled = rank.copy()
-            # merge with bins returns
-            # merge with cohort returns
-            # if "adj" in ret_col:
-            #     ptf_ret_ew_cohort = pd.Series(self.ewport_hor_ep[t + h, self.cohort, :],index = nport_idx)
-            #     ptf_ret_vw_cohort = pd.Series(self.vwport_hor_ep[t + h, self.cohort, :],index = nport_idx)
-            # else:
-            #     ptf_ret_ew_cohort = pd.Series(self.ewport_hor_ea[t + h, self.cohort, :],index = nport_idx)
-            #     ptf_ret_vw_cohort = pd.Series(self.vwport_hor_ea[t + h, self.cohort, :],index = nport_idx)
-            # ptf_ret_ew_cohort.index.names = ['ptf_rank']
-            # ptf_ret_ew_cohort.index.names = ['ptf_rank']
 
             retscaled = retscaled.merge(ptf_ret_ew.to_frame(name='ewret').reset_index(), on ="ptf_rank",how="left")
             retscaled = retscaled.merge(ptf_ret_ew.to_frame(name='vwret').reset_index(), on ="ptf_rank",how="left")    
@@ -717,6 +743,28 @@ class StrategyFormation:
             else:
                 return (ewl, vwl),(None,None)
     
+    @staticmethod
+    def rank_banding(past_ranks, current_ranks, threshold, tot_nport):
+        # Assign the output index
+        new_rank = current_ranks.copy()   
+
+        # Determine the buy/hold thresholds
+        port_1 = 0
+        port_2 = threshold
+
+        idx = (past_ranks >= tot_nport - port_1) & (current_ranks >= tot_nport - port_2)
+        new_rank[idx] = tot_nport
+    
+        idx = (past_ranks <= 1 + port_1) & (past_ranks > 0) & (current_ranks <= port_2) & (current_ranks > 0)
+        new_rank[idx] = 1
+    
+        idx = (past_ranks < tot_nport) & (current_ranks == tot_nport) & (current_ranks <= port_2) & (current_ranks > 0)
+        new_rank[idx] = tot_nport - 1
+    
+        idx = (past_ranks > 1) & (current_ranks == 1) & (current_ranks >= tot_nport - port_2)
+        new_rank[idx] = 2
+        return new_rank
+
     @staticmethod
     def assign_bond_bins(sortvar,thres,nport):
         idx = np.full(sortvar.shape, np.nan)
