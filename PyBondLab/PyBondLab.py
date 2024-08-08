@@ -133,7 +133,11 @@ class StrategyFormation:
 
             self.rename_id(IDvar=IDvar, DATEvar=DATEvar, RETvar=RETvar, RATINGvar=RATINGvar, PRICEvar=PRICEvar, Wvar = Wvar)
         
-        required_columns = ['ID', 'date', 'ret','RATING_NUM','VW']       
+        required_columns = ['index','date','ID', 'ret','RATING_NUM','VW']    
+        # reindex to avoid issues with groupby
+        self.data['index'] = np.arange(1, len(self.data) + 1, dtype=np.int64)
+        self.data_raw['index'] = np.arange(1, len(self.data_raw) + 1, dtype=np.int64)
+        
         # if self.rating:
         #     required_columns.append('RATING_NUM')        
         if self.adj == 'price':
@@ -148,7 +152,7 @@ class StrategyFormation:
         # force the IDs to be numbers. Needed to facilitate storing results
         N = len(np.unique(self.data["ID"]))
         self.unique_bonds = N
-        ID = dict(zip(np.unique(self.data["ID"]).tolist(),np.arange(1,N+1)))
+        ID = dict(zip(np.unique(self.data["ID"]).tolist(),np.arange(1, N + 1, dtype=np.int64)))
         
         self.data["ID"] = self.data["ID"].map(ID)
         self.data_raw["ID"] = self.data_raw["ID"].map(ID)
@@ -160,9 +164,6 @@ class StrategyFormation:
 
         self.data = self.data[required_columns]
         self.data_raw = self.data_raw[required_columns]
-
-        # self.data['index'] = range(1,(len(self.data)+1))
-        # self.data_raw['index'] = range(1,(len(self.data_raw)+1))
 
         self.required_columns = required_columns
         
@@ -269,10 +270,10 @@ class StrategyFormation:
             nport2 = None
             sort_var2 = None
             tot_nport = nport
-        
+        self.tot_nport = tot_nport 
         # initialize storing   
-        ewport_hor_ea = np.full((TM, hor, tot_nport), np.nan)
-        vwport_hor_ea = np.full((TM, hor, tot_nport), np.nan)
+        self.ewport_hor_ea = np.full((TM, hor, tot_nport), np.nan)
+        self.vwport_hor_ea = np.full((TM, hor, tot_nport), np.nan)
         # for turnover compute scaled returns
         if self.turnover:
             self.ewport_weight_hor_ea_scaled = np.zeros((TM, hor, tot_nport,unique_bonds))
@@ -290,8 +291,8 @@ class StrategyFormation:
                 vw_ea_chars_dict[char] = np.full((TM, hor, tot_nport), np.nan)
             
         if adj:
-            ewport_hor_ep = np.full((TM, hor, tot_nport), np.nan)
-            vwport_hor_ep = np.full((TM, hor, tot_nport), np.nan) 
+            self.ewport_hor_ep = np.full((TM, hor, tot_nport), np.nan)
+            self.vwport_hor_ep = np.full((TM, hor, tot_nport), np.nan) 
             # for turnover compute scaled returns
             if self.turnover:
                 self.ewport_weight_hor_ep_scaled = np.zeros((TM, hor, tot_nport,unique_bonds))
@@ -309,7 +310,10 @@ class StrategyFormation:
         
         # for t in range((hor+1), TM - hor): to discuss this!
         for t in range( TM - hor):
+            # define cohort for turnover computation
+            self.cohort = t % hor
             for h in range(1, hor + 1):
+                # print(self.cohort,h)
                 date_t = self.datelist[t]
 
                 # Filter based on ratings and signal != nan
@@ -353,14 +357,14 @@ class StrategyFormation:
                 ret_strategy_ea =  port_ret_ea[0]
 
                 # storing returns
-                ewport_hor_ea[t + h, h - 1, :] = ret_strategy_ea[0]
-                vwport_hor_ea[t + h, h - 1, :] = ret_strategy_ea[1]
+                self.ewport_hor_ea[t + h, self.cohort, :] = ret_strategy_ea[0]
+                self.vwport_hor_ea[t + h, self.cohort, :] = ret_strategy_ea[1]
                 # storing weights
                 if self.turnover:
                     weights_ea, weights_scaled_ea = port_ret_ea[1]
                     if not weights_ea.empty:
-                        self.fill_weights(weights_ea, self.ewport_weight_hor_ea,self.vwport_weight_hor_ea, t, h)
-                        self.fill_weights(weights_scaled_ea, self.ewport_weight_hor_ea_scaled,self.vwport_weight_hor_ea_scaled, t, h)
+                        self.fill_weights(weights_ea, self.ewport_weight_hor_ea,self.vwport_weight_hor_ea, t, h,self.cohort)
+                        self.fill_weights(weights_scaled_ea, self.ewport_weight_hor_ea_scaled,self.vwport_weight_hor_ea_scaled, t, h,self.cohort)
                 # storing chars
                 if self.chars:
                     # unpack
@@ -380,14 +384,14 @@ class StrategyFormation:
                     # unpack returns
                     ret_strategy_ep =  port_ret_ep[0]
                     # storing returns
-                    ewport_hor_ep[t + h, h - 1, :] = ret_strategy_ep[0]
-                    vwport_hor_ep[t + h, h - 1, :] = ret_strategy_ep[1]
+                    self.ewport_hor_ep[t + h, h - 1, :] = ret_strategy_ep[0]
+                    self.vwport_hor_ep[t + h, h - 1, :] = ret_strategy_ep[1]
                     # storing weights: 
                     if self.turnover:
                         weights_ep, weights_scaled_ep = port_ret_ep[1]
                         if not weights_ep.empty:
-                            self.fill_weights(weights_ep, self.ewport_weight_hor_ep,self.vwport_weight_hor_ep, t, h)
-                            self.fill_weights(weights_scaled_ep, self.ewport_weight_hor_ep_scaled,self.vwport_weight_hor_ep_scaled, t, h)
+                            self.fill_weights(weights_ep, self.ewport_weight_hor_ep,self.vwport_weight_hor_ep, t, h,self.cohort)
+                            self.fill_weights(weights_scaled_ep, self.ewport_weight_hor_ep_scaled,self.vwport_weight_hor_ep_scaled, t, h,self.cohort)
                         
                     # storing chars
                     if self.chars:
@@ -398,11 +402,11 @@ class StrategyFormation:
                             ew_ep_chars_dict[c][t + h,h-1,:] = chars_ep[0][c]
                             vw_ep_chars_dict[c][t + h,h-1,:] = chars_ep[1][c]                 
                         
-        self.ewport_ea = np.mean(ewport_hor_ea, axis=1)
-        self.vwport_ea = np.mean(vwport_hor_ea, axis=1)
+        self.ewport_ea = np.mean(self.ewport_hor_ea, axis=1)
+        self.vwport_ea = np.mean(self.vwport_hor_ea, axis=1)
         if adj:
-            self.ewport_ep = np.mean(ewport_hor_ep, axis=1)
-            self.vwport_ep = np.mean(vwport_hor_ep, axis=1)    
+            self.ewport_ep = np.mean(self.ewport_hor_ep, axis=1)
+            self.vwport_ep = np.mean(slef.vwport_hor_ep, axis=1)    
 
         # Compute portfolio returns
         if DoubleSort:  
@@ -548,9 +552,8 @@ class StrategyFormation:
                 for c in self.chars:
                     self.ew_chars_ep[c] = pd.DataFrame(np.mean(ew_ep_chars_dict[c],axis=1),index = self.datelist,columns = [f"Q{x}" for x in range(1,tot_nport+1)]) # mean across horizon
                     self.vw_chars_ep[c] = pd.DataFrame(np.mean(vw_ep_chars_dict[c],axis=1),index = self.datelist,columns = [f"Q{x}" for x in range(1,tot_nport+1)]) # mean across horizon
-            
-            
-    def port_sorted_ret(self, It0, It1, It1m, ret_col, sig,**kwargs):
+
+    def port_sorted_ret(self, It0, It1, It1m, ret_col,sig,**kwargs):
         """
         It0: investment universe that is going to be sorted in portfolios
         It1: investment universe at t+h. Used to compute returns on ptfs
@@ -638,22 +641,7 @@ class StrategyFormation:
 
         nport_idx = range(1,int(nportmax+1))  # index for the number of portfolios
 
-        # =====================================================================
-        # Create csv with number of assets in each bin
-        # =====================================================================
-        # ptf_count = It1.groupby('ptf_rank')['ID'].count()
-        # ptf_count_df = ptf_count.reset_index().T
-        # ptf_count_df['date'] = It1.date.iloc[0]
-        # ptf_count_df = ptf_count_df.drop('ptf_rank')
-        # csv_file_path = 'debug_ptf_count.csv'
-        # if not os.path.isfile(csv_file_path):
-        #     ptf_count_df.to_csv(csv_file_path, mode='w', index=False, header=True)
-        # else:
-        #     ptf_count_df.to_csv(csv_file_path, mode='a', index=False, header=False)
-        
-        # =====================================================================
         # store the weights:  return the column with ID 
-        # =====================================================================  
         if self.turnover:
             rank_ = It1[['ID','ptf_rank','ret']]
             rank = rank_.copy()
@@ -666,8 +654,18 @@ class StrategyFormation:
             # scale returns
             retscaled = rank.copy()
             # merge with bins returns
+            # merge with cohort returns
+            # if "adj" in ret_col:
+            #     ptf_ret_ew_cohort = pd.Series(self.ewport_hor_ep[t + h, self.cohort, :],index = nport_idx)
+            #     ptf_ret_vw_cohort = pd.Series(self.vwport_hor_ep[t + h, self.cohort, :],index = nport_idx)
+            # else:
+            #     ptf_ret_ew_cohort = pd.Series(self.ewport_hor_ea[t + h, self.cohort, :],index = nport_idx)
+            #     ptf_ret_vw_cohort = pd.Series(self.vwport_hor_ea[t + h, self.cohort, :],index = nport_idx)
+            # ptf_ret_ew_cohort.index.names = ['ptf_rank']
+            # ptf_ret_ew_cohort.index.names = ['ptf_rank']
+
             retscaled = retscaled.merge(ptf_ret_ew.to_frame(name='ewret').reset_index(), on ="ptf_rank",how="left")
-            retscaled = retscaled.merge(ptf_ret_vw.to_frame(name='vwret').reset_index(), on ="ptf_rank",how="left")    
+            retscaled = retscaled.merge(ptf_ret_ew.to_frame(name='vwret').reset_index(), on ="ptf_rank",how="left")    
             
             retscaled["ewret_scaled"] = ((1 + retscaled['ret'])/ (1+retscaled['ewret']))/retscaled["count"]
             retscaled["vwret_scaled"] = ((1 + retscaled['ret'])/ (1+retscaled['vwret'])) * retscaled["vweights"]
@@ -772,19 +770,14 @@ class StrategyFormation:
         return idx
     
     @staticmethod
-    def fill_weights(weights, array_ew,array_vw, t, h):
+    def fill_weights(weights, array_ew,array_vw, t, h,cohort):
         p = weights['ptf_rank'].values.astype(int)
         ID = weights['ID'].values.astype(int)
         eweights = weights['eweights'].values
         vweights = weights['vweights'].values
-        # for _, row in weights.iterrows():
-        #     p = int(row['ptf_rank'])
-        #     ID = int(row['ID'])
-        #     eweights = row['eweights']
-        #     vweights = row['vweights']
             
-        array_ew[t + h - 1, h - 1, p - 1, ID - 1] = eweights
-        array_vw[t + h - 1, h - 1, p - 1, ID - 1] = vweights
+        array_ew[t + h - 1, cohort, p - 1, ID - 1] = eweights
+        array_vw[t + h - 1, cohort, p - 1, ID - 1] = vweights
             
     @staticmethod  
     def compute_turnover(w,w_scaled):
