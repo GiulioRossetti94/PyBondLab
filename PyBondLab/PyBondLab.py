@@ -650,7 +650,10 @@ class StrategyFormation:
 
                     It1 = It1.merge( prev_rank, how = "left", left_on  = ['ID'],
                                 right_on = ['ID'], suffixes = ('_current','_lag'))
+                    
                     It1["ptf_rank"] = self.rank_banding(It1['ptf_rank_lag'],It1['ptf_rank_current'],self.banding_threshold,nportmax)
+
+                    It0['ptf_rank'] = It1.apply(self.calculate_qnew, axis=1, args=(nportmax, self.banding_threshold,))
 
                     # df_clean = It1.dropna(subset=['ptf_rank_current', 'ptf_rank_lag'])
                     # deb = df_clean[df_clean['ptf_rank_current'] != df_clean['ptf_rank_lag']]
@@ -764,6 +767,31 @@ class StrategyFormation:
         idx = (past_ranks > 1) & (current_ranks == 1) & (current_ranks >= tot_nport - port_2)
         new_rank[idx] = 2
         return new_rank
+    
+    # Over-write Q #
+    # @staticmethod
+    def calculate_qnew(self,row, nport, threshold):
+        # difference = nport * threshold
+        difference = threshold
+        
+        if difference <= 3:
+            # Check if the drop is greater than the threshold
+            if row['ptf_rank_lag'] == nport and row['ptf_rank_current'] >= nport - difference:
+                return nport
+            # Check if the rise is greater than the threshold
+            elif row['ptf_rank_lag'] == 1 and row['ptf_rank_current'] <= 1 + difference:
+                return 1
+            else:
+                return row['ptf_rank_current']                
+        else:           
+            # Check if the drop is greater than the threshold
+            if row['ptf_rank_lag'] == nport and row['ptf_rank_current'] >=  difference:
+                return nport
+            # Check if the rise is greater than the threshold
+            elif row['ptf_rank_lag'] == 1 and row['ptf_rank_current'] <= difference:
+                return (nport-nport+1)
+            else:
+                return row['ptf_rank_current']
 
     @staticmethod
     def assign_bond_bins(sortvar,thres,nport):
