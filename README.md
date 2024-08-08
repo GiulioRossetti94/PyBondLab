@@ -186,6 +186,8 @@ ew_turnover, vw_turnover = res.get_ptf_turnover()
 ## References
 Dickerson, Robotti, and Rossetti, [2024](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=4575879)
 
+Novy-Marx, Velikov, [2023](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=4338007)
+
 [Open Source Bond Asset Pricing project](https://openbondassetpricing.com/)
 
 ## Requirements
