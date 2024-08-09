@@ -644,16 +644,16 @@ class StrategyFormation:
             else:
                 # if not first period, merge the ranks                
                 # rank banding
-                if h == 1:   # we do not do banding at h != 1
+                
                     # get the ranks from the previous period
-                    prev_rank = self.lag_rank[self.cohort]
+                prev_rank = self.lag_rank[self.cohort]
 
-                    It1 = It1.merge( prev_rank, how = "left", left_on  = ['ID'],
+                It1 = It1.merge( prev_rank, how = "left", left_on  = ['ID'],
                                 right_on = ['ID'], suffixes = ('_current','_lag'))
                     
                     # It1["ptf_rank"] = self.rank_banding(It1['ptf_rank_lag'],It1['ptf_rank_current'],self.banding_threshold,nportmax)
                     # It1 = self.calculate_qnew_vectorized(It1,nportmax,self.banding_threshold)   # this is 3 sec faster
-                    It1["ptf_rank"] = self.calculate_qnew_vectorized(It1['ptf_rank_lag'],It1['ptf_rank_current'],nportmax,self.banding_threshold)
+                It1["ptf_rank"] = self.calculate_qnew_vectorized(It1['ptf_rank_lag'],It1['ptf_rank_current'],nportmax,self.banding_threshold)
                     # It1['ptf_rank'] = It1.apply(self.calculate_qnew, axis=1, args=(nportmax, self.banding_threshold,))
                     # check
                     # df_clean = It1.dropna(subset=['ptf_rank_current', 'ptf_rank_lag'])
