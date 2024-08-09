@@ -651,10 +651,11 @@ class StrategyFormation:
                     It1 = It1.merge( prev_rank, how = "left", left_on  = ['ID'],
                                 right_on = ['ID'], suffixes = ('_current','_lag'))
                     
-                    It1["ptf_rank"] = self.rank_banding(It1['ptf_rank_lag'],It1['ptf_rank_current'],self.banding_threshold,nportmax)
-
-                    It0['ptf_rank'] = It1.apply(self.calculate_qnew, axis=1, args=(nportmax, self.banding_threshold,))
-
+                    # It1["ptf_rank"] = self.rank_banding(It1['ptf_rank_lag'],It1['ptf_rank_current'],self.banding_threshold,nportmax)
+                    # It1 = self.calculate_qnew_vectorized(It1,nportmax,self.banding_threshold)   # this is 3 sec faster
+                    It1["ptf_rank"] = self.calculate_qnew_vectorized(It1['ptf_rank_lag'],It1['ptf_rank_current'],nportmax,self.banding_threshold)
+                    # It1['ptf_rank'] = It1.apply(self.calculate_qnew, axis=1, args=(nportmax, self.banding_threshold,))
+                    # check
                     # df_clean = It1.dropna(subset=['ptf_rank_current', 'ptf_rank_lag'])
                     # deb = df_clean[df_clean['ptf_rank_current'] != df_clean['ptf_rank_lag']]
                     # if not deb.empty:
@@ -769,29 +770,26 @@ class StrategyFormation:
         return new_rank
     
     # Over-write Q #
-    # @staticmethod
-    def calculate_qnew(self,row, nport, threshold):
-        # difference = nport * threshold
-        difference = threshold
+    # 
+    def calculate_qnew(self,row, nport, banding_thres):                         
+        # Check if the drop is greater than the threshold
+        if row['ptf_rank_lag'] == nport and row['ptf_rank_current'] >= nport - banding_thres:
+            return nport
+        # Check if the rise is greater than the threshold
+        elif row['ptf_rank_lag'] == 1 and row['ptf_rank_current']   <= 1     + banding_thres:
+            return 1
+        else:
+            return row['ptf_rank_current']  
         
-        if difference <= 3:
-            # Check if the drop is greater than the threshold
-            if row['ptf_rank_lag'] == nport and row['ptf_rank_current'] >= nport - difference:
-                return nport
-            # Check if the rise is greater than the threshold
-            elif row['ptf_rank_lag'] == 1 and row['ptf_rank_current'] <= 1 + difference:
-                return 1
-            else:
-                return row['ptf_rank_current']                
-        else:           
-            # Check if the drop is greater than the threshold
-            if row['ptf_rank_lag'] == nport and row['ptf_rank_current'] >=  difference:
-                return nport
-            # Check if the rise is greater than the threshold
-            elif row['ptf_rank_lag'] == 1 and row['ptf_rank_current'] <= difference:
-                return (nport-nport+1)
-            else:
-                return row['ptf_rank_current']
+    @staticmethod    
+    def calculate_qnew_vectorized(lag,current, nport, banding_thres):
+        # Create masks for the conditions
+        mask_drop = (lag == nport) & (current >= nport - banding_thres)
+        mask_rise = (lag == 1) & (current <= 1 + banding_thres)
+
+        new_rank = np.where(mask_drop, nport, np.where(mask_rise, 1,current))
+
+        return new_rank
 
     @staticmethod
     def assign_bond_bins(sortvar,thres,nport):
