@@ -205,7 +205,6 @@ class StrategyFormation:
     def compute_signal(self):
         # compute signal
         self.data = self.strategy.compute_signal(self.data) 
-        # get params from strategy(
         # print(self.strategy.__strategy_name__)
         if self.filters and self.adj in ["trim", "wins", "price", "bounce"]:
             filter_obj = Filter(self.data, self.adj, self.w, self.loc, self.percentile_breakpoints,self.price_threshold)
@@ -650,16 +649,8 @@ class StrategyFormation:
 
                 It1 = It1.merge( prev_rank, how = "left", left_on  = ['ID'],
                                 right_on = ['ID'], suffixes = ('_current','_lag'))
-                    
-                    # It1["ptf_rank"] = self.rank_banding(It1['ptf_rank_lag'],It1['ptf_rank_current'],self.banding_threshold,nportmax)
-                    # It1 = self.calculate_qnew_vectorized(It1,nportmax,self.banding_threshold)   # this is 3 sec faster
+
                 It1["ptf_rank"] = self.calculate_qnew_vectorized(It1['ptf_rank_lag'],It1['ptf_rank_current'],nportmax,self.banding_threshold)
-                    # It1['ptf_rank'] = It1.apply(self.calculate_qnew, axis=1, args=(nportmax, self.banding_threshold,))
-                    # check
-                    # df_clean = It1.dropna(subset=['ptf_rank_current', 'ptf_rank_lag'])
-                    # deb = df_clean[df_clean['ptf_rank_current'] != df_clean['ptf_rank_lag']]
-                    # if not deb.empty:
-                    #     print(f"banding at time {time_t1} for {deb.shape[0]} bonds")
                 self.lag_rank[self.cohort] = It1[['ID','ptf_rank']].copy()
 
         # check if dfs are empty
@@ -747,39 +738,16 @@ class StrategyFormation:
             else:
                 return (ewl, vwl),(None,None)
     
-    @staticmethod
-    def rank_banding(past_ranks, current_ranks, threshold, tot_nport):
-        # Assign the output index
-        new_rank = current_ranks.copy()   
-
-        # Determine the buy/hold thresholds
-        port_1 = 0
-        port_2 = threshold
-
-        idx = (past_ranks >= tot_nport - port_1) & (current_ranks >= tot_nport - port_2)
-        new_rank[idx] = tot_nport
-    
-        idx = (past_ranks <= 1 + port_1) & (past_ranks > 0) & (current_ranks <= port_2) & (current_ranks > 0)
-        new_rank[idx] = 1
-    
-        idx = (past_ranks < tot_nport) & (current_ranks == tot_nport) & (current_ranks <= port_2) & (current_ranks > 0)
-        new_rank[idx] = tot_nport - 1
-    
-        idx = (past_ranks > 1) & (current_ranks == 1) & (current_ranks >= tot_nport - port_2)
-        new_rank[idx] = 2
-        return new_rank
-    
     # Over-write Q #
-    # 
-    def calculate_qnew(self,row, nport, banding_thres):                         
-        # Check if the drop is greater than the threshold
-        if row['ptf_rank_lag'] == nport and row['ptf_rank_current'] >= nport - banding_thres:
-            return nport
-        # Check if the rise is greater than the threshold
-        elif row['ptf_rank_lag'] == 1 and row['ptf_rank_current']   <= 1     + banding_thres:
-            return 1
-        else:
-            return row['ptf_rank_current']  
+    # def calculate_qnew(self,row, nport, banding_thres):                         
+    #     # Check if the drop is greater than the threshold
+    #     if row['ptf_rank_lag'] == nport and row['ptf_rank_current'] >= nport - banding_thres:
+    #         return nport
+    #     # Check if the rise is greater than the threshold
+    #     elif row['ptf_rank_lag'] == 1 and row['ptf_rank_current']   <= 1     + banding_thres:
+    #         return 1
+    #     else:
+    #         return row['ptf_rank_current']  
         
     @staticmethod    
     def calculate_qnew_vectorized(lag,current, nport, banding_thres):
