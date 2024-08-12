@@ -55,6 +55,7 @@ class SingleSort(Strategy):
             An additional parameter for strategy customization.
         """
         super().__init__(nport, K, J, skip)
+        self.__strategy_name__ = "Single Sorting"
         
         self.sort_var = sort_var  # Sorting variable
         

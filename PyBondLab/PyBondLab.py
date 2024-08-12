@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from .FilterClass import Filter
 from .StrategyClass import *
+from .iotools.PyBondLabResults import StrategyResults
 import warnings
 import statsmodels.api as sm
 import matplotlib.pyplot as plt
@@ -52,6 +53,20 @@ class StrategyFormation:
         self.name = self._create_name(self.rating, self.strategy.str_name)     
         # INITIALIZE DFs 
         self._initialize_dfs(filters)  # initialize variables for storing results
+        # SAVE PARAMETERS FOR IO OPERATIONS
+        self.stored_params = self._store_params()
+
+    def _store_params(self):
+        """ store parameters in a dictionary """
+        return {
+            "strategy": self.strategy,
+            "rating": self.rating,
+            "chars": self.chars,
+            "dynamic_weights": self.dynamic_weights,
+            "turnover": self.turnover,
+            "banding_threshold": self.banding_threshold,
+            "filters": self.filters
+        }
 
     def _validate_rating(self, rating):
         valid_ratings = ["NIG", "IG", None]
@@ -110,6 +125,42 @@ class StrategyFormation:
             self.ew_chars_ep = None
             self.vw_chars_ep = None         
     
+    def _store_results(self, filters):
+        # Base results (ex ante)
+        self._stored_results = {
+            "name": self.name,
+            "ewls": self.ewls_ea_df,
+            "vwls": self.vwls_ea_df,
+            "ewl": self.ewls_ea_long_df,
+            "ews": self.ewls_ea_short_df,
+            "vwl": self.vwls_ea_long_df,
+            "vws": self.vwls_ea_short_df,
+            "ewport": self.ewport_ea,
+            "vwport": self.vwport_ea,
+            "ew_turnover": self.ewturnover_ea_df,
+            "vw_turnover": self.vwturnover_ea_df,
+            "ew_chars": self.ew_chars_ea,
+            "vw_chars": self.vw_chars_ea
+        }
+
+        # If filters are used, add ex post results
+        if filters:
+            self._stored_results.update({
+                "ewls_ep": self.ewls_ep_df,
+                "vwls_ep": self.vwls_ep_df,
+                "ewl_ep": self.ewls_ep_long_df,
+                "ews_ep": self.ewls_ep_short_df,
+                "vwl_ep": self.vwls_ep_long_df,
+                "vws_ep": self.vwls_ep_short_df,
+                "ewport_ep": self.ewport_ep,
+                "vwport_ep": self.vwport_ep,
+                "ew_turnover_ep": self.ewturnover_ep_df,
+                "vw_turnover_ep": self.vwturnover_ep_df,
+                "ew_chars_ep": self.ew_chars_ep,
+                "vw_chars_ep": self.vw_chars_ep
+            })
+
+
     def fit(self, *, IDvar=None, DATEvar=None, RETvar=None, PRICEvar=None, RATINGvar = None ,Wvar = None):
         if any([IDvar, DATEvar, RETvar, PRICEvar, RATINGvar, Wvar]):
             column_mapping = {
@@ -170,6 +221,11 @@ class StrategyFormation:
         
         self.compute_signal()
         self.portfolio_formation()
+
+        # STORE RESULTS FOR IO OPERATIONS
+        self._store_results(filters=self.filters)
+        
+        sfit = StrategyResults(self.stored_params,self._stored_results)
 
         return self
     
