@@ -225,9 +225,20 @@ class StrategyFormation:
         # STORE RESULTS FOR IO OPERATIONS
         self._store_results(filters=self.filters)
         
-        sfit = StrategyResults(self.stored_params,self._stored_results)
+        self.stored_params.update({"nbonds": N,
+                                   "start_date": self.datelist[0],
+                                   "end_date": self.datelist[-1],
+                                   "tot_periods": len(self.datelist)})
+        
+        self.sfit = StrategyResults(self.stored_params,self._stored_results)
 
         return self
+    
+    def summary(self,type = "ew"):
+        if hasattr(self, 'sfit'):
+            return self.sfit.summary(type = type)
+        else:
+            raise ValueError("Fit the model first")
     
     def rename_id(self, *, IDvar=None, DATEvar=None,RETvar=None,RATINGvar=None, PRICEvar=None, Wvar = None):
         """
