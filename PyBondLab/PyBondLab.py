@@ -26,34 +26,32 @@ class StrategyFormation:
     def __init__(self, data: pd.DataFrame,strategy: Strategy, rating: str = None, chars: dict = None, dynamic_weights: bool = False,turnover: bool = False ,banding_threshold: float = None,filters: dict = None):
         
         self.data_raw = data.copy()
-        self.data = data.copy()
+        self.data     = data.copy()
         # Check if 'date' column exists before creating datelist
         self.datelist = pd.Series(self.data['date'].unique()).sort_values().tolist() if 'date' in self.data.columns else None
         
         # STRATEGY PARAMETERS
         self.strategy = strategy
-        self.nport = strategy.nport
+        self.nport    = strategy.nport
         
         # RATING, CHARS, WEIGHTS
-        self.rating = self._validate_rating(rating)     # validate and set ratings
-        self.chars = chars if chars else None           # used to compute stats for portfolio bins
-        self.dynamic_weights = dynamic_weights 
-        self.turnover = turnover                        # compute turnover. False by default to speed up computations
-        self.banding_threshold = banding_threshold      # threshold for banding
+        self.rating            = self._validate_rating(rating)    # validate and set ratings
+        self.chars             = chars if chars else None         # used to compute stats for portfolio bins
+        self.dynamic_weights   = dynamic_weights 
+        self.turnover          = turnover                         # compute turnover. False by default to speed up computations
+        self.banding_threshold = banding_threshold                # threshold for banding
         
         # PARAMETERS FOR FILTERS/ADJUSTMENTS
-        self.filters = self._validate_filters(filters)
-        self.adj = self.filters.get('adj')
-        self.w = self.filters.get('level')
-        self.loc = self.filters.get('location')
-        self.percentile_breakpoints = self.filters.get('df_breakpoints') if self.adj == 'wins' else None
-        self.price_threshold = self.filters.get('price_threshold', 25) if self.adj == 'price' else None
+        self.filters                = self._validate_filters(filters)
+        self.adj                    = self.filters.get('adj')
+        self.w                      = self.filters.get('level')
+        self.loc                    = self.filters.get('location')
+        self.perc_breakpoints       = self.filters.get('df_breakpoints') if self.adj == 'wins' else None
+        self.price_threshold        = self.filters.get('price_threshold', 25) if self.adj == 'price' else None
         
-        # CREATE NAMES    
+        # CREATE NAMES, INITIALIZE DFs,  SAVE PARAMETERS FOR IO OPERATIONS
         self.name = self._create_name(self.rating, self.strategy.str_name)     
-        # INITIALIZE DFs 
         self._initialize_dfs(filters)  # initialize variables for storing results
-        # SAVE PARAMETERS FOR IO OPERATIONS
         self.stored_params = self._store_params()
 
     def _store_params(self):
@@ -94,36 +92,36 @@ class StrategyFormation:
 
     def _initialize_dfs(self, filters):
         # ex ante dfs
-        self.ewls_ea_long_df = None
-        self.vwls_ea_long_df = None
-        self.ewls_ea_short_df = None
-        self.vwls_ea_short_df = None
-        self.ewls_ea_df = None
-        self.vwls_ea_df = None
-        self.ewport_ea = None
-        self.vwport_ea = None
+        self.ewls_ea_long_df      = None
+        self.vwls_ea_long_df      = None
+        self.ewls_ea_short_df     = None
+        self.vwls_ea_short_df     = None
+        self.ewls_ea_df           = None
+        self.vwls_ea_df           = None
+        self.ewport_ea            = None
+        self.vwport_ea            = None
         self.ewport_weight_hor_ea = None
         self.vwport_weight_hor_ea = None
-        self.ewturnover_ea_df = None
-        self.vwturnover_ea_df = None
-        self.ew_chars_ea = None
-        self.vw_chars_ea = None
+        self.ewturnover_ea_df     = None
+        self.vwturnover_ea_df     = None
+        self.ew_chars_ea          = None
+        self.vw_chars_ea          = None
         # es post dfs
         if filters:
-            self.ewls_ep_df = None 
-            self.vwls_ep_df = None
-            self.ewls_ep_long_df = None
-            self.vwls_ep_long_df = None
-            self.ewls_ep_short_df = None
-            self.vwls_ep_short_df = None
-            self.ewport_ep = None
-            self.vwport_ep = None
+            self.ewls_ep_df           = None 
+            self.vwls_ep_df           = None
+            self.ewls_ep_long_df      = None
+            self.vwls_ep_long_df      = None
+            self.ewls_ep_short_df     = None
+            self.vwls_ep_short_df     = None
+            self.ewport_ep            = None
+            self.vwport_ep            = None
             self.ewport_weight_hor_ep = None
             self.vwport_weight_hor_ep = None
-            self.ewturnover_ep_df = None
-            self.vwturnover_ep_df = None
-            self.ew_chars_ep = None
-            self.vw_chars_ep = None         
+            self.ewturnover_ep_df     = None
+            self.vwturnover_ep_df     = None
+            self.ew_chars_ep          = None
+            self.vw_chars_ep          = None         
     
     def _store_results(self, filters):
         # Base results (ex ante)
@@ -274,9 +272,8 @@ class StrategyFormation:
         self.data = self.strategy.compute_signal(self.data) 
         # print(self.strategy.__strategy_name__)
         if self.filters and self.adj in ["trim", "wins", "price", "bounce"]:
-            filter_obj = Filter(self.data, self.adj, self.w, self.loc, self.percentile_breakpoints,self.price_threshold)
+            filter_obj = Filter(self.data, self.adj, self.w, self.loc, self.perc_breakpoints,self.price_threshold)
             self.name += filter_obj.name_filt
-            
             self.data = filter_obj.apply_filters()
             sort_var = self.strategy.get_sort_var(self.adj)
             
@@ -286,6 +283,7 @@ class StrategyFormation:
             
             if 'signal' in sort_var:
                 if self.strategy.__strategy_name__ == "MOMENTUM":
+                    # formation period of J months
                     J = self.strategy.J
                     skip = self.strategy.skip
                     varname = f'ret_{self.adj}'
@@ -295,6 +293,7 @@ class StrategyFormation:
                     self.data[f'signal_{self.adj}'] = np.exp(self.data[f'signal_{self.adj}']) - 1
                     self.data[f'signal_{self.adj}'] = self.data.groupby("ID")[f'signal_{self.adj}'].shift(skip)
                 elif self.strategy.__strategy_name__ == "LT-REVERSAL":
+                    # using "skip" as a formation period
                     J = self.strategy.J
                     skip = self.strategy.skip
                     varname = f'ret_{self.adj}'
@@ -302,8 +301,6 @@ class StrategyFormation:
                         .apply(lambda x:  x.rolling(window = J).sum()) - \
                                self.data.groupby(['ID'], group_keys=False)[varname]\
                         .apply(lambda x:  x.rolling(window = skip).sum())
-                    
-         
         else:
             sort_var = self.strategy.get_sort_var()
             
@@ -314,7 +311,6 @@ class StrategyFormation:
         adj = self.adj
         ret_var  = 'ret'                             # this is the column used to compute the returns of portfolios
         sort_var = self.strategy.get_sort_var(adj)   # this is the column used to sort bonds into portfolios
-        
         hor = self.strategy.K                        # holding period
         
         TM = len(self.datelist)
@@ -323,12 +319,10 @@ class StrategyFormation:
         if adj == 'wins':
             tab_ex_post_wins = self.data_winsorized_ex_post # this is a df w/ wisorized returns
         
-        # =====================================================================
         # Unpack for double sorting
-        # =====================================================================
-        DoubleSort = getattr(self.strategy, 'DoubleSort', False)
-        if DoubleSort:
-            # DoubleSort = 1
+        use_double_sort = getattr(self.strategy, 'DoubleSort', False)
+        if use_double_sort:
+            # use_double_sort = 1
             nport2 = self.strategy.nport2
             sort_var2 = self.strategy.sort_var2
             tot_nport = nport * nport2
@@ -390,7 +384,7 @@ class StrategyFormation:
             date_t = self.datelist[t]
 
             # Filter based on ratings and signal != nan
-            if DoubleSort:
+            if use_double_sort:
                 It0 = self.filter_by_rating(tab, date_t, sort_var, sort_var2)
             else:
                 It0 = self.filter_by_rating(tab, date_t, sort_var)              
@@ -423,10 +417,10 @@ class StrategyFormation:
                 if adj == 'wins' and 'signal' in sort_var:
                     # TODO can be removed
                     # use winsorized returns to assign to ptfs
-                    port_ret_ea = self.port_sorted_ret(It0_h, It1,It1m,ret_var, sort_var,h,DoubleSort=DoubleSort,sig2 = sort_var2,nport2 = nport2 )
+                    port_ret_ea = self.port_sorted_ret(It0_h, It1,It1m,ret_var, sort_var,h,DoubleSort=use_double_sort,sig2 = sort_var2,nport2 = nport2 )
                 else:
                     # if signal is not in sort_var, we do not use winsorized returns to sort portfolios
-                    port_ret_ea = self.port_sorted_ret(It0_h, It1,It1m,ret_var, sort_var,h,DoubleSort=DoubleSort,sig2 = sort_var2,nport2 = nport2 )
+                    port_ret_ea = self.port_sorted_ret(It0_h, It1,It1m,ret_var, sort_var,h,DoubleSort=use_double_sort,sig2 = sort_var2,nport2 = nport2 )
                 
                 # unpack returns
                 ret_strategy_ea =  port_ret_ea[0]
@@ -455,7 +449,7 @@ class StrategyFormation:
                     else:
                         It2 = tab[(tab['date'] == self.datelist[t + h]) & (~tab[ret_var + "_" + adj].isna())]
                     
-                    port_ret_ep = self.port_sorted_ret(It0_h, It2,It1m,ret_var + "_" + adj, sort_var,h,DoubleSort=DoubleSort,sig2 = sort_var2,nport2 = nport2 )
+                    port_ret_ep = self.port_sorted_ret(It0_h, It2,It1m,ret_var + "_" + adj, sort_var,h,DoubleSort=use_double_sort,sig2 = sort_var2,nport2 = nport2 )
                     # unpack returns
                     ret_strategy_ep =  port_ret_ep[0]
                     # storing returns
@@ -484,7 +478,7 @@ class StrategyFormation:
             self.vwport_ep = np.mean(vwport_hor_ep, axis=1)    
 
         # Compute portfolio returns
-        if DoubleSort:  
+        if use_double_sort:  
             # storing rets
             avg_res_ew = []
             avg_res_vw = []
@@ -556,7 +550,7 @@ class StrategyFormation:
                 self.vw_chars_ea[c] = pd.DataFrame(np.mean(vw_ea_chars_dict[c],axis=1),index = self.datelist,columns = [f"Q{x}" for x in range(1,tot_nport+1)]) # mean across horizon
         
         if adj:
-            if DoubleSort:
+            if use_double_sort:
                 avg_res_ew = []
                 avg_res_vw = []
                 # storing legs
@@ -642,8 +636,8 @@ class StrategyFormation:
         # Unpacking if double sorting
         # =====================================================================
         double_sort = kwargs.get('DoubleSort', None)
-        sig2 = kwargs.get('sig2', None)
-        nport2 = kwargs.get('nport2', None)
+        sig2        = kwargs.get('sig2', None)
+        nport2      = kwargs.get('nport2', None)
         
         # =====================================================================
         # compute edges for first and second signals
@@ -911,7 +905,7 @@ class StrategyFormation:
         elif self.rating == "IG":
             conditions &= (tab['RATING_NUM'] >= 1) & (tab['RATING_NUM'] <= 10)
 
-        # Add conditions for the second sort variable if DoubleSort is True
+        # Add conditions for the second sort variable if use_double_sort is True
         if sort_var2 is not None:
             conditions &= ~tab[sort_var2].isna()
 
