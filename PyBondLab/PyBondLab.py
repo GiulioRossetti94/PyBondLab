@@ -208,9 +208,14 @@ class StrategyFormation:
         self.data_raw["ID"] = self.data_raw["ID"].map(ID)
 
         # select relevant columns
-        signal_col = self.strategy.get_sort_var()
-        if signal_col in self.data.columns and signal_col not in required_columns:
-            required_columns.append(signal_col)
+
+        signal_vars = [self.strategy.get_sort_var()]
+        if self.strategy.DoubleSort == 1:
+            signal_vars.append(self.strategy.sort_var2)
+        
+        for signal_col in signal_vars:
+            if signal_col in self.data.columns and signal_col not in required_columns:
+                required_columns.append(signal_col)
 
         self.data = self.data[required_columns]
         self.data_raw = self.data_raw[required_columns]

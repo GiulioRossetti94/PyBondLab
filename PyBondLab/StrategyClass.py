@@ -114,6 +114,7 @@ class DoubleSort(Strategy):
             An additional parameter for strategy customization.
         """
         super().__init__(nport, K, J, skip)
+        self.__strategy_name__ = "Double Sorting"
         
         self.DoubleSort = 1
         self.sort_var = sort_var  # Primary sorting variable
