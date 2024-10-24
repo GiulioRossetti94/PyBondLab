@@ -46,6 +46,7 @@ tbl1['VW'] = tbl1['BOND_VALUE']
 # rename your main price variable to 'PRICE'
 tbl1.rename(columns={"BONDPRC":"PRICE", # Rename MMN-adjusted BONDPRC to PRICE
                      "cusip":"ID",      # Rename cusip to ID
+                     "rating":"RATING_NUM", # Rename rating to RATING_NUM
                      "bond_ret":"ret"},inplace=True) # Rename bond_ret to ret
 
 # i.e., if you want to use duration-adjusted returns, rename 
