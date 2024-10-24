@@ -79,7 +79,7 @@ Strategies_L  = pd.DataFrame() # Long (L) strategies #
 Strategies_S  = pd.DataFrame() # Short (S) strategies #
 
 Sort_Vars = [
-            'rating',         # Rating
+            'RATING_NUM',         # Rating
             'CS',             # Credit Spread (MMN-adjusted)
             'CS_6M_DELTA',    # 6m log change in CS (MMN-adjusted)
             'tmt',            # Time-to-Maturity
