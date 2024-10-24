@@ -326,6 +326,7 @@ class StrategyFormation:
         
         # Unpack for double sorting
         use_double_sort = getattr(self.strategy, 'DoubleSort', False)
+        how = getattr(self.strategy, 'how', 'unconditional') # unconditional by default
         if use_double_sort:
             # use_double_sort = 1
             nport2 = self.strategy.nport2
@@ -422,10 +423,10 @@ class StrategyFormation:
                 if adj == 'wins' and 'signal' in sort_var:
                     # TODO can be removed
                     # use winsorized returns to assign to ptfs
-                    port_ret_ea = self.port_sorted_ret(It0_h, It1,It1m,ret_var, sort_var,h,DoubleSort=use_double_sort,sig2 = sort_var2,nport2 = nport2 )
+                    port_ret_ea = self.port_sorted_ret(It0_h, It1,It1m,ret_var, sort_var,DoubleSort=use_double_sort,sig2 = sort_var2,nport2 = nport2, how = how )
                 else:
                     # if signal is not in sort_var, we do not use winsorized returns to sort portfolios
-                    port_ret_ea = self.port_sorted_ret(It0_h, It1,It1m,ret_var, sort_var,h,DoubleSort=use_double_sort,sig2 = sort_var2,nport2 = nport2 )
+                    port_ret_ea = self.port_sorted_ret(It0_h, It1,It1m,ret_var, sort_var,DoubleSort=use_double_sort,sig2 = sort_var2,nport2 = nport2, how = how )
                 
                 # unpack returns
                 ret_strategy_ea =  port_ret_ea[0]
@@ -454,7 +455,7 @@ class StrategyFormation:
                     else:
                         It2 = tab[(tab['date'] == self.datelist[t + h]) & (~tab[ret_var + "_" + adj].isna())]
                     
-                    port_ret_ep = self.port_sorted_ret(It0_h, It2,It1m,ret_var + "_" + adj, sort_var,h,DoubleSort=use_double_sort,sig2 = sort_var2,nport2 = nport2 )
+                    port_ret_ep = self.port_sorted_ret(It0_h, It2,It1m,ret_var + "_" + adj, sort_var,DoubleSort=use_double_sort,sig2 = sort_var2,nport2 = nport2,how = how)
                     # unpack returns
                     ret_strategy_ep =  port_ret_ep[0]
                     # storing returns
@@ -627,7 +628,7 @@ class StrategyFormation:
                     self.ew_chars_ep[c] = pd.DataFrame(np.mean(ew_ep_chars_dict[c],axis=1),index = self.datelist,columns = [f"Q{x}" for x in range(1,tot_nport+1)]) # mean across horizon
                     self.vw_chars_ep[c] = pd.DataFrame(np.mean(vw_ep_chars_dict[c],axis=1),index = self.datelist,columns = [f"Q{x}" for x in range(1,tot_nport+1)]) # mean across horizon
 
-    def port_sorted_ret(self, It0, It1, It1m, ret_col,sig,h,**kwargs):
+    def port_sorted_ret(self, It0, It1, It1m, ret_col,sig,**kwargs):
         """
         It0: investment universe that is going to be sorted in portfolios
         It1: investment universe at t+h. Used to compute returns on ptfs
@@ -643,6 +644,7 @@ class StrategyFormation:
         double_sort = kwargs.get('DoubleSort', None)
         sig2        = kwargs.get('sig2', None)
         nport2      = kwargs.get('nport2', None)
+        how         = kwargs.get('how', 'unconditional')
         
         # =====================================================================
         # compute edges for first and second signals
@@ -652,10 +654,6 @@ class StrategyFormation:
         nport = self.nport    # number of portfolios
         thres = np.percentile(It0[sig], np.linspace(0, 100, nport + 1))        # compute edges for signal
         thres[0] = -np.inf
-        
-        if double_sort:
-            thres2 = np.percentile(It0[sig2], np.linspace(0, 100, nport2 + 1))# compute edges for signal2
-            thres2[0] = -np.inf
         
         id0 = It0['ID']
         id1 = It1['ID']
@@ -681,24 +679,24 @@ class StrategyFormation:
         # =====================================================================
         if double_sort:
             nportmax = nport * nport2 
-            # Double sorting: compute the rank independently
             sortvar2 = It0[sig2]
-            idx1 = self.assign_bond_bins(sortvar,thres,nport)
-            idx2 = self.assign_bond_bins(sortvar2,thres2,nport2)      
-            # if condSort:
-            # It1['ptf_rank'] = self.cond_sort(sortvar2, idx1, nport, nport2)#(sortvar2, idx1, n1, n2)
             
-            # create a column with final rank: ptfs going from 1 to nport1 x nport2
-            It1['ptf_rank'] = self.double_idx_uncond(idx1, idx2, nport, nport2)    
-            # rank_bonds = self.double_idx_uncond(idx1, idx2, nport, nport2)  
+            idx1 = self.assign_bond_bins(sortvar,thres,nport)     # sort first signal
+            if how == "unconditional":
+                # unconditional double sorting: compute the rank independently for the two signals
+                thres2 = np.percentile(It0[sig2], np.linspace(0, 100, nport2 + 1))# compute edges for signal2 independently from signal1
+                thres2[0] = -np.inf
+                idx2 = self.assign_bond_bins(sortvar2,thres2,nport2)  # sort second signal independently    
+                # create a column with final rank: ptfs going from 1 to nport1 x nport2
+                It1['ptf_rank'] = self.double_sort_uncond(idx1, idx2, nport, nport2)
+
+            if how == "conditional":
+                # conditional double sorting: within each bin, sort the bonds based on the second signal
+                It1['ptf_rank'] = self.double_sort_cond(sortvar2, idx1, nport, nport2)
                     
         else:
             nportmax = nport
             It1['ptf_rank'] = self.assign_bond_bins(sortvar,thres,nport)
-
-            # debug = It1[['ID','ptf_rank']]
-            # debug.set_index('ID',inplace=True)
-            # self.c.append(debug)
         
         # store It1 if banding 
         if self.banding_threshold is not None:
@@ -846,7 +844,7 @@ class StrategyFormation:
         return result
             
     @staticmethod
-    def double_idx_uncond(idx1, idx2, n1, n2):
+    def double_sort_uncond(idx1, idx2, n1, n2):
         """
         Python adaptation of AssayingAnomalies func 
         https://github.com/velikov-mihail/AssayingAnomalies/tree/main
@@ -858,23 +856,21 @@ class StrategyFormation:
         return idx
      
     @staticmethod
-    def cond_sort(sortvar2, idx1, n1, n2):
-        """
-        Python adaptation of AssayingAnomalies func 
-        https://github.com/velikov-mihail/AssayingAnomalies/tree/main
-        """
+    def double_sort_cond(sortvar2, idx1, n1, n2):
         n2 = int(n2)
         n1 = int(n1)
-        idx = np.full(idx1.shape,np.nan)
-        thres = np.percentile(sortvar2[~np.isnan(sortvar2)], np.linspace(0, 100, n2 + 1))
-        thres[0] = -np.inf  # To handle values smaller than the first percentile
+        idx = np.zeros_like(sortvar2) # initialize the array 
+        # loop over the number of portfolios and assign the rank within sorted bins
         for i in range(1, n1 + 1):
-            # Sort within each of the portfolios sorted based on the first variable
-            temp = np.copy(sortvar2)
-            temp[idx1 != i] = np.nan
-            temp_ind = StrategyFormation.assign_bond_bins(temp,thres, n2)
-            n2 = int(np.nanmax(temp_ind))
-            idx[(idx1 == i) & (temp_ind > 0)] = temp_ind[(idx1 == i) & (temp_ind > 0)] + n2 * (i - 1)
+            temp = sortvar2[idx1 == i] # get sortvar2 values for stocks in bin i
+            # sort values within the bin i
+            thres2 = np.percentile(temp, np.linspace(0, 100, n2 + 1))
+            thres2[0] = -np.inf
+            # assign a rank based on the break points in thres2
+            id2 = StrategyFormation.assign_bond_bins(temp, thres2, n2)
+            nmax = np.max(id2)  # get the maximum rank just for checking
+            # assign bonds to idx from 1 to n1*n2
+            idx[idx1 == i] = id2 + nmax * (i - 1)
         return idx
     
     @staticmethod

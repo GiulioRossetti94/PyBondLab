@@ -92,7 +92,7 @@ class SingleSort(Strategy):
 #==============================================================================
 class DoubleSort(Strategy):
    
-    def __init__(self, K,sort_var,nport, sort_var2,nport2,J=None, skip=None):
+    def __init__(self, K,sort_var,nport, sort_var2,nport2,how= 'unconditional',J=None, skip=None):
         """
         Initializes the DoubleSort strategy with required parameters.
 
@@ -120,9 +120,10 @@ class DoubleSort(Strategy):
         self.sort_var = sort_var  # Primary sorting variable
         self.sort_var2 = sort_var2  # Secondary sorting variable
         self.nport2 = nport2
+        self.how = how
         
         print("-" * 35)
-        print(f"Initializing strategy (double sorts): \nHolding period: {self.K} \nNumber of portfolios: {self.nport}x{self.nport2} \nSorting on: {self.sort_var} and {self.sort_var2}")
+        print(f"Initializing strategy ({self.how} double sorts): \nHolding period: {self.K} \nNumber of portfolios: {self.nport}x{self.nport2} \nSorting on: {self.sort_var} and {self.sort_var2}")
         print("-" * 35) 
         
     def compute_signal(self, data):
