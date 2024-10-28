@@ -50,7 +50,8 @@ class StrategyFormation:
         self.price_threshold        = self.filters.get('price_threshold', 25) if self.adj == 'price' else None
         
         # CREATE NAMES, INITIALIZE DFs,  SAVE PARAMETERS FOR IO OPERATIONS
-        self.name = self._create_name(self.rating, self.strategy.str_name)     
+        self.name = self._create_name(self.rating, self.strategy.str_name)    
+        self.signal_names = self._get_signal_names()
         self._initialize_dfs(filters)  # initialize variables for storing results
         self.stored_params = self._store_params()
 
@@ -100,6 +101,8 @@ class StrategyFormation:
         self.vwls_ea_df           = None
         self.ewport_ea            = None
         self.vwport_ea            = None
+        self.ewport_ea_df         = None
+        self.vwport_ea_df         = None
         self.ewport_weight_hor_ea = None
         self.vwport_weight_hor_ea = None
         self.ewturnover_ea_df     = None
@@ -116,6 +119,8 @@ class StrategyFormation:
             self.vwls_ep_short_df     = None
             self.ewport_ep            = None
             self.vwport_ep            = None
+            self.ewport_ep_df         = None
+            self.vwport_ep_df         = None
             self.ewport_weight_hor_ep = None
             self.vwport_weight_hor_ep = None
             self.ewturnover_ep_df     = None
@@ -179,7 +184,7 @@ class StrategyFormation:
             if Wvar is None and "VW" not in self.data.columns:
                 self.data['VW'] = 1
                 self.data_raw['VW'] = 1
-                warnings.warn("Column 'VW' does not exist. Setting VW = 1 (i.e. equal weights)", UserWarning)
+                warnings.warn("Column 'VW' does not exist. Setting VW = 1 (i.e., equal weights)", UserWarning)
 
             self.rename_id(IDvar=IDvar, DATEvar=DATEvar, RETvar=RETvar, RATINGvar=RATINGvar, PRICEvar=PRICEvar, Wvar = Wvar)
         
@@ -207,8 +212,11 @@ class StrategyFormation:
         self.data["ID"] = self.data["ID"].map(ID)
         self.data_raw["ID"] = self.data_raw["ID"].map(ID)
 
-        # select relevant columns
+        # sort by id and date
+        self.data = self.data.sort_values(['ID','date'])
+        self.data_raw = self.data_raw.sort_values(['ID','date'])
 
+        # select relevant columns
         signal_vars = [self.strategy.get_sort_var()]
         if self.strategy.DoubleSort == 1:
             signal_vars.append(self.strategy.sort_var2)
@@ -485,6 +493,8 @@ class StrategyFormation:
 
         # Compute portfolio returns
         if use_double_sort:  
+            # create column names for dfs
+            colnames_ptf_df = [f'{self.signal_names[0]}{i}_{self.signal_names[1]}{j}' for i in range(1, nport + 1) for j in range(1, nport2 + 1)]
             # storing rets
             avg_res_ew = []
             avg_res_vw = []
@@ -521,6 +531,8 @@ class StrategyFormation:
             self.ewls_ea_short_df = pd.DataFrame(np.vstack(short_leg_ew_ea).T,index = self.datelist, columns = [[str(x)+'_SHORT_EWEA_' + self.name for x in range(1,nport+1)]])
             self.vwls_ea_short_df = pd.DataFrame(np.vstack(short_leg_vw_ea).T,index = self.datelist, columns = [[str(x)+'_SHORT_VWEA_' + self.name for x in range(1,nport+1)]])
         else:           
+            # create column names for dfs
+            colnames_ptf_df = [f'{self.signal_names[0]}{i}' for i in range(1, nport + 1)]
             # computing long leg
             EWlong_leg_ea = self.ewport_ea[:, tot_nport - 1]
             VWlong_leg_ea = self.vwport_ea[:, tot_nport - 1]
@@ -539,7 +551,10 @@ class StrategyFormation:
       
         self.ewls_ea_df = pd.DataFrame(self.ewls_ea,index = self.datelist, columns = ['EWEA_' + self.name]) 
         self.vwls_ea_df = pd.DataFrame(self.vwls_ea,index = self.datelist, columns = ['VWEA_' + self.name]) 
-        
+        # create dfs for all portfolios
+        self.ewport_ea_df = pd.DataFrame(self.ewport_ea, index = self.datelist, columns = colnames_ptf_df)
+        self.vwport_ea_df = pd.DataFrame(self.vwport_ea, index = self.datelist, columns = colnames_ptf_df)
+
         if self.turnover:
             ew_port_turn_ea = self.compute_turnover(self.ewport_weight_hor_ea,self.ewport_weight_hor_ea_scaled)
             vw_port_turn_ea = self.compute_turnover(self.vwport_weight_hor_ea,self.vwport_weight_hor_ea_scaled)
@@ -612,6 +627,10 @@ class StrategyFormation:
                                 
             self.ewls_ep_df = pd.DataFrame(self.ewls_ep,index = self.datelist,columns = ['EWEP_' + self.name])   
             self.vwls_ep_df = pd.DataFrame(self.vwls_ep,index = self.datelist,columns = ['VWEP_' + self.name])  
+            # create dfs for all portfolios
+            colnames_ptf_df_ep = [f"{col}_ep" for col in colnames_ptf_df]
+            self.ewport_ep_df = pd.DataFrame(self.ewport_ep, index = self.datelist, columns = colnames_ptf_df_ep)
+            self.vwport_ep_df = pd.DataFrame(self.vwport_ep, index = self.datelist, columns = colnames_ptf_df_ep)
             
             if self.turnover:
                 ew_port_turn_ep = self.compute_turnover(self.ewport_weight_hor_ep,self.ewport_weight_hor_ep_scaled)
@@ -955,6 +974,14 @@ class StrategyFormation:
             warnings.warn("One or more DataFrames have not been initialized.", UserWarning)
             return None
         return dfs
+    
+    def _get_signal_names(self):
+        sig1= self.strategy.get_sort_var().upper()
+
+        if self.strategy.DoubleSort:
+            sig2 = self.strategy.get_sort_var2().upper()
+            return [sig1, sig2]
+        return [sig1]
 
     # getters for the results
     def get_long_leg(self):
@@ -976,7 +1003,7 @@ class StrategyFormation:
         return self._get_dataframes("ewls_ep_df", "vwls_ep_df", require_filters=True)
 
     def get_ptf(self):
-        return self._get_dataframes("ewport_ea", "vwport_ea")
+        return self._get_dataframes("ewport_ea_df", "vwport_ea_df")
 
     def get_ptf_ex_post(self):
         return self._get_dataframes("ewport_ep", "vwport_ep", require_filters=True)
