@@ -14,7 +14,7 @@ import statsmodels.api as sm
 import copy
 from itertools import zip_longest
 from PyBondLab.iotools.table import SimpleTable
-
+import warnings
 
 class StrategyResults():
     """
@@ -39,7 +39,11 @@ class StrategyResults():
 
         store_res = pd.DataFrame(np.zeros((4,coln)),columns = df.columns,index=['Avg','std err','t','P>|t|'])
         for i in range(coln):
-            mod = sm.OLS(df.iloc[:,i]*100,np.ones_like(df.iloc[:,i]),missing='drop').fit(cov_type='HAC',
+            coldata = df.iloc[:,i]
+            if coldata.dropna().empty:
+                warnings.warn(f"Portfolio '{i}' contains only NaN values.")
+                continue
+            mod = sm.OLS(coldata*100,np.ones_like(coldata),missing='drop').fit(cov_type='HAC',
                              cov_kwds={'maxlags': nw_lag})
             store_res.iloc[0,i] = mod.params.iloc[0]
             store_res.iloc[1,i] = mod.bse.iloc[0]
