@@ -98,6 +98,7 @@ for b in banding:
     # we do not conduct any filtering, so we leave most of this blank
     params = {  'strategy': single_sort,
                 'rating':None, 
+                'dynamic_weights':True,
                 'banding_threshold': b,
                 'turnover': True
     }
