@@ -104,6 +104,7 @@ for sort_var1 in Sort_Vars:
     # to compute turnover, we set turnover = True
     params = {'strategy': single_sort,
               'rating':None, 
+              'dynamic_weights':True,
               'chars': char_list,
               'turnover': True       
     }
