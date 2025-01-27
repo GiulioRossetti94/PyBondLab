@@ -701,6 +701,7 @@ class StrategyFormation:
             sortvar2 = It0[sig2]
             
             idx1 = self.assign_bond_bins(sortvar,thres,nport)     # sort first signal
+            
             if how == "unconditional":
                 # unconditional double sorting: compute the rank independently for the two signals
                 thres2 = np.percentile(It0[sig2], np.linspace(0, 100, nport2 + 1))# compute edges for signal2 independently from signal1
@@ -882,6 +883,9 @@ class StrategyFormation:
         # loop over the number of portfolios and assign the rank within sorted bins
         for i in range(1, n1 + 1):
             temp = sortvar2[idx1 == i] # get sortvar2 values for stocks in bin i
+            # if temp is empty then skip. This means that there are no assets in bin i
+            if len(temp) == 0:
+                continue
             # sort values within the bin i
             thres2 = np.percentile(temp, np.linspace(0, 100, n2 + 1))
             thres2[0] = -np.inf
