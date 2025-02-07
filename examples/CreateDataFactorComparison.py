@@ -5,7 +5,7 @@
 # 1.  Download data from https://openbondassetpricing.com/machine-learning-data/
 
 import pandas as pd
-from scipy.stats import ttest_ind
+from scipy.stats import ttest_rel
 import numpy as np
 
 # Load the uploaded files
@@ -70,19 +70,54 @@ t_test_results_multi = {
 
 for col in df_dfps.columns:
     if col in df_osbap.columns and col in df_ice.columns:
-        # Perform t-tests for each pair of datasets
-        t_stat_dw, p_value_dw = ttest_ind(df_dfps[col].dropna(), df_osbap[col].dropna(), nan_policy='omit')
-        t_stat_di, p_value_di = ttest_ind(df_dfps[col].dropna(), df_ice[col].dropna(), nan_policy='omit')
-        t_stat_wi, p_value_wi = ttest_ind(df_osbap[col].dropna(), df_ice[col].dropna(), nan_policy='omit')
-        
+        # Drop missing values for each dataset/column
+        s_dfps  = df_dfps[col].dropna()
+        s_osbap = df_osbap[col].dropna()
+        s_ice   = df_ice[col].dropna()
+
+        # Intersection of indices for DFPS & OSBAP
+        common_dfps_osbap = s_dfps.index.intersection(s_osbap.index)
+        # Intersection of indices for DFPS & ICE
+        common_dfps_ice   = s_dfps.index.intersection(s_ice.index)
+        # Intersection of indices for OSBAP & ICE
+        common_osbap_ice  = s_osbap.index.intersection(s_ice.index)
+
+        # Check that there are enough paired observations
+        if (len(common_dfps_osbap) < 2 
+            or len(common_dfps_ice) < 2 
+            or len(common_osbap_ice) < 2):
+            # Not enough data to do a paired test; store None
+            t_test_results_multi['t_stat_DFPS_OSBAP'].append(None)
+            t_test_results_multi['p_value_DFPS_OSBAP'].append(None)
+            t_test_results_multi['t_stat_DFPS_ICE'].append(None)
+            t_test_results_multi['p_value_DFPS_ICE'].append(None)
+            t_test_results_multi['t_stat_OSBAP_ICE'].append(None)
+            t_test_results_multi['p_value_OSBAP_ICE'].append(None)
+            continue
+
+        # Paired t-tests on matched indices
+        t_stat_dw, p_value_dw = ttest_rel(
+            s_dfps.loc[common_dfps_osbap],
+            s_osbap.loc[common_dfps_osbap]
+        )
+        t_stat_di, p_value_di = ttest_rel(
+            s_dfps.loc[common_dfps_ice],
+            s_ice.loc[common_dfps_ice]
+        )
+        t_stat_wi, p_value_wi = ttest_rel(
+            s_osbap.loc[common_osbap_ice],
+            s_ice.loc[common_osbap_ice]
+        )
+
         t_test_results_multi['t_stat_DFPS_OSBAP'].append(t_stat_dw)
         t_test_results_multi['p_value_DFPS_OSBAP'].append(p_value_dw)
         t_test_results_multi['t_stat_DFPS_ICE'].append(t_stat_di)
         t_test_results_multi['p_value_DFPS_ICE'].append(p_value_di)
         t_test_results_multi['t_stat_OSBAP_ICE'].append(t_stat_wi)
         t_test_results_multi['p_value_OSBAP_ICE'].append(p_value_wi)
+
     else:
-        # Append NaNs if a column is missing in any dataset
+        # If the column is missing in any DF, store None
         t_test_results_multi['t_stat_DFPS_OSBAP'].append(None)
         t_test_results_multi['p_value_DFPS_OSBAP'].append(None)
         t_test_results_multi['t_stat_DFPS_ICE'].append(None)
@@ -96,5 +131,8 @@ p_vals = t_test_df_multi .filter(like='p_value')
 
 # Merge to Means and Sharpe Ratios #
 data_compare = pd.concat([correlations, means,sharpes, p_vals], axis=1)
+print( len(data_compare[data_compare['p_value_DFPS_OSBAP'] <= 0.05])  )
+print( len(data_compare[data_compare['p_value_DFPS_ICE']   <= 0.05])  )
+print( len(data_compare[data_compare['p_value_OSBAP_ICE']  <= 0.05])  )
 data_compare.to_csv(r'DatabaseComparison_DNR_2022.csv')
 ##################################### END #################################### 
