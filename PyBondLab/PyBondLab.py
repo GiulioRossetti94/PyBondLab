@@ -390,7 +390,7 @@ class StrategyFormation:
                     vw_ep_chars_dict[char] = np.full((TM, hor, tot_nport), np.nan)
         
         # for t in range((hor+1), TM - hor): to discuss this!
-        for t in range( TM - hor):
+        for t in range( TM):
             # define cohort for turnover computation
             self.cohort = t % hor
             
@@ -421,6 +421,8 @@ class StrategyFormation:
             
             # start sorting procedure
             for h in range(1, hor + 1):
+                if t + h > TM -1:
+                    continue
                 # print(t,self.cohort+1,h)
                 It0_h = It0.copy()
                 # Investment universe for ret computation
