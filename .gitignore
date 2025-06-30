@@ -4,7 +4,8 @@
 .DS_Store
 deb.py
 generate_test_dataset.py
-/tests/*.csv
+generate_reference.py
+tests/reference/*.csv
 
 /OLD
 /TEST
