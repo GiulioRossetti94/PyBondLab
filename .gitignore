@@ -3,6 +3,8 @@
 *.pyc
 .DS_Store
 deb.py
+generate_test_dataset.py
+/tests/*.csv
 
 /OLD
 /TEST
