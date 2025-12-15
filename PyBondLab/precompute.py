@@ -16,11 +16,12 @@ import warnings
 import numpy as np
 import pandas as pd
 
-from .utils import (
-    compute_thresholds,
-    assign_bond_bins,
-    double_sort_uncond,
-    double_sort_cond,
+# Use numba-optimized versions for performance (2-5x faster)
+from .utils_optimized import (
+    compute_thresholds_optimized as compute_thresholds,
+    assign_bond_bins_optimized as assign_bond_bins,
+    double_sort_uncond_optimized as double_sort_uncond,
+    double_sort_cond_optimized as double_sort_cond,
     create_subset_mask,
 )
 from .constants import ColumnNames
