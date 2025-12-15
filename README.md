@@ -308,7 +308,7 @@ strategy = pbl.DoubleSort(
     breakpoints2=[30, 70],                  # 30/70 percentiles for BtM
     how='unconditional',                    # Independent sorts
     rebalance_frequency='annual',
-    rebalance_month=6,                      # June rebalancing
+    rebalance_month=7,                      # June rebalancing
     breakpoint_universe_func=nyse_filter,   # NYSE breakpoints for size
     breakpoint_universe_func2=nyse_filter   # NYSE breakpoints for BtM
 )
