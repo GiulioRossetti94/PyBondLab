@@ -6,7 +6,7 @@ Fama-French Factor Construction Example
 
 This example demonstrates how to construct Fama-French factors (SMB and HML)
 using PyBondLab's DoubleSort strategy and compare them against official
-Ken French factors and Freda Song Drechsler's implementation.
+Ken French factors.
 
 The example follows the standard Fama-French (1993) methodology:
 - 2x3 independent sorts on Size (ME) and Book-to-Market (BtM)
@@ -16,27 +16,24 @@ The example follows the standard Fama-French (1993) methodology:
 
 NOTE ON rebalance_month TIMING:
 We use rebalance_month=7 for "June rebalancing". See the main README.md
-for a detailed explanation of why rebalance_month=7 (not 6) produces
-the highest correlations (~0.99) with official Ken French factors.
+for a detailed explanation of why rebalance_month=7 (not 6).
 
 DATA HARMONIZATION (Updated 2025-11-21)
 ----------------------------------------
 This file now supports two data loading methods:
 
 1. HARMONIZED DATA (Recommended): Uses download_data_for_ff.py module
-   - Implements exact ff3_v2.ipynb methodology
+   - Implements exact ff3 methodology
    - Proper lagged ME weights with cumulative return adjustments
    - Complete CRSP-Compustat merge with CCM linking
-   - Expected to achieve >0.99 correlation with official factors
 
    To use:
    - First time: Set DOWNLOAD_FRESH_DATA=True (takes 10-20 min)
-   - Or run: python download_data_for_ff.py giulior ./data
+   - Or run: python download_data_for_ff.py <wrds_username> ./data
    - Subsequent runs: Load from ./data directory (instant)
 
 2. LEGACY DATA: Falls back to original CSV files if module unavailable
    - Uses pre-processed CSV files (old method)
-   - Correlations ~0.94-0.95
 
 Configuration:
 - Set DOWNLOAD_FRESH_DATA = True/False (line 44)
@@ -72,7 +69,7 @@ except ImportError:
 # Set to False to load previously downloaded data
 DOWNLOAD_FRESH_DATA = False
 # WRDS username (only needed if DOWNLOAD_FRESH_DATA = True)
-WRDS_USERNAME = 'giulior'
+WRDS_USERNAME = ''
 
 # Data directory (where processed data is saved/loaded)
 DATA_DIR = './data'
@@ -503,36 +500,7 @@ if wrds_available:
     print()
 
     # =============================================================================
-    # STEP 14: Add Freda Song Drechsler's Implementation
-    # =============================================================================
-    print("Step 14: Loading Freda Song Drechsler's implementation...")
-    print("-"*80)
-
-    try:
-        # Load Freda's factors
-        # TODO: Update this path if you have Freda Song Drechsler's factor data
-        ff_drech = pd.read_csv('path/to/your/freda.csv', usecols=['date', 'WSMB', 'WHML'])
-        ff_drech['date'] = pd.to_datetime(ff_drech['date'])
-
-        print(f"  Loaded {len(ff_drech)} months from Freda's implementation")
-        print()
-
-        # Merge with comparison datasets
-        comp_SMB = comp_SMB.merge(ff_drech[['date', 'WSMB']], left_index=True, right_on='date')
-        comp_SMB = comp_SMB.set_index('date')
-
-        comp_HML = comp_HML.merge(ff_drech[['date', 'WHML']], left_index=True, right_on='date')
-        comp_HML = comp_HML.set_index('date')
-
-        freda_available = True
-    except Exception as e:
-        print(f"  WARNING: Could not load Freda's data: {e}")
-        print("  Skipping Freda comparison")
-        print()
-        freda_available = False
-
-    # =============================================================================
-    # STEP 15: Filter Date Range
+    # STEP 14: Filter Date Range
     # =============================================================================
     print("Step 15: Filtering to common date range...")
     print("-"*80)
@@ -551,7 +519,7 @@ if wrds_available:
     print()
 
     # =============================================================================
-    # STEP 16: Correlation Analysis
+    # STEP 15: Correlation Analysis
     # =============================================================================
     print("Step 16: Correlation analysis...")
     print("-"*80)
@@ -565,7 +533,7 @@ if wrds_available:
     print()
 
     # =============================================================================
-    # STEP 17: Visualization
+    # STEP 16: Visualization
     # =============================================================================
     print("Step 17: Creating visualizations...")
     print("-"*80)
@@ -576,27 +544,14 @@ if wrds_available:
     plt.suptitle('SMB Factor Comparison', fontsize=20)
 
     CUMPROD = (1 + comp_SMB).cumprod()
-    freda_available = False
-    if freda_available:
-        ax1.plot(CUMPROD['smb'], 'r--',
-                CUMPROD['WSMB'], 'b-',
-                CUMPROD['SMB_VW_Manual'], 'g--')
+    ax1.plot(CUMPROD['smb'], 'r--',
+             CUMPROD['SMB_VW_Manual'], 'g--')
 
-        ax1.legend(['Official SMB (Ken French)',
-                   'Freda Song Drechsler SMB (WSMB)',
-                   'PyBondLab SMB (Computed)'],
-                  loc='upper left',
-                  fontsize=12,
-                  frameon=True)
-    else:
-        ax1.plot(CUMPROD['smb'], 'r--',
-                CUMPROD['SMB_VW_Manual'], 'g--')
-
-        ax1.legend(['Official SMB (Ken French)',
-                   'PyBondLab SMB (Computed)'],
-                  loc='upper left',
-                  fontsize=12,
-                  frameon=True)
+    ax1.legend(['Official SMB (Ken French)',
+                'PyBondLab SMB (Computed)'],
+               loc='upper left',
+               fontsize=12,
+               frameon=True)
 
     ax1.set_title('Cumulative SMB Factor Performance', fontsize=14)
     ax1.set_xlabel('Date', fontsize=12)
@@ -613,28 +568,14 @@ if wrds_available:
     plt.suptitle('HML Factor Comparison', fontsize=20)
 
     CUMPROD = (1 + comp_HML).cumprod()
+    ax1.plot(CUMPROD['hml'], 'r--',
+             CUMPROD['HML_VW_Manual'], 'g--')
 
-    if freda_available:
-        
-        ax1.plot(CUMPROD['hml'], 'r--',
-                CUMPROD['WHML'], 'b-',
-                CUMPROD['HML_VW_Manual'], 'g--')
-
-        ax1.legend(['Official HML (Ken French)',
-                   'Freda Song Drechsler HML (WHML)',
-                   'PyBondLab HML (Computed)'],
-                  loc='upper left',
-                  fontsize=12,
-                  frameon=True)
-    else:
-        ax1.plot(CUMPROD['hml'], 'r--',
-                CUMPROD['HML_VW_Manual'], 'g--')
-
-        ax1.legend(['Official HML (Ken French)',
-                   'PyBondLab HML (Computed)'],
-                  loc='upper left',
-                  fontsize=12,
-                  frameon=True)
+    ax1.legend(['Official HML (Ken French)',
+                'PyBondLab HML (Computed)'],
+               loc='upper left',
+               fontsize=12,
+               frameon=True)
 
     ax1.set_title('Cumulative HML Factor Performance', fontsize=14)
     ax1.set_xlabel('Date', fontsize=12)
