@@ -278,8 +278,6 @@ For Fama-French style "June rebalancing", use `rebalance_month=7`:
 | `6` | June | July |
 | `7` | July | August |
 
-**Why `rebalance_month=7` for Fama-French?**
-
 
 ## Custom Breakpoint Universes
 
