@@ -1,0 +1,13 @@
+# Core dependencies
+numpy<2
+pandas>=1.5
+statsmodels>=0.14
+matplotlib>=3.5
+scipy>=1.10
+pyarrow
+
+# Optional dependencies (for data download from WRDS)
+wrds
+
+# Optional but recommended for performance
+# numba>=0.57

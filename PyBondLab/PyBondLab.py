@@ -1,0 +1,2007 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Jun 17 11:28:52 2024
+Last modified: 03-11-2025
+
+@authors: Giulio Rossetti & Alex Dickerson
+"""
+
+from dataclasses import dataclass
+from typing import Optional, Dict, Tuple, Union, Any, List
+import warnings
+
+import numpy as np
+import pandas as pd
+
+from .FilterClass import Filter
+from .StrategyClass import *
+
+from .config import (
+    StrategyFormationConfig,
+    DataConfig,
+    FormationConfig,
+    FilterConfig
+)
+from .constants import (
+    Defaults,
+    ColumnNames,
+    RatingBounds,
+    ValidationMessages,
+    get_rating_bounds,
+    get_portfolio_labels,
+    get_signal_based_labels
+)
+
+from .utils import summarize_ranks, _get_rebalancing_dates
+from .precompute import PrecomputedData, PrecomputeBuilder
+from .utils_portfolio import (
+    compute_portfolio_ranks,
+    form_portfolio_single_period,
+    apply_banding,
+    calculate_qnew_vectorized
+)
+
+# from .iotools.PyBondLabResults import StrategyResults
+from .results import build_strategy_results, build_formation_results
+
+
+from .utils import (
+    summarize_ranks,
+    _get_rebalancing_dates,
+)
+
+# Turnover utils
+from .utils_turnover import TurnoverManager
+
+import statsmodels.api as sm
+import matplotlib.pyplot as plt
+from PyBondLab.data.WRDS import load
+
+Number = Union[int, float]
+SubsetFilter = Dict[str, Tuple[Number, Number]]
+
+# Try to import numba for performance
+try:
+    from numba import njit
+    NUMBA_AVAILABLE = True
+except Exception:
+    NUMBA_AVAILABLE = False
+
+if NUMBA_AVAILABLE:
+    @njit(cache=True, fastmath=True)
+    def _sum_min_prev_raw(prev_vec, pos, raw_w):
+        s = 0.0
+        m = pos.size
+        for j in range(m):
+            pv = prev_vec[pos[j]]
+            rw = raw_w[j]
+            s += pv if pv < rw else rw
+        return s
+else:
+    def _sum_min_prev_raw(prev_vec, pos, raw_w):
+        return float(np.minimum(prev_vec[pos], raw_w).sum())
+
+
+# =============================================================================
+# Precomputation Data Structure
+# =============================================================================
+@dataclass
+class PrecomputedData:
+    """Container for precomputed time-series data."""
+    It0: Dict[pd.Timestamp, pd.DataFrame]   # Data at portfolio formation time
+    It1: Dict[pd.Timestamp, pd.DataFrame]   # Data at return realization time
+    It1m: Dict[pd.Timestamp, pd.DataFrame]  # Data for dynamic weights
+    ranks_map: Dict[pd.Timestamp, pd.Series]  # Precomputed ranks
+    vw_map_t0: Dict[pd.Timestamp, pd.Series]  # Value weights at t
+    vw_map_t1m: Dict[pd.Timestamp, pd.Series]  # Value weights at t+h-1
+
+
+
+# =============================================================================
+# Main StrategyFormation Class
+# =============================================================================
+class StrategyFormation:
+    """
+    Form and analyze bond portfolios based on trading strategies.
+
+    This is the main class for portfolio-based analysis. It handles:
+    - Signal computation from strategies
+    - Portfolio formation and ranking
+    - Return calculations (equal and value weighted)
+    - Optional: turnover, characteristics, filtering
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Bond panel data with required columns: date, ID, ret, RATING_NUM, VW
+    strategy : Strategy
+        Trading strategy object (Momentum, LTreversal, SingleSort, etc.)
+    config : StrategyFormationConfig, optional
+        Configuration object. If not provided, default configuration is used.
+        For backward compatibility, can also pass individual parameters as **kwargs
+
+    """
+
+    def __init__(
+        self,
+        data: pd.DataFrame,
+        strategy: Strategy,
+        config: Optional[StrategyFormationConfig] = None,
+        **kwargs
+    ):
+        """Initialize StrategyFormation with data and strategy."""
+        # Extract Option 6 caching parameter before passing to config
+        self._cached_precomp = kwargs.pop('cached_precomp', None)
+
+        # Store raw inputs
+        self.data_raw = data.copy()
+        self.strategy = strategy
+
+        # Handle configuration
+        if config is None:
+            # Backward compatibility: create config from kwargs
+            config = StrategyFormationConfig.from_legacy_params(**kwargs)
+
+        # Handle configuration
+        if config is None:
+            # Backward compatibility: create config from kwargs
+            config = StrategyFormationConfig.from_legacy_params(**kwargs)
+        self.config = config
+
+        # Extract configuration components for easier access
+        self._extract_config()
+
+        # Initialize state
+        self._initialize_state()
+
+
+
+        if self.verbose:
+            self._print_initialization_summary()
+
+
+    def _extract_config(self):
+        """Extract configuration components into instance variables."""
+        # Data configuration
+        self.rating = self.config.data.rating
+        self.subset_filter = self.config.data.subset_filter
+        self.chars = self.config.data.chars
+
+        # Formation configuration
+        self.dynamic_weights = self.config.formation.dynamic_weights
+        self.turnover = self.config.formation.compute_turnover
+        self.save_idx = self.config.formation.save_idx
+        self.banding_threshold = self.config.formation.banding_threshold
+        self.verbose = self.config.formation.verbose
+
+        # Filter configuration
+        self.filters = self.config.filters.to_dict() if self.config.has_filters else None
+        self.adj = self.config.filters.adj if self.config.has_filters else None
+
+        # Strategy parameters (from strategy object)
+        self.nport = self.strategy.num_portfolios
+        self.hor = self.strategy.holding_period
+        self.rebalance_frequency = self.strategy.rebalance_frequency
+        self.rebalance_month = self.strategy.rebalance_month
+
+    def _initialize_state(self):
+        """Initialize instance state variables."""
+        # For WithinFirmSort, always save portfolio indices (required for custom aggregation)
+        if self.strategy.__strategy_name__ == "Within-Firm Sort":
+            self.save_idx = True
+
+        # Results containers
+        self.results = None
+        self.port_idx = {} if self.save_idx else None
+
+        # Name for column naming (will be set after filters are applied)
+        self.name = None
+
+        # Turnover tracking
+        if self.turnover:
+            self.turnover_state = None
+
+        # Banding tracking
+        if self.banding_threshold is not None:
+            self.lag_rank = {}
+
+        # Characteristics tracking
+        if self.chars:
+            self.ew_ep_chars_dict = {}
+            self.vw_ep_chars_dict = {}
+
+    def _create_name(self, rating, strategy_name):
+        """
+        Create a descriptive name for the strategy including rating and strategy parameters.
+
+        Parameters
+        ----------
+        rating : str or None
+            Rating category ('NIG', 'IG', or None for 'ALL')
+        strategy_name : str
+            Strategy name string from strategy.str_name
+
+        Returns
+        -------
+        str
+            Combined name (e.g., 'NIG_3_3_1' or 'ALL_6_6_1')
+        """
+        if rating is None:
+            return f"ALL_{strategy_name}"
+        return f"{rating}_{strategy_name}"
+
+    def _validate_data(self):
+        """Validate input data has required columns."""
+        required_cols = set(ColumnNames.REQUIRED)
+        missing_cols = required_cols - set(self.data_raw.columns)
+
+        if missing_cols:
+            raise ValueError(
+                f"Missing required columns: {missing_cols}. "
+                f"Required: {required_cols}"
+            )
+
+    def _apply_column_mapping(self, IDvar, DATEvar, RETvar, RATINGvar, VWvar, PRICEvar):
+        """
+        Apply column name mapping to standardize variable names.
+
+        This method renames columns in self.data_raw to match expected column names,
+        then re-runs validation and preparation.
+
+        Parameters
+        ----------
+        IDvar, DATEvar, RETvar, RATINGvar, VWvar, PRICEvar : str or None
+            Custom column names to map to standard names
+        """
+        # Build mapping dictionary
+        column_mapping = {}
+
+        if IDvar is not None and IDvar != 'ID':
+            column_mapping[IDvar] = 'ID'
+        if DATEvar is not None and DATEvar != 'date':
+            column_mapping[DATEvar] = 'date'
+        if RETvar is not None and RETvar != 'ret':
+            column_mapping[RETvar] = 'ret'
+        if RATINGvar is not None and RATINGvar != 'RATING_NUM':
+            column_mapping[RATINGvar] = 'RATING_NUM'
+        if VWvar is not None and VWvar != 'VW':
+            column_mapping[VWvar] = 'VW'
+        if PRICEvar is not None and PRICEvar != 'PRICE':
+            column_mapping[PRICEvar] = 'PRICE'
+
+        # Apply mapping if any columns need to be renamed
+        if column_mapping:
+            # Check if all source columns exist in raw data
+            missing_cols = set(column_mapping.keys()) - set(self.data_raw.columns)
+            if missing_cols:
+                raise ValueError(
+                    f"Specified column names not found in data: {missing_cols}. "
+                    f"Available columns: {list(self.data_raw.columns)}"
+                )
+
+            # Rename columns in raw data
+            self.data_raw = self.data_raw.rename(columns=column_mapping)
+
+            if self.verbose:
+                print(f"Mapped columns: {column_mapping}")
+
+            # Re-validate and re-prepare data with new column names
+            self._validate_data()
+            self._prepare_data()
+
+
+    def _prepare_data(self):
+        """Prepare data: filtering, signal computation, and indexing."""
+        # Start with raw data
+        self.data = self.data_raw.copy()
+
+        # this might introduce lookahead bias if done here
+        # Apply rating filter. this is done later
+        # if self.rating is not None:
+        #     self._apply_rating_filter()
+
+        # Apply subset filters: this is done later.
+        # if self.subset_filter is not None:
+        #     self._apply_subset_filters()
+
+        # Compute strategy signal
+        self.data = self.strategy.compute_signal(self.data)
+
+        # Create base name for column naming
+        strategy_str_name = self.strategy.str_name if hasattr(self.strategy, 'str_name') else 'strategy'
+        self.name = self._create_name(self.rating, strategy_str_name)
+
+        # Apply ex-post filters if requested
+        if self.filters is not None:
+            self._apply_filters()
+            # Add filter name to the column name
+            self.name += self.filter_obj.name_filt
+            # Recompute signal for momentum-based strategies with adjusted returns
+            self._recompute_signal_if_needed()
+        # Prepare indices and IDs
+        self._prepare_index_and_ids()
+
+        # Build required columns list
+        sort_var_main, sort_var2 = self._get_sort_vars()
+        self.required_cols = self._build_required_columns(sort_var_main, sort_var2)
+
+        # Validate date coverage for double sorts
+        if sort_var2 is not None:
+            self._validate_double_sort_date_coverage(sort_var_main, sort_var2)
+
+
+    def _apply_rating_filter(self):
+        """Apply rating filter to data."""
+        if isinstance(self.rating, str):
+            min_rating, max_rating = get_rating_bounds(self.rating)
+        else:
+            min_rating, max_rating = self.rating
+
+        self.data = self.data[
+            (self.data[ColumnNames.RATING] >= min_rating) &
+            (self.data[ColumnNames.RATING] <= max_rating)
+        ].copy()
+
+        if self.verbose:
+            print(f"Applied rating filter: {self.rating}")
+            print(f"Remaining observations: {len(self.data)}")
+
+    def _apply_subset_filters(self):
+        """Apply characteristic-based subset filters."""
+        for col, (min_val, max_val) in self.subset_filter.items():
+            if col not in self.data.columns:
+                raise ValueError(
+                    ValidationMessages.MISSING_COLUMN.format(
+                        col=col,
+                        available=list(self.data.columns)
+                    )
+                )
+
+            self.data = self.data[
+                (self.data[col] >= min_val) &
+                (self.data[col] <= max_val)
+            ].copy()
+
+            if self.verbose:
+                print(f"Applied filter on {col}: [{min_val}, {max_val}]")
+                print(f"Remaining observations: {len(self.data)}")
+
+    def _apply_filters(self):
+        """Apply ex-post filters (trim, winsorize, etc.)."""
+        filter_obj = Filter(
+            data=self.data,
+            adj=self.filters['adj'],
+            w=self.filters.get('level'),
+            loc=self.filters.get('location'),
+            percentile_breakpoints=self.filters.get('df_breakpoints'),
+            price_threshold=self.filters.get('price_threshold', Defaults.PRICE_THRESHOLD)
+        )
+
+        self.data = filter_obj.apply_filters()
+        # return also filter obj
+        self.filter_obj = filter_obj
+
+        if self.verbose:
+            print(f"Applied filter: {self.filters['adj']}")
+
+    def _recompute_signal_if_needed(self):
+        """
+        Recompute signal for priced-based strategies using adjusted returns.
+
+        For Momentum and LTreversal strategies, the signal depends on past returns.
+        When winsorization or other filters are applied, we need to recompute the
+        signal using the adjusted returns.
+        """
+        strategy_name = self.strategy.__strategy_name__
+        adj = self.adj
+
+        # Only recompute for strategies that compute signal from returns
+        if strategy_name not in ["MOMENTUM", "LT-REVERSAL"]:
+            return
+
+        # Check if sort_var contains 'signal' to confirm signal-based strategy
+        sort_var = self.strategy.get_sort_var(adj)
+        if 'signal' not in sort_var:
+            return
+
+        # Recompute signal using adjusted returns
+        if strategy_name == "MOMENTUM":
+            J = self.strategy.J
+            skip = self.strategy.skip
+            varname = f'ret_{adj}'
+            signal_col = f'signal_{adj}'
+
+            # Get NaN handling parameters from strategy
+            no_gap = getattr(self.strategy, 'no_gap', False)
+            fill_na = getattr(self.strategy, 'fill_na', False)
+            drop_na = getattr(self.strategy, 'drop_na', False)
+
+            # Ensure data is sorted
+            self.data = self.data.sort_values(['ID', 'date'], ignore_index=True)
+
+            # Create month index for gap detection
+            if no_gap:
+                self.data['month_idx'] = (
+                    self.data['date'].dt.year * 12 + self.data['date'].dt.month
+                )
+
+            if drop_na:
+                # Option B: Variable window to accumulate J valid (non-NaN) returns
+                self.data['logret'] = np.log(self.data[varname] + 1)
+                self.data['cumlogret'] = self.data.groupby('ID')['logret'].cumsum()
+                self.data['cumvalid'] = self.data.groupby('ID')[varname].transform(
+                    lambda x: x.notna().cumsum()
+                )
+
+                def compute_drop_na_signal(group):
+                    """Compute signal using exactly J valid returns."""
+                    group = group.copy()
+                    n = len(group)
+                    signal = np.full(n, np.nan)
+                    cumlogret = group['cumlogret'].values
+                    cumvalid = group['cumvalid'].values
+
+                    for i in range(n):
+                        if np.isnan(cumvalid[i]) or cumvalid[i] < J:
+                            continue
+                        target_cumvalid = cumvalid[i] - J
+                        if target_cumvalid == 0:
+                            signal[i] = cumlogret[i]
+                        else:
+                            for j in range(i - 1, -1, -1):
+                                if cumvalid[j] == target_cumvalid:
+                                    signal[i] = cumlogret[i] - cumlogret[j]
+                                    break
+                    group[signal_col] = signal
+                    return group
+
+                self.data = self.data.groupby('ID', group_keys=False).apply(compute_drop_na_signal)
+                self.data[signal_col] = np.exp(self.data[signal_col]) - 1
+                self.data.drop(columns=['cumlogret', 'cumvalid', 'logret'], inplace=True)
+
+            elif fill_na:
+                # Option A: Fixed window of J rows, NaN returns treated as 0%
+                ret_col = self.data[varname].fillna(0)
+                self.data['logret'] = np.log(ret_col + 1)
+                self.data[signal_col] = (
+                    self.data.groupby(['ID'], group_keys=False)['logret']
+                    .rolling(J, min_periods=J)
+                    .sum()
+                    .values
+                )
+                self.data[signal_col] = np.exp(self.data[signal_col]) - 1
+                self.data.drop(columns=['logret'], inplace=True)
+
+            else:
+                # Default: Standard rolling, NaN propagates
+                self.data['logret'] = np.log(self.data[varname] + 1)
+                self.data[signal_col] = (
+                    self.data.groupby(['ID'], group_keys=False)['logret']
+                    .rolling(J, min_periods=J)
+                    .sum()
+                    .values
+                )
+                self.data[signal_col] = np.exp(self.data[signal_col]) - 1
+                self.data.drop(columns=['logret'], inplace=True)
+
+            # Apply no_gap check: invalidate signal if months are not consecutive
+            if no_gap:
+                self.data['lmonth_idx'] = self.data.groupby('ID')['month_idx'].shift(J - 1)
+                self.data['month_diff'] = self.data['month_idx'] - self.data['lmonth_idx']
+                self.data.loc[self.data['month_diff'] != (J - 1), signal_col] = np.nan
+                self.data.drop(columns=['month_idx', 'lmonth_idx', 'month_diff'], inplace=True)
+
+            # Apply skip period
+            self.data[signal_col] = self.data.groupby("ID")[signal_col].shift(skip)
+
+        elif strategy_name == "LT-REVERSAL":
+            J = self.strategy.J
+            skip = self.strategy.skip
+            varname = f'ret_{adj}'
+            signal_col = f'signal_{adj}'
+
+            # Get NaN handling parameters from strategy
+            no_gap = getattr(self.strategy, 'no_gap', False)
+            fill_na = getattr(self.strategy, 'fill_na', False)
+            drop_na = getattr(self.strategy, 'drop_na', False)
+
+            # Ensure data is sorted
+            self.data = self.data.sort_values(['ID', 'date'], ignore_index=True)
+
+            # Create month index for gap detection
+            if no_gap:
+                self.data['month_idx'] = (
+                    self.data['date'].dt.year * 12 + self.data['date'].dt.month
+                )
+
+            if drop_na:
+                # Option B: Variable window to accumulate valid (non-NaN) returns
+                # Fill NaN with 0 for cumsum, but track validity separately
+                self.data['ret_filled'] = self.data[varname].fillna(0)
+                self.data['cumret'] = self.data.groupby('ID')['ret_filled'].cumsum()
+                self.data['cumvalid'] = self.data.groupby('ID')[varname].transform(
+                    lambda x: x.notna().cumsum()
+                )
+                self.data['is_valid'] = self.data[varname].notna()
+
+                def compute_drop_na_signal(group):
+                    """Compute LT reversal signal using valid returns."""
+                    group = group.copy()
+                    n = len(group)
+                    signal = np.full(n, np.nan)
+                    cumret = group['cumret'].values
+                    cumvalid = group['cumvalid'].values
+                    is_valid = group['is_valid'].values
+
+                    for i in range(n):
+                        if not is_valid[i] or cumvalid[i] < J:
+                            continue
+                        target_lt = cumvalid[i] - J
+                        target_recent = cumvalid[i] - skip
+                        lt_sum = None
+                        recent_sum = None
+
+                        if target_lt == 0:
+                            lt_sum = cumret[i]
+                        else:
+                            # Find the last VALID row where cumvalid == target_lt
+                            for j in range(i - 1, -1, -1):
+                                if is_valid[j] and cumvalid[j] == target_lt:
+                                    lt_sum = cumret[i] - cumret[j]
+                                    break
+
+                        if target_recent == 0:
+                            recent_sum = cumret[i]
+                        else:
+                            # Find the last VALID row where cumvalid == target_recent
+                            for j in range(i - 1, -1, -1):
+                                if is_valid[j] and cumvalid[j] == target_recent:
+                                    recent_sum = cumret[i] - cumret[j]
+                                    break
+
+                        if lt_sum is not None and recent_sum is not None:
+                            signal[i] = lt_sum - recent_sum
+
+                    group[signal_col] = signal
+                    return group
+
+                self.data = self.data.groupby('ID', group_keys=False).apply(compute_drop_na_signal)
+                self.data.drop(columns=['cumret', 'cumvalid', 'ret_filled', 'is_valid'], inplace=True)
+
+            elif fill_na:
+                # Option A: Fixed window, NaN returns treated as 0%
+                self.data['ret_filled'] = self.data[varname].fillna(0)
+
+                long_term = (
+                    self.data.groupby(['ID'], group_keys=False)['ret_filled']
+                    .rolling(window=J, min_periods=J)
+                    .sum()
+                )
+                recent = (
+                    self.data.groupby(['ID'], group_keys=False)['ret_filled']
+                    .rolling(window=skip, min_periods=skip)
+                    .sum()
+                )
+                self.data[signal_col] = long_term.values - recent.values
+                self.data.drop(columns=['ret_filled'], inplace=True)
+
+            else:
+                # Default: Standard rolling, NaN propagates
+                long_term = (
+                    self.data.groupby(['ID'], group_keys=False)[varname]
+                    .rolling(window=J, min_periods=J)
+                    .sum()
+                )
+                recent = (
+                    self.data.groupby(['ID'], group_keys=False)[varname]
+                    .rolling(window=skip, min_periods=skip)
+                    .sum()
+                )
+                self.data[signal_col] = long_term.values - recent.values
+
+            # Apply no_gap check: invalidate signal if months are not consecutive
+            if no_gap:
+                self.data['lmonth_idx'] = self.data.groupby('ID')['month_idx'].shift(J - 1)
+                self.data['month_diff'] = self.data['month_idx'] - self.data['lmonth_idx']
+                self.data.loc[self.data['month_diff'] != (J - 1), signal_col] = np.nan
+                self.data.drop(columns=['month_idx', 'lmonth_idx', 'month_diff'], inplace=True)
+
+        if self.verbose:
+            print(f"Recomputed signal using {varname} for {strategy_name}")
+
+    def _prepare_index_and_ids(self):
+        """Prepare monotonic indices and stable integer IDs."""
+        # Create monotonic index
+        self.data[ColumnNames.INDEX] = np.arange(1, len(self.data) + 1, dtype=np.int64)
+        self.data_raw[ColumnNames.INDEX] = np.arange(1, len(self.data_raw) + 1, dtype=np.int64)
+
+        # Vectorized, deterministic ID mapping
+        codes, uniques = pd.factorize(self.data[ColumnNames.ID], sort=True)
+        self.data[ColumnNames.ID] = codes.astype(np.int64) + 1
+        self.data_raw[ColumnNames.ID] = pd.Categorical(
+            self.data_raw[ColumnNames.ID],
+            categories=uniques
+        ).codes.astype(np.int64) + 1
+
+        # Normalize dates
+        if not pd.api.types.is_datetime64_any_dtype(self.data[ColumnNames.DATE]):
+            self.data[ColumnNames.DATE] = pd.to_datetime(self.data[ColumnNames.DATE])
+        if not pd.api.types.is_datetime64_any_dtype(self.data_raw[ColumnNames.DATE]):
+            self.data_raw[ColumnNames.DATE] = pd.to_datetime(self.data_raw[ColumnNames.DATE])
+
+        # Canonical sort
+        self.data.sort_values([ColumnNames.ID, ColumnNames.DATE], inplace=True)
+        self.data_raw.sort_values([ColumnNames.ID, ColumnNames.DATE], inplace=True)
+
+        # Cache useful info
+        self.datelist = pd.Index(self.data[ColumnNames.DATE].unique()).sort_values().tolist()
+        self.unique_bonds = int(self.data[ColumnNames.ID].nunique())
+
+        if self.verbose:
+            print(f"Data prepared: {self.unique_bonds} unique bonds, {len(self.datelist)} periods")
+
+
+    def _get_sort_vars(self) -> Tuple[str, Optional[str]]:
+        """Get primary and secondary sorting variables."""
+        use_adj = self.filters is not None
+        main = self.strategy.get_sort_var(self.adj) if use_adj else self.strategy.get_sort_var()
+
+        # Check for double sort
+        is_double = getattr(self.strategy, "double_sort", 0) or getattr(self.strategy, "DoubleSort", 0)
+
+        if is_double:
+            if hasattr(self.strategy, "get_sort_var2"):
+                second = self.strategy.get_sort_var2(self.adj if use_adj else None)
+            else:
+                second = getattr(self.strategy, "sort_var2", None)
+        else:
+            second = None
+
+        return main, second
+
+    def _build_required_columns(self, sort_var_main: str, sort_var2: Optional[str]) -> list:
+        """Build list of required columns for analysis."""
+        required = {
+            ColumnNames.INDEX,
+            ColumnNames.DATE,
+            ColumnNames.ID,
+            ColumnNames.RETURN,
+            ColumnNames.RATING,
+            ColumnNames.VALUE_WEIGHT
+        }
+
+        if self.adj == "price":
+            required.add(ColumnNames.PRICE)
+
+        if self.chars:
+            required.update(self.chars)
+
+        if self.subset_filter:
+            required.update(self.subset_filter.keys())
+
+        # Add adjusted return column if applicable
+        if self.adj in ["trim", "price", "bounce"]:
+            adj_ret_col = f"{ColumnNames.RETURN}_{self.adj}"
+            if adj_ret_col in self.data.columns:
+                required.add(adj_ret_col)
+
+        # Add firm ID column for WithinFirmSort strategy
+        if self.strategy.__strategy_name__ == "Within-Firm Sort":
+            firm_id_col = getattr(self.strategy, 'firm_id_col', 'PERMNO')
+            if firm_id_col in self.data.columns:
+                required.add(firm_id_col)
+            else:
+                raise ValueError(
+                    f"WithinFirmSort requires firm ID column '{firm_id_col}' which is missing from data. "
+                    f"Available columns: {list(self.data.columns)}"
+                )
+
+        # Keep signal columns
+        for s in filter(None, [sort_var_main, sort_var2]):
+            if s in self.data.columns:
+                required.add(s)
+
+        # Add columns required by breakpoint_universe_func if it's a string column name
+        bp_func = getattr(self.strategy, 'breakpoint_universe_func', None)
+        bp_func2 = getattr(self.strategy, 'breakpoint_universe_func2', None)
+        for func in [bp_func, bp_func2]:
+            if isinstance(func, str) and func in self.data.columns:
+                required.add(func)
+
+        # Build ordered list
+        cols = [
+            ColumnNames.INDEX, ColumnNames.DATE, ColumnNames.ID,
+            ColumnNames.RETURN, ColumnNames.RATING, ColumnNames.VALUE_WEIGHT
+        ]
+
+        if ColumnNames.PRICE in required and ColumnNames.PRICE not in cols:
+            cols.append(ColumnNames.PRICE)
+
+        for c in sorted(required - set(cols)):
+            cols.append(c)
+
+        return cols
+
+    def _validate_double_sort_date_coverage(self, sort_var_main: str, sort_var2: str):
+        """
+        Validate that both sorting variables have consistent date coverage.
+
+        For double sorts, this method checks two conditions:
+        1. Both signals should have the same date range
+        2. At each date, at least some bonds must have non-NaN values for BOTH signals
+
+        Behavior depends on strategy.auto_match_signals:
+        - False (default): Raises ValueError, user must fix data manually
+        - True: Warns and automatically truncates data to overlapping period
+
+        Parameters
+        ----------
+        sort_var_main : str
+            Primary sorting variable name
+        sort_var2 : str
+            Secondary sorting variable name
+
+        Raises
+        ------
+        ValueError
+            If auto_match_signals=False and signals have mismatched coverage
+        """
+        if sort_var_main not in self.data.columns or sort_var2 not in self.data.columns:
+            return  # Column validation happens elsewhere
+
+        date_col = ColumnNames.DATE
+
+        # Check if auto-matching is enabled
+        auto_match = getattr(self.strategy, 'auto_match_signals', False)
+
+        # Find date ranges with non-NaN values for each signal
+        df1 = self.data[self.data[sort_var_main].notna()]
+        df2 = self.data[self.data[sort_var2].notna()]
+
+        if df1.empty or df2.empty:
+            return  # Empty data validation happens elsewhere
+
+        max_date1 = df1[date_col].max()
+        max_date2 = df2[date_col].max()
+        min_date1 = df1[date_col].min()
+        min_date2 = df2[date_col].min()
+
+        # Check 1: Different date ranges
+        if max_date1 != max_date2 or min_date1 != min_date2:
+            if auto_match:
+                # Auto-truncate with warning
+                new_min = max(min_date1, min_date2)
+                new_max = min(max_date1, max_date2)
+
+                warnings.warn(
+                    f"\nDouble sort date coverage mismatch detected:\n"
+                    f"  - '{sort_var_main}' has data from {min_date1} to {max_date1}\n"
+                    f"  - '{sort_var2}' has data from {min_date2} to {max_date2}\n"
+                    f"auto_match_signals=True: Truncating data to {new_min} - {new_max}",
+                    UserWarning
+                )
+
+                n_before = len(self.data)
+                self.data = self.data[
+                    (self.data[date_col] >= new_min) & (self.data[date_col] <= new_max)
+                ].copy()
+                n_after = len(self.data)
+
+                if self.verbose:
+                    print(f"Truncated data from {n_before:,} to {n_after:,} observations")
+            else:
+                # Raise error - user must fix manually
+                raise ValueError(
+                    f"\nDouble sort date coverage mismatch:\n"
+                    f"  - '{sort_var_main}' has data from {min_date1} to {max_date1}\n"
+                    f"  - '{sort_var2}' has data from {min_date2} to {max_date2}\n\n"
+                    f"Both sorting variables must have the same date range.\n"
+                    f"Either:\n"
+                    f"  1. Filter your data to the overlapping period before calling StrategyFormation\n"
+                    f"  2. Use auto_match_signals=True in DoubleSort() to auto-truncate"
+                )
+
+        # Check 2: At each date, verify some bonds have non-NaN for BOTH signals
+        both_valid = self.data[
+            self.data[sort_var_main].notna() & self.data[sort_var2].notna()
+        ]
+
+        if both_valid.empty:
+            raise ValueError(
+                f"\nDouble sort error: No observations have valid (non-NaN) values for BOTH "
+                f"'{sort_var_main}' and '{sort_var2}' at any date.\n"
+                f"For double sorting, each bond needs non-NaN values in both sorting variables.\n"
+                f"Please check your data preparation."
+            )
+
+        # Find dates with no overlap (all bonds have NaN in at least one signal)
+        dates_with_overlap = set(both_valid[date_col].unique())
+        all_dates = set(self.data[date_col].unique())
+        dates_without_overlap = all_dates - dates_with_overlap
+
+        if dates_without_overlap:
+            n_missing = len(dates_without_overlap)
+            n_total = len(all_dates)
+
+            # Show some examples
+            examples = sorted(dates_without_overlap)[:5]
+            examples_str = ", ".join(str(d)[:10] for d in examples)
+            if n_missing > 5:
+                examples_str += f", ... ({n_missing - 5} more)"
+
+            if auto_match:
+                # Auto-remove dates without overlap
+                warnings.warn(
+                    f"\nDouble sort signal overlap warning:\n"
+                    f"  {n_missing} of {n_total} dates have no bonds with valid values for BOTH signals.\n"
+                    f"  Dates without overlap: {examples_str}\n"
+                    f"auto_match_signals=True: Removing these dates from data.",
+                    UserWarning
+                )
+
+                n_before = len(self.data)
+                self.data = self.data[self.data[date_col].isin(dates_with_overlap)].copy()
+                n_after = len(self.data)
+
+                if self.verbose:
+                    print(f"Removed {n_missing} dates without signal overlap "
+                          f"({n_before:,} -> {n_after:,} observations)")
+            else:
+                raise ValueError(
+                    f"\nDouble sort signal overlap error:\n"
+                    f"  {n_missing} of {n_total} dates have no bonds with valid values for BOTH signals.\n"
+                    f"  Dates without overlap: {examples_str}\n\n"
+                    f"For double sorting, at each date there must be at least one bond with non-NaN\n"
+                    f"values for both '{sort_var_main}' and '{sort_var2}'.\n"
+                    f"Either:\n"
+                    f"  1. Check your data - these dates have no overlapping coverage\n"
+                    f"  2. Use auto_match_signals=True in DoubleSort() to auto-remove these dates"
+                )
+
+    def _print_initialization_summary(self):
+        """Print initialization summary."""
+        print("=" * 60)
+        print("StrategyFormation Initialization")
+        print("=" * 60)
+        print(f"Strategy: {self.strategy.strategy_name}")
+        print(f"Holding period: {self.hor}")
+        print(f"Number of portfolios: {self.nport}")
+        print(f"Rebalancing frequency: {self.rebalance_frequency}")
+
+        if self.rating:
+            print(f"Rating filter: {self.rating}")
+        if self.subset_filter:
+            print(f"Subset filters: {self.subset_filter}")
+        if self.chars:
+            print(f"Tracking characteristics: {self.chars}")
+        if self.turnover:
+            print("Computing turnover: Yes")
+        if self.banding_threshold:
+            print(f"Banding threshold: {self.banding_threshold}")
+        if self.filters:
+            print(f"Ex-post filters: {self.filters}")
+
+        print("=" * 60)
+
+
+    # =========================================================================
+    # Portfolio Formation Methods
+    # =========================================================================
+
+
+    def fit(self,
+        IDvar: Optional[str] = None,
+        DATEvar: Optional[str] = None,
+        RETvar: Optional[str] = None,
+        RATINGvar: Optional[str] = None,
+        VWvar: Optional[str] = None,
+        PRICEvar: Optional[str] = None):
+        """
+        Form portfolios and compute returns.
+
+        This is the main method that executes the portfolio formation process.
+            Parameters
+        ----------
+        IDvar : str, optional
+            Name of the ID column in the data (default: 'ID')
+        DATEvar : str, optional
+            Name of the date column in the data (default: 'date')
+        RETvar : str, optional
+            Name of the return column in the data (default: 'ret')
+        RATINGvar : str, optional
+            Name of the rating column in the data (default: 'RATING_NUM')
+        VWvar : str, optional
+            Name of the value weight column in the data (default: 'VW')
+        PRICEvar : str, optional
+            Name of the price column in the data (default: 'PRICE')
+
+        Returns
+        -------
+        StrategyResults
+            Object containing all results (returns, characteristics, turnover, etc.)
+        """
+        # Update column names if custom names are provided
+        self._apply_column_mapping(IDvar, DATEvar, RETvar, RATINGvar, VWvar, PRICEvar)
+
+        # Validate and prepare data
+        self._validate_data()
+        self._prepare_data()
+
+        self._computing_ep = False
+        if self.verbose:
+            print("\nStarting portfolio formation...")
+
+        # Determine if using staggered or non-staggered rebalancing
+        is_staggered = self.rebalance_frequency == 'monthly'
+
+        # Form portfolios (EA results)
+        if is_staggered:
+            ea_results = self._fit_staggered()
+        else:
+            ea_results = self._fit_nonstaggered()
+
+        # Form EP results if filters are applied
+        ep_results = None
+        if self.config.has_filters:
+            # Apply filters to data
+            self._computing_ep = True
+
+            # Re-run portfolio formation. # uses It2
+            if is_staggered:
+                ep_results = self._fit_staggered()
+            else:
+                ep_results = self._fit_nonstaggered()
+            self._computing_ep = False
+
+        # Get strategy name
+        strategy_name = self.strategy.str_name if hasattr(self.strategy, 'str_name') else 'strategy'
+
+        # Build FormationResults
+        results = build_formation_results(
+            name=strategy_name,
+            ea_results=ea_results,
+            ep_results=ep_results,
+            config=self._get_config_dict(),
+            metadata=self._get_metadata_dict(),
+            port_idx=self.port_idx if self.save_idx else None,
+        )
+
+        # Store results
+        self.results = results
+
+        if self.verbose:
+            print("Portfolio formation complete!")
+
+        return results
+
+    def _get_config_dict(self) -> dict:
+        """Get configuration dictionary."""
+        return {
+            'nport': self.nport,
+            'holding_period': self.hor,
+            'rebalance_frequency': self.rebalance_frequency,
+            'rating': self.rating,
+            'turnover': self.turnover,
+            'chars': self.chars,
+            'filters': self.filters is not None,
+        }
+    def _get_metadata_dict(self) -> dict:
+        """Get metadata dictionary."""
+        is_double = getattr(self.strategy, "double_sort", 0) or getattr(self.strategy, "DoubleSort", 0)
+        metadata = {
+            'n_periods': len(self.datelist),
+            'n_portfolios': self._get_total_portfolios(),
+            'is_double_sort': bool(is_double),
+        }
+        if is_double:
+            metadata['n1'] = self.nport
+            metadata['n2'] = getattr(self.strategy, "num_portfolios2", None) or getattr(self.strategy, "nport2", None)
+        return metadata
+
+    def _get_return_data(self, precomputed, date):
+        """
+        Get return data for portfolio formation.
+
+        Parameters
+        ----------
+        precomputed : PrecomputedData
+            Precomputed portfolio data
+        date : pd.Timestamp
+            Date to get returns for
+
+        Returns
+        -------
+        pd.DataFrame
+            Return data (It1 for EA, It2 for EP)
+        """
+        if getattr(self, '_use_ep_data', False):
+            # EP: Use filtered returns from It2
+            return precomputed.It2[date]
+        else:
+            # EA: Use unfiltered returns from It1
+            return precomputed.It1[date]
+
+    def _fit_staggered(self):
+        """Portfolio formation with staggered overlapping portfolios (monthly)."""
+        if self.verbose:
+            print("Using staggered (monthly) rebalancing...")
+
+        # Precompute time-series data
+        precomp = self._precompute_data()
+
+        # Initialize results arrays
+        TM = len(self.datelist)
+        tot_nport = self._get_total_portfolios()
+
+        ew_ret_arr = np.full((TM, self.hor, tot_nport), np.nan)
+        vw_ret_arr = np.full((TM, self.hor, tot_nport), np.nan)
+
+        # Initialize characteristics arrays if requested
+        if self.chars:
+            num_chars = len(self.chars)
+            ew_chars_arr = {c: np.full((TM, self.hor, tot_nport), np.nan) for c in self.chars}
+            vw_chars_arr = {c: np.full((TM, self.hor, tot_nport), np.nan) for c in self.chars}
+        else:
+            ew_chars_arr = None
+            vw_chars_arr = None
+
+        # Initialize turnover if requested
+        if self.turnover:
+            self.turnover_manager = TurnoverManager(
+                self.data, self.datelist, self.hor, 'monthly',
+                use_nanmean=self.config.formation.turnover_nanmean
+                )
+            self.turnover_state = self.turnover_manager.init_state(TM, tot_nport)
+
+        # Main loop: form portfolios for each cohort
+        for t_idx, date_t in enumerate(self.datelist):
+            # Store cohort for banding (matching old version: t % hor)
+            self.cohort = t_idx % self.hor
+
+            # Form portfolio for this cohort
+            self._form_cohort_portfolios(
+                t_idx, date_t, precomp,
+                ew_ret_arr, vw_ret_arr,
+                ew_chars_arr, vw_chars_arr
+            )
+
+        # Aggregate results
+        results = self._aggregate_results_staggered(
+            ew_ret_arr, vw_ret_arr,
+            ew_chars_arr, vw_chars_arr
+        )
+
+        return results
+
+    def _fit_nonstaggered(self):
+        """Portfolio formation with non-staggered rebalancing e.g., Fama-French type portfolios."""
+        if self.verbose:
+            print(f"Using non-staggered rebalancing: {self.rebalance_frequency}...")
+
+        # Get rebalancing dates
+        rebal_dates_idx = _get_rebalancing_dates(
+            self.datelist,
+            self.rebalance_frequency,
+            self.rebalance_month
+        )
+
+        if self.verbose:
+            print(f"Rebalancing at {len(rebal_dates_idx)} dates")
+
+        # Precompute data
+        precomp = self._precompute_data()
+
+        # Initialize results
+        TM = len(self.datelist)
+        tot_nport = self._get_total_portfolios()
+
+        ew_ret_arr = np.full((TM, tot_nport), np.nan)
+        vw_ret_arr = np.full((TM, tot_nport), np.nan)
+
+        # Initialize characteristics arrays if requested
+        if self.chars:
+            ew_chars_arr = {c: np.full((TM, tot_nport), np.nan) for c in self.chars}
+            vw_chars_arr = {c: np.full((TM, tot_nport), np.nan) for c in self.chars}
+        else:
+            ew_chars_arr = None
+            vw_chars_arr = None
+
+        # Initialize turnover
+        if self.turnover:
+            self.turnover_manager = TurnoverManager(
+                self.data, self.datelist, self.hor, self.rebalance_frequency,
+                use_nanmean=self.config.formation.turnover_nanmean
+            )
+            self.turnover_state = self.turnover_manager.init_state(TM, tot_nport)
+        # Main loop
+        for rebal_idx in rebal_dates_idx:
+            # Store rebalance date for banding
+            self.current_rebal_date = self.datelist[rebal_idx]
+
+            self._form_nonstaggered_portfolio(
+                rebal_idx, precomp,
+                ew_ret_arr, vw_ret_arr,
+                ew_chars_arr, vw_chars_arr
+            )
+
+        # Aggregate results
+        results = self._aggregate_results_nonstaggered(
+            ew_ret_arr, vw_ret_arr,
+            ew_chars_arr, vw_chars_arr
+        )
+
+        return results
+
+    def _get_total_portfolios(self) -> int:
+        """Get total number of portfolios (accounting for double sorts)."""
+        is_double = getattr(self.strategy, "double_sort", 0) or getattr(self.strategy, "DoubleSort", 0)
+        if is_double:
+            nport2 = getattr(self.strategy, "num_portfolios2", None) or getattr(self.strategy, "nport2", None)
+            return self.nport * nport2 if nport2 else self.nport
+        return self.nport
+
+    # =========================================================================
+    # Helper Methods (Precomputation, etc.)
+    # =========================================================================
+    def _precompute_data(self) -> PrecomputedData:
+        """Precompute time-indexed DataFrames."""
+        # Get sorting variables
+        sort_var_main, sort_var2 = self._get_sort_vars()
+
+        # Determine double sort parameters
+        is_double = getattr(self.strategy, "double_sort", 0) or getattr(self.strategy, "DoubleSort", 0)
+        if is_double:
+            nport2 = getattr(self.strategy, "num_portfolios2", None) or getattr(self.strategy, "nport2", None)
+            how = getattr(self.strategy, "how", 'conditional')
+            breakpoints = getattr(self.strategy, "breakpoints", None)
+            breakpoints2 = getattr(self.strategy, "breakpoints2", None)
+        else:
+            nport2 = None
+            how = 'conditional'
+            breakpoints = getattr(self.strategy, "breakpoints", None)
+            breakpoints2 = None
+
+        # Determine return variable
+        ret_var = ColumnNames.RETURN
+
+        # Build using PrecomputeBuilder
+        builder = PrecomputeBuilder(self)
+
+        precomp = builder.build(
+            tab=self.data[self.required_cols],
+            tab_raw=self.data_raw,
+            datelist=self.datelist,
+            sort_var=sort_var_main,
+            sort_var2=sort_var2,
+            use_double_sort=bool(is_double),
+            how=how,
+            adj=self.adj,
+            ret_var=ret_var,
+            nport=self.nport,
+            nport2=nport2,
+            breakpoints=breakpoints,
+            breakpoints2=breakpoints2,
+            cached_precomp=self._cached_precomp  # Option 6: Pass cached data
+        )
+
+        # Option 6: Store shareable parts for caching by AssayAnomalyRunner
+        # Only It0 and vw_map_t0 are independent of hp/nport
+        self._shareable_precomp = {
+            'It0': precomp.It0,
+            'vw_map_t0': precomp.vw_map_t0
+        }
+
+        return precomp
+
+    # Methods needed by PrecomputeBuilder
+    def filter_by_rating(self, tab, date_t, sort_var, sort_var2, date_sub=None):
+        """
+        Filter by rating - needed by PrecomputeBuilder.
+
+        Parameters
+        ----------
+        tab : pd.DataFrame
+            Full bond panel data
+        date_t : pd.Timestamp
+            Date to filter for
+        sort_var : str
+            Primary sorting variable
+        sort_var2 : str, optional
+            Secondary sorting variable
+        date_sub : pd.DataFrame, optional
+            Pre-filtered data for this date (optimization).
+            If provided, skips the date filtering step.
+
+        Returns
+        -------
+        pd.DataFrame
+            Filtered data for the given date
+        """
+        # Use pre-indexed data if available, otherwise filter by date
+        if date_sub is not None:
+            sub = date_sub.copy()
+        else:
+            sub = tab[tab[ColumnNames.DATE] == date_t].copy()
+
+        # Remove rows where sort variables are NaN
+        if sort_var in sub.columns:
+            sub = sub[~sub[sort_var].isna()]
+        if sort_var2 and sort_var2 in sub.columns:
+            sub = sub[~sub[sort_var2].isna()]
+
+        # Apply rating filter if specified
+        if self.rating is not None:
+            if isinstance(self.rating, str):
+                min_r, max_r = get_rating_bounds(self.rating)
+            else:
+                min_r, max_r = self.rating
+
+            sub = sub[
+                (sub[ColumnNames.RATING] >= min_r) &
+                (sub[ColumnNames.RATING] <= max_r)
+            ]
+
+        return sub
+
+    def filter_by_char(self, sub, date_t, sort_var, sort_var2):
+        """Filter by characteristics - needed by PrecomputeBuilder."""
+        if self.subset_filter is None:
+            return sub
+
+        for col, (min_val, max_val) in self.subset_filter.items():
+            if col in sub.columns:
+                sub = sub[
+                    (sub[col] >= min_val) &
+                    (sub[col] <= max_val)
+                ]
+
+        return sub
+
+    def filter_by_universe_matching(self, sub, adj, ret_var):
+        """Filter by universe matching - needed by PrecomputeBuilder."""
+        if adj in ['trim', 'bounce', 'price']:
+            adj_col = f"{ret_var}_{adj}"
+            if adj_col in sub.columns:
+                sub = sub[~sub[adj_col].isna()]
+
+        return sub
+
+    def _form_cohort_portfolios(self, t_idx, date_t, precomp,
+                                ew_ret_arr, vw_ret_arr, ew_chars_arr, vw_chars_arr):
+        """Form portfolios for one cohort (staggered rebalancing)."""
+        tot_nport = self._get_total_portfolios()
+
+        # Loop over holding period horizons
+        for h in range(self.hor):
+            t1_idx = t_idx + h + 1
+
+            # Check if we're beyond available data
+            if t1_idx >= len(self.datelist):
+                break
+
+            date_t1 = self.datelist[t1_idx]
+
+            # Get date for dynamic weights if needed
+            date_t1_minus1 = None
+            if self.dynamic_weights and t1_idx > 0:
+                date_t1_minus1 = self.datelist[t1_idx - 1]
+
+            # Get data for this period
+            It0 = precomp.It0.get(date_t, pd.DataFrame())
+
+            # Determine which return data to use (EA vs EP)
+            if self._computing_ep:
+                It1 = precomp.It2.get(date_t1, pd.DataFrame())
+            else:
+                It1 = precomp.It1.get(date_t1, pd.DataFrame())
+
+            It1m = precomp.It1m.get(date_t1_minus1 if date_t1_minus1 else date_t1, pd.DataFrame())
+
+            # Determine return column based on EA vs EP
+            if self._computing_ep and self.adj:
+                ret_col = f"{ColumnNames.RETURN}_{self.adj}"  # EP uses adjusted returns
+            else:
+                ret_col = ColumnNames.RETURN  # EA uses original returns
+
+            # Form portfolio
+            result = self._form_single_period(
+                It0, It1, It1m,
+                precomp.ranks_map,
+                precomp.vw_map_t0,
+                precomp.vw_map_t1m,
+                date_t,
+                date_t1_minus1,
+                ret_col)
+
+
+            # Store results at realization time (t1_idx) and cohort dimension
+            # This matches the old version: ewport_hor_ea[t + h, self.cohort, :]
+            ew_ret_arr[t1_idx, self.cohort, :] = result['returns_ew']
+            vw_ret_arr[t1_idx, self.cohort, :] = result['returns_vw']
+
+            # Store characteristics if requested
+            if self.chars and result['chars_ew'] is not None:
+                for c in self.chars:
+                    ew_chars_arr[c][t1_idx, self.cohort, :] = result['chars_ew'][c].values
+                    vw_chars_arr[c][t1_idx, self.cohort, :] = result['chars_vw'][c].values
+
+            # Handle turnover if requested
+            if self.turnover and not result['weights_df'].empty:
+                self.turnover_manager.accumulate(
+                    self.turnover_state,
+                    self.cohort,  # cohort index (t % hor)
+                    tot_nport,
+                    t_idx,  # tau (time index for formation)
+                    result['weights_df'],
+                    result['weights_scaled_df']
+                )
+
+    def _form_nonstaggered_portfolio(self, rebal_idx, precomp,
+                                    ew_ret_arr, vw_ret_arr, ew_chars_arr, vw_chars_arr):
+        """Form portfolio for one rebalancing period (non-staggered)."""
+        tot_nport = self._get_total_portfolios()
+        date_t = self.datelist[rebal_idx]
+
+        # Loop over holding period
+        for h in range(self.hor):
+            t1_idx = rebal_idx + h + 1
+
+            if t1_idx >= len(self.datelist):
+                break
+
+            date_t1 = self.datelist[t1_idx]
+
+            # Get date for dynamic weights
+            date_t1_minus1 = None
+            if self.dynamic_weights and t1_idx > 0:
+                date_t1_minus1 = self.datelist[t1_idx - 1]
+
+            # Get data
+            It0 = precomp.It0.get(date_t, pd.DataFrame())
+
+            # Determine which return data to use (EA vs EP)
+            if self._computing_ep:
+                # EP: Always use filtered returns from It2
+                It1 = precomp.It2.get(date_t1, pd.DataFrame())
+            else:
+                # EA: Always use unfiltered returns from It1
+                It1 = precomp.It1.get(date_t1, pd.DataFrame())
+
+            It1m = precomp.It1m.get(date_t1_minus1 if date_t1_minus1 else date_t1, pd.DataFrame())
+
+            # Form portfolio
+            result = self._form_single_period(
+                It0, It1, It1m,
+                precomp.ranks_map,
+                precomp.vw_map_t0,
+                precomp.vw_map_t1m,
+                date_t,
+                date_t1_minus1,
+                ColumnNames.RETURN if self.adj not in ['trim', 'price', 'bounce'] else f"{ColumnNames.RETURN}_{self.adj}"
+            )
+
+            # Store results at t1_idx (not rebal_idx)
+            ew_ret_arr[t1_idx, :] = result['returns_ew']
+            vw_ret_arr[t1_idx, :] = result['returns_vw']
+
+            # Store characteristics
+            if self.chars and result['chars_ew'] is not None:
+                for c in self.chars:
+                    ew_chars_arr[c][t1_idx, :] = result['chars_ew'][c].values
+                    vw_chars_arr[c][t1_idx, :] = result['chars_vw'][c].values
+
+            # Handle turnover
+            if self.turnover and not result['weights_df'].empty:
+                self.turnover_manager.compute(
+                    self.turnover_state,
+                    result['weights_df'],
+                    result['weights_scaled_df'],
+                    t1_idx, tot_nport
+                )
+
+    def _form_single_period(
+        self,
+        It0: pd.DataFrame,
+        It1: pd.DataFrame,
+        It1m: pd.DataFrame,
+        ranks_map: Dict,
+        vw_map_t0: Dict,
+        vw_map_t1m: Dict,
+        date_t: pd.Timestamp,
+        date_t1_minus1: Optional[pd.Timestamp],
+        ret_col: str
+    ) -> Dict:
+        """
+        Form portfolio for a single period.
+
+        """
+        from .utils import intersect_id
+
+        tot_nport = self._get_total_portfolios()
+
+        # Handle empty data
+        if It0.empty or It1.empty:
+            return self._create_nan_result(tot_nport)
+
+        # Intersect IDs
+        It0, It1, It1m = intersect_id(It0, It1, It1m, self.dynamic_weights)
+
+        if It0.shape[0] == 0:
+            return self._create_nan_result(tot_nport)
+
+        # Map ranks
+        It1['ptf_rank'] = It1[ColumnNames.ID].map(
+            ranks_map.get(date_t, pd.Series(dtype='Int64'))
+        )
+        It1 = It1.dropna(subset=['ptf_rank'])
+
+        if It1.empty:
+            return self._create_nan_result(tot_nport)
+
+        It1['ptf_rank'] = It1['ptf_rank'].astype(int)
+
+        # Get value weights
+        if self.dynamic_weights and date_t1_minus1 is not None:
+            vw_map = vw_map_t1m.get(date_t1_minus1, pd.Series(dtype=float))
+        else:
+            vw_map = vw_map_t0.get(date_t, pd.Series(dtype=float))
+
+        It1[ColumnNames.VALUE_WEIGHT] = It1[ColumnNames.ID].map(vw_map)
+
+        # Apply banding if needed
+        if self.banding_threshold is not None:
+            It1 = self._apply_banding_to_period(It1, tot_nport)
+
+        # Compute weights
+        sums = It1.groupby('ptf_rank', sort=False)[ColumnNames.VALUE_WEIGHT].sum()
+        It1['weights'] = It1[ColumnNames.VALUE_WEIGHT] / It1['ptf_rank'].map(sums)
+
+        # Compute portfolio returns
+        ptf_ret_ew = It1.groupby('ptf_rank', sort=False)[ret_col].mean()
+        ptf_ret_vw = (It1[ret_col] * It1['weights']).groupby(It1['ptf_rank'], sort=False).sum()
+
+        nport_idx = range(1, tot_nport + 1)
+        ptf_ret_ew = ptf_ret_ew.reindex(nport_idx)
+        ptf_ret_vw = ptf_ret_vw.reindex(nport_idx)
+
+        # Prepare weight outputs
+        weights_df = pd.DataFrame()
+        weights_scaled_df = pd.DataFrame()
+
+        if self.turnover or self.save_idx:
+            rank = It1[[ColumnNames.ID, 'ptf_rank', ret_col]].rename(columns={ret_col: 'ret'}).copy()
+            counts = rank.groupby('ptf_rank', sort=False)[ColumnNames.ID].size()
+            rank['count'] = rank['ptf_rank'].map(counts)
+            rank['eweights'] = 1.0 / rank['count']
+
+            rank = rank.merge(It1[[ColumnNames.ID, 'weights']], on=ColumnNames.ID, how='left')
+            rank = rank.rename(columns={'weights': 'vweights'})
+            rank['vweights'] = rank['vweights'].fillna(0.0)
+
+            # For WithinFirmSort, also include VW column (needed for custom aggregation)
+            if self.strategy.__strategy_name__ == "Within-Firm Sort":
+                rank = rank.merge(
+                    It1[[ColumnNames.ID, ColumnNames.VALUE_WEIGHT]].rename(columns={ColumnNames.VALUE_WEIGHT: 'VW'}),
+                    on=ColumnNames.ID,
+                    how='left'
+                )
+                weights_df = rank[[ColumnNames.ID, 'ptf_rank', 'eweights', 'vweights', 'ret', 'VW']]
+            else:
+                weights_df = rank[[ColumnNames.ID, 'ptf_rank', 'eweights', 'vweights']]
+
+            if self.save_idx:
+                if not hasattr(self, 'port_idx'):
+                    self.port_idx = {}
+                self.port_idx[date_t] = weights_df
+
+            # Scaled weights
+            ew_series = ptf_ret_ew.to_frame(name='ewret').reset_index().rename(columns={'index': 'ptf_rank'})
+            vw_series = ptf_ret_vw.to_frame(name='vwret').reset_index().rename(columns={'index': 'ptf_rank'})
+            retscaled = rank.merge(ew_series, on='ptf_rank', how='left').merge(vw_series, on='ptf_rank', how='left')
+
+            retscaled['ewret_scaled'] = ((1.0 + retscaled['ret']) / (1.0 + retscaled['ewret'])) / retscaled['count']
+            retscaled['vwret_scaled'] = ((1.0 + retscaled['ret']) / (1.0 + retscaled['vwret'])) * retscaled['vweights']
+
+            weights_scaled_df = retscaled[[ColumnNames.ID, 'ptf_rank', 'ewret_scaled', 'vwret_scaled']].rename(
+                columns={'ewret_scaled': 'eweights', 'vwret_scaled': 'vweights'}
+            )
+            weights_scaled_df['vweights'] = weights_scaled_df['vweights'].fillna(0.0)
+
+        # Compute characteristics
+        chars_ew = None
+        chars_vw = None
+        if self.chars:
+            nm = [ColumnNames.ID, 'ptf_rank', 'weights']
+            sub = It1[nm]
+            It1m_aug = It1m.merge(sub, on=ColumnNames.ID, how='inner')
+            cols = nm + list(self.chars)
+            chars = It1m_aug[cols]
+
+            chars_ew = pd.DataFrame()
+            chars_vw = pd.DataFrame()
+            for c in self.chars:
+                c_ew = chars.groupby('ptf_rank', sort=False)[c].mean().reindex(nport_idx)
+                c_vw = (chars[c] * chars['weights']).groupby(chars['ptf_rank'], sort=False).sum().reindex(nport_idx)
+                chars_ew = pd.concat([chars_ew, c_ew], axis=1)
+                chars_vw = pd.concat([chars_vw, c_vw], axis=1)
+            chars_vw.columns = chars_ew.columns = self.chars
+
+        return {
+            'returns_ew': ptf_ret_ew.tolist(),
+            'returns_vw': ptf_ret_vw.tolist(),
+            'weights_df': weights_df,
+            'weights_scaled_df': weights_scaled_df,
+            'chars_ew': chars_ew,
+            'chars_vw': chars_vw
+        }
+
+    def _create_nan_result(self, tot_nport: int) -> Dict:
+        """Create a NaN result for periods with no data."""
+        nan_list = [np.nan] * tot_nport
+        result = {
+            'returns_ew': nan_list,
+            'returns_vw': nan_list,
+            'weights_df': pd.DataFrame(),
+            'weights_scaled_df': pd.DataFrame(),
+            'chars_ew': None,
+            'chars_vw': None
+        }
+
+        if self.chars:
+            nan_df = pd.DataFrame(np.full((tot_nport, len(self.chars)), np.nan), columns=self.chars)
+            result['chars_ew'] = nan_df
+            result['chars_vw'] = nan_df
+
+        return result
+
+    def _apply_banding_to_period(self, It1: pd.DataFrame, nportmax: int) -> pd.DataFrame:
+        """Apply banding to a period's ranks."""
+        # Get appropriate cohort key
+        if hasattr(self, 'cohort'):
+            cohort_key = self.cohort
+        elif hasattr(self, 'current_rebal_date'):
+            cohort_key = self.current_rebal_date
+        else:
+            return It1
+
+        prev = self.lag_rank.get(cohort_key)
+
+        if prev is None or (hasattr(prev, "empty") and prev.empty):
+            # First time - save current ranks
+            self.lag_rank[cohort_key] = It1[[ColumnNames.ID, 'ptf_rank']].copy()
+        else:
+            # Apply banding
+            It1 = It1.merge(prev, on=ColumnNames.ID, how='left', suffixes=('_current', '_lag'))
+            It1['ptf_rank'] = self.calculate_qnew_vectorized(
+                It1['ptf_rank_lag'], It1['ptf_rank_current'], nportmax, self.banding_threshold
+            )
+            # Update lag_rank
+            self.lag_rank[cohort_key] = It1[[ColumnNames.ID, 'ptf_rank']].copy()
+
+        return It1
+
+    def calculate_qnew_vectorized(self, q_old, q_sig, nport, threshold):
+        """Vectorized banding calculation."""
+        threshold_portfolios = threshold * nport
+        rank_diff = np.abs(q_sig - q_old)
+
+        q_new = np.where(
+            rank_diff < threshold_portfolios,
+            q_old,
+            q_sig
+        )
+
+        # Handle NaNs (new bonds)
+        q_new = np.where(pd.isna(q_old), q_sig, q_new)
+
+        return pd.Series(q_new, index=q_sig.index)
+
+    def _compute_single_sort_longshort(self, ew_ret, vw_ret):
+        """
+        Compute long-short for single sort.
+
+        Long = last portfolio (highest)
+        Short = first portfolio (lowest)
+        LS = Long - Short
+
+        Parameters
+        ----------
+        ew_ret : np.ndarray
+            EW portfolio returns (time × nport)
+        vw_ret : np.ndarray
+            VW portfolio returns (time × nport)
+
+        Returns
+        -------
+        tuple
+            (ewls, vwls, ew_long, vw_long, ew_short, vw_short)
+        """
+        ew_long = ew_ret[:, -1]
+        ew_short = ew_ret[:, 0]
+        ewls = ew_long - ew_short
+
+        vw_long = vw_ret[:, -1]
+        vw_short = vw_ret[:, 0]
+        vwls = vw_long - vw_short
+
+        return ewls, vwls, ew_long, vw_long, ew_short, vw_short
+
+    def _compute_double_sort_longshort(self, ew_ret, vw_ret, n1, n2):
+        """
+        Compute long-short for double sort.
+
+        For each primary portfolio i, compute:
+            LS_i = portfolio(i, n2) - portfolio(i, 1)
+        Then average across all primary portfolios.
+
+        This matches the old PyBondLab behavior.
+
+        Parameters
+        ----------
+        ew_ret : np.ndarray
+            EW portfolio returns (time × n1*n2)
+        vw_ret : np.ndarray
+            VW portfolio returns (time × n1*n2)
+        n1 : int
+            Number of primary portfolios
+        n2 : int
+            Number of secondary portfolios
+
+        Returns
+        -------
+        tuple
+            (ewls, vwls, ew_long, vw_long, ew_short, vw_short)
+            where long/short are also averaged across primary bins
+        """
+        ew_ls_by_primary = []
+        vw_ls_by_primary = []
+        ew_long_by_primary = []
+        vw_long_by_primary = []
+        ew_short_by_primary = []
+        vw_short_by_primary = []
+
+        for i in range(n1):
+            # For primary portfolio i:
+            # Long = portfolio (i, n2) - last in this primary bin
+            # Short = portfolio (i, 1) - first in this primary bin
+            long_idx = i * n2 + (n2 - 1)
+            short_idx = i * n2
+
+            ew_long_i = ew_ret[:, long_idx]
+            ew_short_i = ew_ret[:, short_idx]
+            ew_ls_i = ew_long_i - ew_short_i
+
+            vw_long_i = vw_ret[:, long_idx]
+            vw_short_i = vw_ret[:, short_idx]
+            vw_ls_i = vw_long_i - vw_short_i
+
+            ew_ls_by_primary.append(ew_ls_i)
+            vw_ls_by_primary.append(vw_ls_i)
+            ew_long_by_primary.append(ew_long_i)
+            vw_long_by_primary.append(vw_long_i)
+            ew_short_by_primary.append(ew_short_i)
+            vw_short_by_primary.append(vw_short_i)
+
+        # Average across primary portfolios
+        ewls = np.mean(ew_ls_by_primary, axis=0)
+        vwls = np.mean(vw_ls_by_primary, axis=0)
+        ew_long = np.mean(ew_long_by_primary, axis=0)
+        vw_long = np.mean(vw_long_by_primary, axis=0)
+        ew_short = np.mean(ew_short_by_primary, axis=0)
+        vw_short = np.mean(vw_short_by_primary, axis=0)
+
+        return ewls, vwls, ew_long, vw_long, ew_short, vw_short
+
+    def _aggregate_within_firm_results(self, ew_ret_arr, vw_ret_arr,
+                                      ew_chars_arr, vw_chars_arr):
+        """
+        Aggregate results for WithinFirmSort strategy using custom aggregation.
+
+        This implements the within-firm return aggregation scheme:
+        - Group bonds by rating tercile and firm
+        - Compute firm-level VW returns
+        - Aggregate across firms (firm cap-weighted)
+        - Average across rating groups
+        """
+        from .utils_within_firm import compute_within_firm_returns_aggregation
+
+        # Get strategy parameters
+        firm_id_col = getattr(self.strategy, 'firm_id_col', 'PERMNO')
+        rating_bins = getattr(self.strategy, 'rating_bins', [-np.inf, 7, 10, np.inf])
+
+        # Use custom aggregation
+        custom_returns = compute_within_firm_returns_aggregation(
+            portfolio_indices=self.port_idx,
+            data_raw=self.data_raw,
+            datelist=self.datelist,
+            firm_id_col=firm_id_col,
+            rating_col=ColumnNames.RATING,
+            rating_bins=rating_bins
+        )
+
+        # Extract custom returns and align with datelist
+        # custom_returns may have fewer dates than datelist
+        vwls_series = custom_returns['long_short'].reindex(self.datelist)
+        vw_long_series = custom_returns['long_leg'].reindex(self.datelist)
+        vw_short_series = custom_returns['short_leg'].reindex(self.datelist)
+
+        vwls = vwls_series.values
+        vw_long = vw_long_series.values
+        vw_short = vw_short_series.values
+
+        # For within-firm sort, EW doesn't make sense (we use firm cap-weighting)
+        # So we set EW = VW for consistency
+        ewls = vwls.copy()
+        ew_long = vw_long.copy()
+        ew_short = vw_short.copy()
+
+        # Create portfolio labels
+        sort_var_main, _ = self._get_sort_vars()
+        ptf_labels = ['LOW', 'HIGH']
+
+        # Create placeholder portfolio returns (we don't use these for within-firm)
+        # But need them for compatibility with StrategyResults structure
+        ew_ret = np.zeros((len(self.datelist), 2))
+        vw_ret = np.zeros((len(self.datelist), 2))
+
+        # Fill with long/short leg returns for display
+        for i, date_t in enumerate(self.datelist):
+            if date_t in custom_returns['long_short'].index:
+                idx = custom_returns['long_short'].index.get_loc(date_t)
+                ew_ret[i, 0] = custom_returns['short_leg'].iloc[idx]
+                ew_ret[i, 1] = custom_returns['long_leg'].iloc[idx]
+                vw_ret[i, 0] = custom_returns['short_leg'].iloc[idx]
+                vw_ret[i, 1] = custom_returns['long_leg'].iloc[idx]
+            else:
+                ew_ret[i, :] = np.nan
+                vw_ret[i, :] = np.nan
+
+        # Create DataFrames
+        ew_df = pd.DataFrame(ew_ret, index=self.datelist, columns=ptf_labels)
+        vw_df = pd.DataFrame(vw_ret, index=self.datelist, columns=ptf_labels)
+
+        # Create long-short DataFrames with proper naming (matching old version)
+        # Use EA/EP prefix depending on whether filters are being computed
+        prefix = 'EWEP' if self._computing_ep else 'EWEA'
+        vw_prefix = 'VWEP' if self._computing_ep else 'VWEA'
+
+        ewls_df = pd.DataFrame(ewls, index=self.datelist, columns=[f'{prefix}_{self.name}'])
+        vwls_df = pd.DataFrame(vwls, index=self.datelist, columns=[f'{vw_prefix}_{self.name}'])
+        ew_long_df = pd.DataFrame(ew_long, index=self.datelist, columns=[f'LONG_{prefix}_{self.name}'])
+        vw_long_df = pd.DataFrame(vw_long, index=self.datelist, columns=[f'LONG_{vw_prefix}_{self.name}'])
+        ew_short_df = pd.DataFrame(ew_short, index=self.datelist, columns=[f'SHORT_{prefix}_{self.name}'])
+        vw_short_df = pd.DataFrame(vw_short, index=self.datelist, columns=[f'SHORT_{vw_prefix}_{self.name}'])
+
+        # Handle characteristics (not implemented for within-firm yet)
+        chars_ew_dict = None
+        chars_vw_dict = None
+
+        # Finalize turnover (use standard PyBondLab machinery)
+        turnover_ew = None
+        turnover_vw = None
+        if self.turnover:
+            turnover_ew, turnover_vw = self.turnover_manager.finalize(
+                self.turnover_state, ptf_labels)
+
+        # Build and return StrategyResults
+        return build_strategy_results(
+            ewport_df=ew_df,
+            vwport_df=vw_df,
+            ewls_df=ewls_df,
+            vwls_df=vwls_df,
+            ewls_long_df=ew_long_df,
+            vwls_long_df=vw_long_df,
+            ewls_short_df=ew_short_df,
+            vwls_short_df=vw_short_df,
+            turnover_ew_df=turnover_ew,
+            turnover_vw_df=turnover_vw,
+            chars_ew=chars_ew_dict,
+            chars_vw=chars_vw_dict,
+        )
+
+    def _aggregate_results_staggered(self, ew_ret_arr, vw_ret_arr,
+                                    ew_chars_arr, vw_chars_arr):
+        """Aggregate staggered portfolio results."""
+        # Check if this is WithinFirmSort - if so, use custom aggregation
+        is_within_firm = self.strategy.__strategy_name__ == "Within-Firm Sort"
+
+        if is_within_firm:
+            return self._aggregate_within_firm_results(ew_ret_arr, vw_ret_arr,
+                                                       ew_chars_arr, vw_chars_arr)
+
+        # Standard aggregation (existing code)
+        # Average over horizons
+        # Suppress "Mean of empty slice" warning - expected when some portfolios have no bonds
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', message='Mean of empty slice', category=RuntimeWarning)
+            ew_ret = np.nanmean(ew_ret_arr, axis=1)  # (TM, nport)
+            vw_ret = np.nanmean(vw_ret_arr, axis=1)
+
+        # Compute long-short returns
+        is_double = getattr(self.strategy, "double_sort", 0) or getattr(self.strategy, "DoubleSort", 0)
+        sort_var_main, sort_var2 = self._get_sort_vars()
+
+        if is_double:
+            nport2 = getattr(self.strategy, "num_portfolios2", None) or getattr(self.strategy, "nport2", None)
+            ewls, vwls, ew_long, vw_long, ew_short, vw_short = self._compute_double_sort_longshort(
+                ew_ret, vw_ret, self.nport, nport2
+            )
+            ptf_labels = get_signal_based_labels(sort_var_main, self.nport, sort_var2, nport2)
+        else:
+            ewls, vwls, ew_long, vw_long, ew_short, vw_short = self._compute_single_sort_longshort(
+                ew_ret, vw_ret
+            )
+            ptf_labels = get_signal_based_labels(sort_var_main, self.nport)
+
+        # Create DataFrames
+        ew_df = pd.DataFrame(ew_ret, index=self.datelist, columns=ptf_labels)
+        vw_df = pd.DataFrame(vw_ret, index=self.datelist, columns=ptf_labels)
+
+
+        # Create long-short DataFrames with proper naming (matching old version)
+        # Use EA/EP prefix depending on whether filters are being computed
+        prefix = 'EWEP' if self._computing_ep else 'EWEA'
+        vw_prefix = 'VWEP' if self._computing_ep else 'VWEA'
+
+        ewls_df = pd.DataFrame(ewls, index=self.datelist, columns=[f'{prefix}_{self.name}'])
+        vwls_df = pd.DataFrame(vwls, index=self.datelist, columns=[f'{vw_prefix}_{self.name}'])
+        ew_long_df = pd.DataFrame(ew_long, index=self.datelist, columns=[f'LONG_{prefix}_{self.name}'])
+        vw_long_df = pd.DataFrame(vw_long, index=self.datelist, columns=[f'LONG_{vw_prefix}_{self.name}'])
+        ew_short_df = pd.DataFrame(ew_short, index=self.datelist, columns=[f'SHORT_{prefix}_{self.name}'])
+        vw_short_df = pd.DataFrame(vw_short, index=self.datelist, columns=[f'SHORT_{vw_prefix}_{self.name}'])
+
+
+        # Handle characteristics
+        chars_ew_dict = None
+        chars_vw_dict = None
+        if self.chars:
+            chars_ew_dict = {}
+            chars_vw_dict = {}
+            for c in self.chars:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings('ignore', message='Mean of empty slice', category=RuntimeWarning)
+                    chars_ew_dict[c] = pd.DataFrame(
+                        np.nanmean(ew_chars_arr[c], axis=1),
+                        index=self.datelist,
+                        columns=ptf_labels
+                    )
+                    chars_vw_dict[c] = pd.DataFrame(
+                        np.nanmean(vw_chars_arr[c], axis=1),
+                        index=self.datelist,
+                        columns=ptf_labels
+                    )
+
+        # Finalize turnover
+        turnover_ew = None
+        turnover_vw = None
+        if self.turnover:
+            turnover_ew, turnover_vw = self.turnover_manager.finalize(
+                self.turnover_state, ptf_labels)
+
+        # Build and return StrategyResults
+        return build_strategy_results(
+            ewport_df=ew_df,
+            vwport_df=vw_df,
+            ewls_df=ewls_df,
+            vwls_df=vwls_df,
+            ewls_long_df=ew_long_df,
+            vwls_long_df=vw_long_df,
+            ewls_short_df=ew_short_df,
+            vwls_short_df=vw_short_df,
+            turnover_ew_df=turnover_ew,
+            turnover_vw_df=turnover_vw,
+            chars_ew=chars_ew_dict,
+            chars_vw=chars_vw_dict,
+        )
+
+    def _aggregate_results_nonstaggered(self, ew_ret_arr, vw_ret_arr,
+                                       ew_chars_arr, vw_chars_arr):
+        """Aggregate non-staggered portfolio results."""
+        # tot_nport = self._get_total_portfolios()
+        # ptf_labels = get_portfolio_labels(tot_nport)
+
+
+
+         # Compute long-short returns
+        is_double = getattr(self.strategy, "double_sort", 0) or getattr(self.strategy, "DoubleSort", 0)
+        sort_var_main, sort_var2 = self._get_sort_vars()
+
+        if is_double:
+            nport2 = getattr(self.strategy, "num_portfolios2", None) or getattr(self.strategy, "nport2", None)
+            ewls, vwls, ew_long, vw_long, ew_short, vw_short = self._compute_double_sort_longshort(
+                ew_ret_arr, vw_ret_arr, self.nport, nport2
+            )
+            ptf_labels = get_signal_based_labels(sort_var_main, self.nport, sort_var2, nport2)
+
+        else:
+            ewls, vwls, ew_long, vw_long, ew_short, vw_short = self._compute_single_sort_longshort(
+                ew_ret_arr, vw_ret_arr
+            )
+            ptf_labels = get_signal_based_labels(sort_var_main, self.nport)
+
+        # Create DataFrames (already in correct shape)
+        ew_df = pd.DataFrame(ew_ret_arr, index=self.datelist, columns=ptf_labels)
+        vw_df = pd.DataFrame(vw_ret_arr, index=self.datelist, columns=ptf_labels)
+
+        # Create long-short DataFrames with proper naming (matching old version)
+        # Use EA/EP prefix depending on whether filters are being computed
+        prefix = 'EWEP' if self._computing_ep else 'EWEA'
+        vw_prefix = 'VWEP' if self._computing_ep else 'VWEA'
+
+        ewls_df = pd.DataFrame(ewls, index=self.datelist, columns=[f'{prefix}_{self.name}'])
+        vwls_df = pd.DataFrame(vwls, index=self.datelist, columns=[f'{vw_prefix}_{self.name}'])
+        ew_long_df = pd.DataFrame(ew_long, index=self.datelist, columns=[f'LONG_{prefix}_{self.name}'])
+        vw_long_df = pd.DataFrame(vw_long, index=self.datelist, columns=[f'LONG_{vw_prefix}_{self.name}'])
+        ew_short_df = pd.DataFrame(ew_short, index=self.datelist, columns=[f'SHORT_{prefix}_{self.name}'])
+        vw_short_df = pd.DataFrame(vw_short, index=self.datelist, columns=[f'SHORT_{vw_prefix}_{self.name}'])
+
+        # Handle characteristics
+        chars_ew_dict = None
+        chars_vw_dict = None
+        if self.chars:
+            chars_ew_dict = {}
+            chars_vw_dict = {}
+            for c in self.chars:
+                chars_ew_dict[c] = pd.DataFrame(
+                    ew_chars_arr[c],
+                    index=self.datelist,
+                    columns=ptf_labels
+                )
+                chars_vw_dict[c] = pd.DataFrame(
+                    vw_chars_arr[c],
+                    index=self.datelist,
+                    columns=ptf_labels
+                )
+
+        # Finalize turnover
+        turnover_ew = None
+        turnover_vw = None
+        if self.turnover:
+            turnover_ew, turnover_vw = self.turnover_manager.finalize(
+                self.turnover_state, ptf_labels
+            )
+
+        # Build and return StrategyResults
+        return build_strategy_results(
+            ewport_df=ew_df,
+            vwport_df=vw_df,
+            ewls_df=ewls_df,
+            vwls_df=vwls_df,
+            ewls_long_df=ew_long_df,
+            vwls_long_df=vw_long_df,
+            ewls_short_df=ew_short_df,
+            vwls_short_df=vw_short_df,
+            turnover_ew_df=turnover_ew,
+            turnover_vw_df=turnover_vw,
+            chars_ew=chars_ew_dict,
+            chars_vw=chars_vw_dict,
+        )
+
+
+    # =========================================================================
+    # Utility Methods
+    # =========================================================================
+    def summarize_portfolio_composition(self) -> pd.DataFrame:
+        """
+        Summarize portfolio composition over time.
+
+        Returns
+        -------
+        pd.DataFrame
+            Summary statistics by date (number of bonds in long, short, etc.)
+        """
+        if not hasattr(self, 'port_idx') or self.port_idx is None:
+            raise ValueError("No portfolio indices saved. Set save_idx=True when initializing.")
+
+        return summarize_ranks(self.port_idx)
+
+
+# #### OLD CODE
+
+
+
+def load_breakpoints_WRDS() -> pd.DataFrame:
+    """
+    Load the breakpoints (rolling percentiles) WRDS data
+    """
+    return load()

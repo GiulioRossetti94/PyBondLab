@@ -1,0 +1,336 @@
+Metadata-Version: 2.1
+Name: PyBondLab
+Version: 0.2.0
+Summary: Performs portfolio sorting and strategy evaluation for corporate bonds
+Home-page: https://github.com/GiulioRossetti94/PyBondLab
+Author: Giulio Rossetti, Alex Dickerson
+Author-email: Giulio.Rossetti.1@wbs.ac.uk, alexander.dickerson1@unsw.edu.au
+License: MIT
+Project-URL: Open Source Bond Asset Pricing, https://openbondassetpricing.com/
+Project-URL: Source Code, https://github.com/GiulioRossetti94/PyBondLab
+Project-URL: Bug Tracker, https://github.com/GiulioRossetti94/PyBondLab/issues
+Keywords: corporate bonds,portfolio sorting,data cleaning
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: numpy<2
+Requires-Dist: pandas>=1.5
+Requires-Dist: statsmodels>=0.14
+Requires-Dist: matplotlib>=3.5
+Requires-Dist: pyarrow
+Requires-Dist: wrds
+
+# PyBondLab
+
+**A Python library for corporate bond portfolio formation and empirical asset pricing research**
+
+PyBondLab provides a comprehensive toolkit for conducting empirical research on corporate bond markets. The package implements standardized methods for portfolio sorting, strategy backtesting, factor construction, and performance evaluation, designed specifically for the unique characteristics of fixed income securities.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+
+## Overview
+
+PyBondLab addresses key challenges in corporate bond research:
+
+- **Portfolio Formation**: Single and double sorting with flexible rebalancing frequencies
+- **Signal Construction**: Momentum, long-term reversal, and custom signal strategies
+- **Return Adjustments**: Trimming, winsorizing, price filtering, and bounce filtering
+- **Turnover Analysis**: Comprehensive tracking and diagnostic tools for portfolio rebalancing
+- **Factor Construction**: Within-firm sorting and factor aggregation methods
+- **Performance Evaluation**: Time-series regression, risk adjustment, and anomaly correlation analysis
+
+The package is built on the methodologies from the Open Source Bond Asset Pricing project and designed for reproducible academic research.
+
+## Key Features
+
+### Strategy Formation
+- **Single Sort**: Univariate portfolio sorts with custom breakpoints and universe filters
+- **Double Sort**: Conditional and unconditional bivariate sorting
+- **Momentum**: Past return-based strategies with flexible formation/holding periods
+- **Long-term Reversal**: Contrarian strategies with skip periods
+- **Within-Firm Sort**: Isolate within-firm bond dispersion from cross-firm effects
+
+### Rebalancing Flexibility
+- Monthly (staggered overlapping portfolios)
+- Quarterly, semi-annual, and annual
+- Custom frequencies (e.g., every 4 months)
+- User-specified rebalancing months
+
+### Data Filtering
+- **Trimming**: Remove extreme observations by threshold or percentile
+- **Winsorizing**: Cap extreme values (ex-ante or ex-post)
+- **Price Filtering**: Filter based on bond price levels
+- **Bounce Filtering**: Remove reversal patterns
+
+### Turnover Tracking
+- Detailed diagnostic logging for every portfolio rebalance
+- Classification of turnover events (13 distinct case types)
+- Bond-level composition tracking
+- Weight drift analysis
+
+### Results & Visualization
+- Time-series regression with Newey-West standard errors
+- Factor model evaluation (CAPM, Fama-French, custom factors)
+- Correlation heatmaps and anomaly analysis
+- LaTeX table generation
+
+## Installation
+
+### Requirements
+- Python >= 3.11
+- numpy < 2
+- pandas >= 1.5
+- statsmodels >= 0.14
+- matplotlib >= 3.5
+- pyarrow
+- wrds
+
+### Install from source
+
+```bash
+git clone https://github.com/GiulioRossetti94/PyBondLab.git
+cd PyBondLab/PyBondLab_v2
+pip install -e .
+```
+
+The `-e` flag installs in editable mode, useful for development and research workflows.
+
+## Quick Start
+
+### Basic Single Sort
+
+```python
+import pandas as pd
+import PyBondLab as pbl
+
+# Load bond data (must contain: date, ID, ret, and sorting variable)
+data = pd.read_csv("bond_data.csv")
+data['date'] = pd.to_datetime(data['date'])
+
+# Create strategy: 5 portfolios sorted by credit rating, 6-month holding period
+strategy = pbl.SingleSort(
+    holding_period=6,
+    sort_var='RATING_NUM',
+    num_portfolios=5,
+    skip=0
+)
+
+# Run portfolio formation
+results = pbl.StrategyFormation(data, strategy=strategy, turnover=True).fit()
+
+# Access portfolio returns (equal-weighted and value-weighted)
+ew_returns = results.ret_ew  # DataFrame: dates × portfolios
+vw_returns = results.ret_vw
+
+# High-minus-low spread
+hml = results.hml_ew  # Series: dates
+```
+
+### Double Sort with Filtering
+
+```python
+from PyBondLab import DoubleSort, StrategyFormation, Filter
+
+# Winsorize returns at 1st and 99th percentiles
+filter_obj = Filter(
+    data=data,
+    adj='wins',
+    w=1.0,
+    loc='both'
+)
+data_clean = filter_obj.apply_filters()
+
+# Double sort: rating (3 portfolios) × size (5 portfolios)
+strategy = DoubleSort(
+    holding_period=6,
+    sort_var='RATING_NUM',
+    sort_var2='BOND_VALUE',
+    num_portfolios=3,
+    num_portfolios2=5,
+    how='unconditional'
+)
+
+results = StrategyFormation(
+    data_clean,
+    strategy=strategy,
+    adj='wins',
+    turnover=True
+).fit()
+
+# Access 3×5 grid of portfolios
+portfolio_grid = results.ret_vw  # 15 portfolios
+```
+
+### Momentum Strategy
+
+```python
+from PyBondLab import Momentum
+
+# 6-month formation, 1-month skip, 6-month holding
+strategy = Momentum(
+    holding_period=6,
+    lookback_period=6,
+    skip=1,
+    num_portfolios=10
+)
+
+results = StrategyFormation(data, strategy=strategy).fit()
+
+# Winner-minus-loser portfolio
+wml = results.hml_vw  # High momentum - low momentum
+```
+
+### Custom Rebalancing Frequency
+
+```python
+# Rebalance every 6 months (June and December)
+strategy = pbl.SingleSort(
+    holding_period=6,
+    sort_var='RATING_NUM',
+    num_portfolios=5,
+    rebalance_frequency='semi-annual',
+    rebalance_month=[6, 12]
+)
+
+results = pbl.StrategyFormation(data, strategy=strategy).fit()
+```
+
+### Performance Evaluation
+
+```python
+import statsmodels.api as sm
+
+# Time-series regression with Newey-West standard errors
+factor_returns = pd.read_csv("factors.csv")  # Must include 'date' and factor columns
+
+y = results.hml_vw  # Portfolio returns
+X = factor_returns[['MKT', 'SMB', 'HML']]  # Factor exposures
+X = sm.add_constant(X)
+
+model = sm.OLS(y, X).fit(cov_type='HAC', cov_kwds={'maxlags': 6})
+print(model.summary())
+
+# Alpha is the intercept (first coefficient)
+alpha = model.params['const']
+alpha_tstat = model.tvalues['const']
+```
+
+## Data Requirements
+
+PyBondLab expects panel data with the following structure:
+
+**Required columns:**
+- `date`: datetime or string (YYYY-MM-DD format)
+- `ID`: bond identifier (e.g., CUSIP)
+- `ret`: returns (decimal form: 0.01 = 1%)
+- Sorting variable(s) (e.g., `RATING_NUM`, `oas`, `duration`)
+
+**Optional columns:**
+- `VW`: market value for value-weighted portfolios (defaults to equal-weight)
+- `PRICE`: bond price (required for price filtering)
+- `PERMNO`: firm identifier (required for within-firm sorting)
+
+**Data format:**
+```python
+      date         ID       ret  RATING_NUM  BOND_VALUE
+2002-08-31  00101JAA4  0.012345           7  1500000.50
+2002-08-31  00101JAB2 -0.003210           9   980000.25
+2002-09-30  00101JAA4  0.005432           7  1510000.75
+...
+```
+
+Data should be sorted by `ID` and `date` before passing to `StrategyFormation`.
+
+## Examples
+
+The `examples/` directory contains self-contained scripts demonstrating package functionality:
+
+```
+examples/
+├── strategies/          # Strategy formation examples
+│   ├── singlesort_basic.py
+│   ├── doublesort_unconditional.py
+│   ├── momentum.py
+│   └── ...
+├── filtering/          # Data filtering examples
+│   ├── trimming.py
+│   ├── winsorizing.py
+│   └── ...
+├── rebalancing/        # Rebalancing frequency examples
+│   ├── quarterly.py
+│   ├── annual.py
+│   └── ...
+└── turnover/           # Turnover tracking and diagnostics
+    ├── basic_usage.py
+    ├── investigation.py
+    └── ...
+```
+
+Each example is fully documented and can be run independently. See `examples/README.md` for details.
+
+## Documentation
+
+- **Package Structure**: See `STRUCTURE.md` for complete architecture and module descriptions
+- **API Reference**: https://openbondassetpricing.com/
+- **Examples**: Self-contained scripts in `examples/` directory
+- **Turnover Tracking**: Comprehensive guide in `examples/turnover/README_TURNOVER_TRACKING.md`
+
+## Data Sources
+
+PyBondLab is designed to work with corporate bond data from:
+
+- **WRDS Enhanced TRACE**: Trade-based bond returns and characteristics
+- **Open Source Bond Asset Pricing (OSBAP)**: Cleaned monthly bond panel
+  - Download: https://openbondassetpricing.com/
+  - Pre-processed with MMN corrections
+
+The package includes WRDS breakpoint data for reproducible portfolio formation.
+
+## Citation
+
+If you use PyBondLab in your research, please cite:
+
+When using OSBAP data or methodologies, also cite:
+
+```bibtex
+@article{dickerson2023,
+  title = {Common Pitfalls in the Evaluation of Corporate Bonds Strategies },
+  author = {Dickerson, Alex and Robotti, Cesare and Rossetti, Giulio},
+  journal = {Critical Finance Review},
+  year = {2023},
+  note = {Forthcoming}
+}
+```
+
+## Contributing
+
+Contributions are welcome! Please:
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/new-feature`)
+3. Commit your changes with clear messages
+4. Add tests for new functionality
+5. Submit a pull request
+
+For bug reports and feature requests, use the [GitHub issue tracker](https://github.com/GiulioRossetti94/PyBondLab/issues).
+
+## Development Team
+
+**Authors:**
+- Giulio Rossetti (Warwick Business School) - Giulio.Rossetti.1@wbs.ac.uk
+- Alex Dickerson (UNSW Business School) - alexander.dickerson1@unsw.edu.au
+
+**Version**: 0.2.0
+**License**: MIT
+
+## License
+
+MIT License - see [LICENSE](LICENSE) file for details.
+
+## Links
+
+- **GitHub**: https://github.com/GiulioRossetti94/PyBondLab
+- **Open Source Bond Asset Pricing**: https://openbondassetpricing.com/
+- **Documentation**: https://openbondassetpricing.com/
+- **Issue Tracker**: https://github.com/GiulioRossetti94/PyBondLab/issues
