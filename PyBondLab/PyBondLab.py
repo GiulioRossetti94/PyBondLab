@@ -71,6 +71,7 @@ from .numba_core import (
     compute_all_returns_ultrafast,
     compute_staggered_returns_ultrafast,
     build_vw_lookup_and_dynamic_weights,
+    build_vw_lookup,
 )
 
 import statsmodels.api as sm
@@ -1179,10 +1180,9 @@ class StrategyFormation:
         # TODO: Fix fast path to properly handle (formation_date, return_date) ID intersection
         if self.config.has_filters:
             return False
-        # Fast path assumes dynamic_weights=True (uses VW from previous day)
-        # If dynamic_weights=False, fall back to slow path which uses VW from formation date
-        if not self.dynamic_weights:
-            return False
+        # Fast path supports both dynamic_weights=True and False:
+        # - True: VW from day before return date (d-1)
+        # - False: VW from formation date (different per cohort for hp>1)
         return True
 
     def _fit_fast_returns_only(self):
@@ -1261,16 +1261,21 @@ class StrategyFormation:
         # This replaces the slow per-date pandas groupby/rank operations
         ranks = compute_ranks_all_dates_fast(date_idx, signal, TM, tot_nport)
 
-        # Step 3: Prepare dynamic weights using numba
-        # Dynamic weights come from previous period (t-1) for VW calculation
-        dynamic_weights = build_vw_lookup_and_dynamic_weights(
-            date_idx, id_idx, vw, TM, n_ids
-        )
+        # Step 3: Prepare VW data for portfolio weighting
+        # Build VW lookup table: vw_lookup[date * n_ids + bond_id] = VW
+        vw_lookup = build_vw_lookup(date_idx, id_idx, vw, TM, n_ids)
 
         # Step 4: Compute portfolio returns using ultra-fast numba functions
         if self.hor == 1:
             # Simple case: h=1
-            # Use compute_all_returns_ultrafast which handles rank lookup + returns
+            # For hp=1, both dynamic_weights modes use same VW date:
+            #   - Formation date is d-1, return date is d
+            #   - dynamic_weights=True: VW from d-1 (= formation date)
+            #   - dynamic_weights=False: VW from formation date = d-1
+            # So we can use pre-computed dynamic_weights (faster lookup)
+            dynamic_weights = build_vw_lookup_and_dynamic_weights(
+                date_idx, id_idx, vw, TM, n_ids
+            )
             ew_ret_raw, vw_ret_raw = compute_all_returns_ultrafast(
                 date_idx,        # return date indices
                 id_idx,          # return bond ID indices
@@ -1283,10 +1288,15 @@ class StrategyFormation:
             )
         else:
             # Staggered case: h>1
+            # For hp>1, dynamic_weights modes differ:
+            #   - True: VW from d-1 (day before return) - same for all cohorts
+            #   - False: VW from formation date - different per cohort
+            # Pass vw_lookup and let the function look up VW per cohort
             ew_ret_raw, vw_ret_raw = compute_staggered_returns_ultrafast(
-                date_idx, id_idx, returns, dynamic_weights,
+                date_idx, id_idx, returns, vw_lookup,
                 date_idx, id_idx, ranks,
-                TM, n_ids, tot_nport, self.hor
+                TM, n_ids, tot_nport, self.hor,
+                self.dynamic_weights  # True: VW from d-1, False: VW from form_d
             )
 
         # Aggregate results (same format as standard path)

@@ -298,7 +298,8 @@ passed = validate_against_baseline(data, baseline)
 ### Fast Path Requirements (RESOLVED)
 
 The ultra-fast path (`_fit_fast_returns_only`) now correctly matches the slow path
-when `dynamic_weights=True`. The following issues were fixed:
+for both `dynamic_weights=True` and `dynamic_weights=False`. The following issues
+were fixed:
 
 1. **Ranking algorithm mismatch**: Fast path used position-based ranking, slow path
    uses `np.percentile` thresholds. Fixed by rewriting `compute_ranks_all_dates_fast`
@@ -307,21 +308,71 @@ when `dynamic_weights=True`. The following issues were fixed:
 2. **VW date intersection**: Fast path included bonds without valid VW at t-1.
    Fixed by adding `if np.isnan(weight): continue` checks in ultrafast functions.
 
-3. **dynamic_weights assumption**: Fast path assumes `dynamic_weights=True` (uses
-   VW from previous day), but default was `False`. Fixed by disabling fast path
-   when `dynamic_weights=False`.
+3. **dynamic_weights support**: Fast path now supports both `dynamic_weights=True`
+   and `False` by using a VW lookup table and conditionally selecting VW date.
 
 **Current status:** Fast path matches slow path within 1e-17 tolerance for both
-HP=1 and HP=3 when `dynamic_weights=True`.
+HP=1 and HP=3, with either `dynamic_weights` setting.
 
 **Requirements for fast path:**
 - `turnover=False`
 - `chars=None`
 - `banding_threshold=None`
-- `dynamic_weights=True` (baseline tests use this)
 - SingleSort only
 - Monthly rebalancing
 - No filters applied
+
+---
+
+## dynamic_weights Parameter
+
+The `dynamic_weights` parameter controls which date's value weights (VW) are used
+for VW portfolio return calculations.
+
+### Behavior by Setting
+
+| Setting | VW Source Date | Description |
+|---------|---------------|-------------|
+| `True` | `t+h-1` (day before return date) | VW from most recent available date |
+| `False` | `t` (formation date) | VW from when portfolio was formed |
+
+### Effect on Staggered Rebalancing (hp>1)
+
+For `holding_period=1`, both settings use the same VW date (formation date = return date - 1).
+
+For `holding_period>1` (staggered), the settings differ:
+
+**Example: hp=3, return date = March**
+- Cohort 0: Formed in February → uses VW from February (both settings same)
+- Cohort 1: Formed in January → `True` uses VW from February, `False` uses VW from January
+- Cohort 2: Formed in December → `True` uses VW from February, `False` uses VW from December
+
+### Code Location
+
+- **Config default**: `config.py:277` - `dynamic_weights: bool = False`
+- **Baseline tests**: Use `dynamic_weights=True` (line 484 in `pbl_test.py`)
+- **BatchStrategyFormation**: Hardcodes `dynamic_weights=True` (lines 136, 196, 480, 594)
+
+### Usage
+
+```python
+from PyBondLab import StrategyFormation, SingleSort
+from PyBondLab.config import StrategyFormationConfig, FormationConfig, DataConfig
+
+# Explicit dynamic_weights=True (recommended)
+config = StrategyFormationConfig(
+    data=DataConfig(),
+    formation=FormationConfig(dynamic_weights=True)
+)
+
+sf = StrategyFormation(
+    data=data,
+    strategy=SingleSort(holding_period=3, sort_var='signal', num_portfolios=5),
+    turnover=False,
+    config=config
+)
+result = sf.fit()
+```
 
 ### Parallelization (Phase 3) - Not Started
 

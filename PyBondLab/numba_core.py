@@ -1552,6 +1552,52 @@ def build_vw_lookup_and_dynamic_weights(
     return dynamic_weights
 
 
+@njit(cache=True)
+def build_vw_lookup(
+    date_idx: np.ndarray,
+    id_idx: np.ndarray,
+    vw: np.ndarray,
+    n_dates: int,
+    n_ids: int
+) -> np.ndarray:
+    """
+    Build VW lookup table: (date, bond_id) -> VW value.
+
+    This lookup table can be used to get VW from any date, enabling
+    both dynamic_weights=True (VW from d-1) and False (VW from formation date).
+
+    Parameters
+    ----------
+    date_idx : np.ndarray
+        Date index (0-indexed) for each observation
+    id_idx : np.ndarray
+        Bond ID index for each observation
+    vw : np.ndarray
+        Value weights for each observation
+    n_dates : int
+        Total number of dates
+    n_ids : int
+        Total number of unique bond IDs
+
+    Returns
+    -------
+    np.ndarray
+        VW lookup table of shape (n_dates * n_ids,)
+        Access as: vw_lookup[date * n_ids + bond_id]
+    """
+    n = len(date_idx)
+
+    # Build VW lookup: vw_lookup[date * n_ids + bond_id] = VW
+    vw_lookup = np.full(n_dates * n_ids, np.nan, dtype=np.float64)
+    for i in range(n):
+        d = date_idx[i]
+        bid = id_idx[i]
+        if d >= 0 and d < n_dates and bid >= 0 and bid < n_ids:
+            vw_lookup[d * n_ids + bid] = vw[i]
+
+    return vw_lookup
+
+
 @njit(cache=True, parallel=True)
 def compute_ranks_all_dates_fast(
     date_idx: np.ndarray,      # (n,) date index for each row
@@ -1799,14 +1845,15 @@ def compute_staggered_returns_ultrafast(
     ret_date_idx: np.ndarray,    # (n,) date index for return observations
     ret_id_idx: np.ndarray,      # (n,) bond ID index for return observations
     returns: np.ndarray,         # (n,) return values
-    weights: np.ndarray,         # (n,) VW weights
+    vw_lookup: np.ndarray,       # VW lookup table: vw_lookup[date * n_ids + id]
     form_date_idx: np.ndarray,   # (m,) date index for formation observations
     form_id_idx: np.ndarray,     # (m,) bond ID index for formation observations
     form_ranks: np.ndarray,      # (m,) portfolio ranks from formation
     n_dates: int,
     n_ids: int,
     nport: int,
-    hor: int                     # holding period (number of cohorts)
+    hor: int,                    # holding period (number of cohorts)
+    use_dynamic_weights: bool    # True: VW from d-1, False: VW from formation date
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Compute staggered portfolio returns for ALL dates in one shot.
@@ -1815,8 +1862,13 @@ def compute_staggered_returns_ultrafast(
 
     Parameters
     ----------
+    vw_lookup : np.ndarray
+        VW lookup table: vw_lookup[date * n_ids + bond_id] = VW
     hor : int
         Holding period (number of cohorts to average)
+    use_dynamic_weights : bool
+        If True, use VW from day before return date (d-1) - same for all cohorts.
+        If False, use VW from formation date (form_d) - different per cohort.
 
     Returns
     -------
@@ -1873,7 +1925,20 @@ def compute_staggered_returns_ultrafast(
 
                 bond_id = ret_id_idx[i]
                 ret_val = returns[i]
-                weight = weights[i]
+
+                # Look up VW based on dynamic_weights setting:
+                # - True: VW from d-1 (day before return date) - same for all cohorts
+                # - False: VW from form_d (formation date) - different per cohort
+                if use_dynamic_weights:
+                    vw_date = d - 1
+                else:
+                    vw_date = form_d
+
+                vw_lookup_idx = vw_date * n_ids + bond_id
+                if vw_lookup_idx >= 0 and vw_lookup_idx < len(vw_lookup):
+                    weight = vw_lookup[vw_lookup_idx]
+                else:
+                    weight = np.nan
 
                 # Look up rank from formation date
                 lookup_idx = form_d * n_ids + bond_id
@@ -1884,7 +1949,7 @@ def compute_staggered_returns_ultrafast(
                 if np.isnan(rank) or np.isnan(ret_val):
                     continue
 
-                # Skip bonds that don't exist at VW date (d-1)
+                # Skip bonds that don't exist at VW date
                 # This matches slow path's 3-way intersection logic
                 if np.isnan(weight):
                     continue
