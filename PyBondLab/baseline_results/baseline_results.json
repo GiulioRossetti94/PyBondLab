@@ -16,7 +16,7 @@
       "dynamic_weights": true
     },
     "ew_ls_mean": 0.0008755325229444698,
-    "vw_ls_mean": 0.0014699519876928493,
+    "vw_ls_mean": 0.0014699519876928489,
     "ew_returns_by_ptf": [
       0.003191279031181957,
       0.003962466607164381,
@@ -25,7 +25,7 @@
       0.004066811554126427
     ],
     "vw_returns_by_ptf": [
-      0.0027203673664715658,
+      0.0027203673664715653,
       0.003717994880118381,
       0.0036648189638819654,
       0.00345356180080213,
@@ -38,7 +38,7 @@
     "chars_ew_means": null,
     "chars_vw_means": null,
     "n_dates": 60,
-    "runtime_seconds": 0.8093466758728027
+    "runtime_seconds": 0.6253800392150879
   },
   "test_02_single_hp1_noband_turn": {
     "test_name": "test_02_single_hp1_noband_turn",
@@ -91,7 +91,7 @@
     "chars_ew_means": null,
     "chars_vw_means": null,
     "n_dates": 60,
-    "runtime_seconds": 0.6045360565185547
+    "runtime_seconds": 0.6262404918670654
   },
   "test_03_single_hp1_band1_turn": {
     "test_name": "test_03_single_hp1_band1_turn",
@@ -144,7 +144,7 @@
     "chars_ew_means": null,
     "chars_vw_means": null,
     "n_dates": 60,
-    "runtime_seconds": 0.6564555168151855
+    "runtime_seconds": 0.6311626434326172
   },
   "test_04_single_hp1_band2_turn": {
     "test_name": "test_04_single_hp1_band2_turn",
@@ -197,7 +197,7 @@
     "chars_ew_means": null,
     "chars_vw_means": null,
     "n_dates": 60,
-    "runtime_seconds": 0.6336123943328857
+    "runtime_seconds": 0.6344137191772461
   },
   "test_05_single_hp3_noband_turn": {
     "test_name": "test_05_single_hp3_noband_turn",
@@ -250,7 +250,7 @@
     "chars_ew_means": null,
     "chars_vw_means": null,
     "n_dates": 60,
-    "runtime_seconds": 1.287456750869751
+    "runtime_seconds": 1.254859209060669
   },
   "test_06_single_hp3_band1_turn": {
     "test_name": "test_06_single_hp3_band1_turn",
@@ -303,7 +303,7 @@
     "chars_ew_means": null,
     "chars_vw_means": null,
     "n_dates": 60,
-    "runtime_seconds": 1.5379619598388672
+    "runtime_seconds": 1.552602767944336
   },
   "test_07_double_uncond_hp1_noband_turn": {
     "test_name": "test_07_double_uncond_hp1_noband_turn",
@@ -436,7 +436,7 @@
     "chars_ew_means": null,
     "chars_vw_means": null,
     "n_dates": 60,
-    "runtime_seconds": 0.6759448051452637
+    "runtime_seconds": 0.6350674629211426
   },
   "test_08_double_cond_hp1_noband_turn": {
     "test_name": "test_08_double_cond_hp1_noband_turn",
@@ -569,7 +569,7 @@
     "chars_ew_means": null,
     "chars_vw_means": null,
     "n_dates": 60,
-    "runtime_seconds": 0.5771586894989014
+    "runtime_seconds": 0.5662672519683838
   },
   "test_09_double_uncond_hp3_band1_turn": {
     "test_name": "test_09_double_uncond_hp3_band1_turn",
@@ -702,7 +702,7 @@
     "chars_ew_means": null,
     "chars_vw_means": null,
     "n_dates": 60,
-    "runtime_seconds": 1.6143715381622314
+    "runtime_seconds": 1.6236686706542969
   },
   "test_10_double_cond_hp3_band1_turn": {
     "test_name": "test_10_double_cond_hp3_band1_turn",
@@ -835,7 +835,7 @@
     "chars_ew_means": null,
     "chars_vw_means": null,
     "n_dates": 60,
-    "runtime_seconds": 1.6755895614624023
+    "runtime_seconds": 1.6861636638641357
   },
   "test_11_single_hp1_turn_chars2": {
     "test_name": "test_11_single_hp1_turn_chars2",
@@ -921,7 +921,7 @@
       ]
     },
     "n_dates": 60,
-    "runtime_seconds": 0.647801399230957
+    "runtime_seconds": 0.6493206024169922
   },
   "test_12_single_hp3_band1_turn_chars3": {
     "test_name": "test_12_single_hp3_band1_turn_chars3",
@@ -1022,6 +1022,6 @@
       ]
     },
     "n_dates": 60,
-    "runtime_seconds": 2.085850715637207
+    "runtime_seconds": 2.0853378772735596
   }
 }

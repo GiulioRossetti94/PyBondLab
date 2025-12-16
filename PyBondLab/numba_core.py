@@ -1092,3 +1092,288 @@ def compute_portfolio_returns_multi_signal(
                     vw_returns[sig_idx, p] = sum_wret[p] / sum_weight[p]
 
     return ew_returns, vw_returns
+
+
+# =============================================================================
+# FAST RETURNS-ONLY PATH
+# When turnover=False, chars=None, banding=None, we can be MUCH faster
+# =============================================================================
+
+@njit(cache=True, parallel=True)
+def compute_all_dates_returns_fast(
+    date_indices: np.ndarray,      # (n_rows,) - date index for each row
+    ranks: np.ndarray,             # (n_rows,) - portfolio rank (1 to nport)
+    returns: np.ndarray,           # (n_rows,) - bond returns
+    weights: np.ndarray,           # (n_rows,) - value weights
+    n_dates: int,
+    nport: int
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Compute portfolio returns for ALL dates in parallel.
+
+    This is the core fast-path function that replaces the slow per-date loop.
+    Uses prange to parallelize across dates.
+
+    Parameters
+    ----------
+    date_indices : np.ndarray
+        Date index (0-based) for each row
+    ranks : np.ndarray
+        Portfolio ranks (1 to nport) for each row, NaN for unassigned
+    returns : np.ndarray
+        Bond returns for each row
+    weights : np.ndarray
+        Value weights for each row
+    n_dates : int
+        Number of unique dates
+    nport : int
+        Number of portfolios
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray]
+        (ew_returns, vw_returns) - each shape (n_dates, nport)
+    """
+    n_rows = len(date_indices)
+    ew_returns = np.full((n_dates, nport), np.nan, dtype=np.float64)
+    vw_returns = np.full((n_dates, nport), np.nan, dtype=np.float64)
+
+    # Process each date in parallel
+    for d in prange(n_dates):
+        # Accumulators for this date
+        sum_ret = np.zeros(nport, dtype=np.float64)
+        sum_wret = np.zeros(nport, dtype=np.float64)
+        sum_weight = np.zeros(nport, dtype=np.float64)
+        count = np.zeros(nport, dtype=np.int64)
+
+        # Accumulate across all rows for this date
+        for i in range(n_rows):
+            if date_indices[i] != d:
+                continue
+
+            r = ranks[i]
+            ret = returns[i]
+
+            if np.isnan(r) or np.isnan(ret):
+                continue
+
+            p = int(r) - 1
+            if p < 0 or p >= nport:
+                continue
+
+            w = weights[i]
+            sum_ret[p] += ret
+            sum_wret[p] += ret * w
+            sum_weight[p] += w
+            count[p] += 1
+
+        # Compute final values for this date
+        for p in range(nport):
+            if count[p] > 0:
+                ew_returns[d, p] = sum_ret[p] / count[p]
+                if sum_weight[p] > 0:
+                    vw_returns[d, p] = sum_wret[p] / sum_weight[p]
+
+    return ew_returns, vw_returns
+
+
+@njit(cache=True, parallel=True)
+def compute_staggered_returns_fast(
+    date_indices: np.ndarray,       # (n_rows,) - date index for each row
+    formation_ranks: np.ndarray,    # (n_rows, hor) - ranks from formation date for each cohort
+    returns: np.ndarray,            # (n_rows,) - bond returns
+    weights: np.ndarray,            # (n_rows,) - value weights
+    n_dates: int,
+    nport: int,
+    hor: int                        # holding period (number of cohorts)
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Compute staggered portfolio returns for ALL dates in parallel.
+
+    For h>1, at each date we have multiple cohorts with different formation dates.
+    This function computes the equal-averaged returns across cohorts.
+
+    Parameters
+    ----------
+    date_indices : np.ndarray
+        Date index (0-based) for each row
+    formation_ranks : np.ndarray
+        Portfolio ranks from formation dates, shape (n_rows, hor)
+        Column c contains ranks from the formation date of cohort c
+    returns : np.ndarray
+        Bond returns for each row
+    weights : np.ndarray
+        Value weights (from dynamic weights at return date)
+    n_dates : int
+        Total number of dates
+    nport : int
+        Number of portfolios
+    hor : int
+        Holding period (number of cohorts)
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray]
+        (ew_returns, vw_returns) - each shape (n_dates, nport)
+        These are equal-averaged across active cohorts
+    """
+    n_rows = len(date_indices)
+
+    # Accumulate returns for each (date, cohort, portfolio)
+    # Then average across cohorts
+    ew_returns = np.full((n_dates, nport), np.nan, dtype=np.float64)
+    vw_returns = np.full((n_dates, nport), np.nan, dtype=np.float64)
+
+    # Process each date in parallel
+    for d in prange(n_dates):
+        # For each portfolio, accumulate across cohorts
+        cohort_ew = np.zeros((hor, nport), dtype=np.float64)
+        cohort_vw = np.zeros((hor, nport), dtype=np.float64)
+        cohort_valid = np.zeros((hor, nport), dtype=np.int64)
+
+        for cohort in range(hor):
+            # Check if this cohort is active at date d
+            # Cohort c is active at date d if d >= c (cohort has been formed)
+            if d < cohort:
+                continue
+
+            # Accumulators for this (date, cohort)
+            sum_ret = np.zeros(nport, dtype=np.float64)
+            sum_wret = np.zeros(nport, dtype=np.float64)
+            sum_weight = np.zeros(nport, dtype=np.float64)
+            count = np.zeros(nport, dtype=np.int64)
+
+            # Accumulate for rows at this date
+            for i in range(n_rows):
+                if date_indices[i] != d:
+                    continue
+
+                r = formation_ranks[i, cohort]
+                ret = returns[i]
+
+                if np.isnan(r) or np.isnan(ret):
+                    continue
+
+                p = int(r) - 1
+                if p < 0 or p >= nport:
+                    continue
+
+                w = weights[i]
+                sum_ret[p] += ret
+                sum_wret[p] += ret * w
+                sum_weight[p] += w
+                count[p] += 1
+
+            # Store cohort returns
+            for p in range(nport):
+                if count[p] > 0:
+                    cohort_ew[cohort, p] = sum_ret[p] / count[p]
+                    cohort_valid[cohort, p] = 1
+                    if sum_weight[p] > 0:
+                        cohort_vw[cohort, p] = sum_wret[p] / sum_weight[p]
+
+        # Average across valid cohorts
+        for p in range(nport):
+            n_valid_ew = 0
+            n_valid_vw = 0
+            sum_ew = 0.0
+            sum_vw = 0.0
+
+            for cohort in range(hor):
+                if cohort_valid[cohort, p] > 0:
+                    sum_ew += cohort_ew[cohort, p]
+                    n_valid_ew += 1
+                    if not np.isnan(cohort_vw[cohort, p]):
+                        sum_vw += cohort_vw[cohort, p]
+                        n_valid_vw += 1
+
+            if n_valid_ew > 0:
+                ew_returns[d, p] = sum_ew / n_valid_ew
+            if n_valid_vw > 0:
+                vw_returns[d, p] = sum_vw / n_valid_vw
+
+    return ew_returns, vw_returns
+
+
+@njit(cache=True)
+def precompute_formation_ranks(
+    date_indices: np.ndarray,      # (n_rows,) - date index for each row
+    id_indices: np.ndarray,        # (n_rows,) - bond ID index for each row
+    ranks_by_date: np.ndarray,     # (n_rows,) - ranks computed at each date
+    n_dates: int,
+    n_ids: int,
+    hor: int                       # holding period
+) -> np.ndarray:
+    """
+    Precompute formation ranks for staggered rebalancing.
+
+    For each row at date d and cohort c, find the rank from the
+    corresponding formation date.
+
+    Formation date for cohort c at return date d:
+    - formation_date = d - 1 - ((d - 1 - c) % hor)
+    - This gives the most recent formation date for cohort c before d
+
+    Parameters
+    ----------
+    date_indices : np.ndarray
+        Date index for each row
+    id_indices : np.ndarray
+        Bond ID index for each row
+    ranks_by_date : np.ndarray
+        Ranks at each row's date
+    n_dates : int
+        Total number of dates
+    n_ids : int
+        Total number of unique bond IDs
+    hor : int
+        Holding period
+
+    Returns
+    -------
+    np.ndarray
+        Formation ranks, shape (n_rows, hor)
+    """
+    n_rows = len(date_indices)
+
+    # Build lookup: (date, id) -> rank
+    # Using a flat array indexed by date * n_ids + id
+    rank_lookup = np.full(n_dates * n_ids, np.nan, dtype=np.float64)
+
+    for i in range(n_rows):
+        d = date_indices[i]
+        bond_id = id_indices[i]
+        rank_lookup[d * n_ids + bond_id] = ranks_by_date[i]
+
+    # For each row, find formation ranks for each cohort
+    formation_ranks = np.full((n_rows, hor), np.nan, dtype=np.float64)
+
+    for i in range(n_rows):
+        d = date_indices[i]
+        bond_id = id_indices[i]
+
+        for cohort in range(hor):
+            # Skip if cohort hasn't started yet
+            if d < cohort:
+                continue
+
+            # Find formation date for this cohort
+            # Formation happens at t, returns at t+1 to t+hor
+            # For return date d, cohort c was formed at:
+            # formation_date = d - 1 - ((d - 1 - c) % hor) for d > c
+            if d == 0:
+                continue
+
+            # Formation date calculation
+            offset = (d - 1 - cohort) % hor
+            formation_date = d - 1 - offset
+
+            if formation_date < 0 or formation_date >= n_dates:
+                continue
+
+            # Look up rank at formation date
+            lookup_idx = formation_date * n_ids + bond_id
+            if lookup_idx >= 0 and lookup_idx < len(rank_lookup):
+                formation_ranks[i, cohort] = rank_lookup[lookup_idx]
+
+    return formation_ranks
