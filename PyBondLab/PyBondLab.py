@@ -66,6 +66,11 @@ from .numba_core import (
     build_rank_lookup_fast,
     align_ranks_for_returns_fast,
     align_ranks_staggered_fast,
+    # Ultra-fast path (bypasses pandas)
+    compute_ranks_all_dates_fast,
+    compute_all_returns_ultrafast,
+    compute_staggered_returns_ultrafast,
+    build_vw_lookup_and_dynamic_weights,
 )
 
 import statsmodels.api as sm
@@ -1177,10 +1182,11 @@ class StrategyFormation:
         Ultra-fast portfolio formation when only returns are needed.
 
         This is 10-20x faster than the standard path because:
-        1. All dates are processed in parallel using prange
-        2. No turnover/scaled weights computation
-        3. No characteristics computation
-        4. No banding state tracking
+        1. Bypasses pandas precomputation entirely - works directly with numpy arrays
+        2. All dates are processed in parallel using prange
+        3. No turnover/scaled weights computation
+        4. No characteristics computation
+        5. No banding state tracking
 
         Requirements:
         - turnover=False
@@ -1190,131 +1196,71 @@ class StrategyFormation:
         - Monthly rebalancing
         """
         if self.verbose:
-            print("Using FAST returns-only path (no turnover/chars/banding)...")
-
-        # Precompute data (ranks, return data)
-        precomp = self._precompute_data()
+            print("Using ULTRA-FAST returns-only path (bypassing pandas)...")
 
         TM = len(self.datelist)
         tot_nport = self._get_total_portfolios()
+        sort_var_main, _ = self._get_sort_vars()
 
-        # Build combined DataFrame with all data needed
-        # We need: date, ID, rank (from ranks_map), returns (from It1), VW (from It1)
+        # Get the filtered data (this applies rating/char filters if any)
+        tab = self.data
 
-        # Step 1: Collect formation ranks from ranks_map (not It0)
-        # ranks_map[date] is a Series indexed by ID with rank values
-        all_formation_ranks = []
-        for t_idx, date_t in enumerate(self.datelist):
-            if date_t not in precomp.ranks_map:
-                continue
-            ranks_series = precomp.ranks_map[date_t]
-            if ranks_series.empty:
-                continue
-            df = pd.DataFrame({
-                ColumnNames.ID: ranks_series.index,
-                ColumnNames.PORTFOLIO_RANK: ranks_series.values,
-                '_date_idx': t_idx
-            })
-            all_formation_ranks.append(df)
+        # Create date-to-index mapping
+        date_to_idx = {d: i for i, d in enumerate(self.datelist)}
 
-        if not all_formation_ranks:
-            # No data - return empty results
+        # Step 1: Convert data to numpy arrays ONCE (no per-date loops)
+        # Only keep rows with valid dates in our datelist
+        valid_mask = tab[ColumnNames.DATE].isin(self.datelist)
+        data = tab[valid_mask].copy()
+
+        if data.empty:
             return self._create_empty_results()
 
-        formation_df = pd.concat(all_formation_ranks, ignore_index=True)
-
-        # Step 2: Collect all return data with dynamic weights
-        # Dynamic weights come from vw_map_t1m at date t+h-1 (one period before return)
-        all_return_data = []
-        for t_idx, date_t in enumerate(self.datelist):
-            if date_t not in precomp.It1:
-                continue
-            df = precomp.It1[date_t].copy()
-            df['_return_date_idx'] = t_idx
-
-            # For dynamic weights, use weights from previous period (t+h-1)
-            # For h=1, this is the formation date (t_idx - 1)
-            dynamic_weight_date_idx = t_idx - 1
-            if dynamic_weight_date_idx >= 0:
-                dynamic_weight_date = self.datelist[dynamic_weight_date_idx]
-                vw_map = precomp.vw_map_t1m.get(dynamic_weight_date, pd.Series(dtype=float))
-                # Map dynamic weights to bonds in return data
-                if not vw_map.empty:
-                    df['_dynamic_vw'] = df[ColumnNames.ID].map(vw_map)
-                else:
-                    df['_dynamic_vw'] = np.nan
-            else:
-                df['_dynamic_vw'] = np.nan
-
-            all_return_data.append(df)
-
-        if not all_return_data:
-            return self._create_empty_results()
-
-        return_df = pd.concat(all_return_data, ignore_index=True)
-
-        # Step 3: Create ID mapping for fast lookup
-        all_ids = pd.concat([formation_df[ColumnNames.ID], return_df[ColumnNames.ID]]).unique()
+        # Create ID mapping
+        all_ids = data[ColumnNames.ID].unique()
         id_to_idx = {id_val: idx for idx, id_val in enumerate(all_ids)}
         n_ids = len(all_ids)
 
-        # Convert IDs to indices
-        formation_df['_id_idx'] = formation_df[ColumnNames.ID].map(id_to_idx)
-        return_df['_id_idx'] = return_df[ColumnNames.ID].map(id_to_idx)
+        # Convert to numpy arrays
+        date_idx = data[ColumnNames.DATE].map(date_to_idx).values.astype(np.int64)
+        id_idx = data[ColumnNames.ID].map(id_to_idx).values.astype(np.int64)
+        signal = data[sort_var_main].values.astype(np.float64)
+        returns = data[ColumnNames.RETURN].values.astype(np.float64)
+        vw = data[ColumnNames.VALUE_WEIGHT].values.astype(np.float64)
 
-        # Step 4: Extract numpy arrays from formation data
-        form_date_idx = formation_df['_date_idx'].values.astype(np.int64)
-        form_id_idx = formation_df['_id_idx'].values.astype(np.int64)
-        form_ranks = formation_df[ColumnNames.PORTFOLIO_RANK].values.astype(np.float64)
+        # Step 2: Compute ranks for ALL dates in parallel using numba
+        # This replaces the slow per-date pandas groupby/rank operations
+        ranks = compute_ranks_all_dates_fast(date_idx, signal, TM, tot_nport)
 
-        # Step 5: Extract numpy arrays from return data
-        # Use dynamic weights for VW calculation (same as slow path)
-        ret_date_idx = return_df['_return_date_idx'].values.astype(np.int64)
-        ret_id_idx = return_df['_id_idx'].values.astype(np.int64)
-        returns = return_df[ColumnNames.RETURN].values.astype(np.float64)
-        weights = return_df['_dynamic_vw'].values.astype(np.float64)
+        # Step 3: Prepare dynamic weights using numba
+        # Dynamic weights come from previous period (t-1) for VW calculation
+        dynamic_weights = build_vw_lookup_and_dynamic_weights(
+            date_idx, id_idx, vw, TM, n_ids
+        )
 
+        # Step 4: Compute portfolio returns using ultra-fast numba functions
         if self.hor == 1:
-            # Simple case: h=1, just need to align formation ranks with next period returns
-            # Formation at t, returns at t+1
-            # For return date d, look up ranks from formation date d-1
-
-            # Build rank lookup using numba (replaces slow Python loop)
-            rank_lookup = build_rank_lookup_fast(
-                form_date_idx, form_id_idx, form_ranks, TM, n_ids
+            # Simple case: h=1
+            # Use compute_all_returns_ultrafast which handles rank lookup + returns
+            ew_ret_raw, vw_ret_raw = compute_all_returns_ultrafast(
+                date_idx,        # return date indices
+                id_idx,          # return bond ID indices
+                returns,         # returns
+                dynamic_weights, # VW weights (from previous period)
+                date_idx,        # formation date indices (same data)
+                id_idx,          # formation bond ID indices
+                ranks,           # formation ranks
+                TM, n_ids, tot_nport
             )
-
-            # Align ranks for returns using numba (replaces slow Python loop)
-            aligned_ranks = align_ranks_for_returns_fast(
-                ret_date_idx, ret_id_idx, rank_lookup, n_ids
-            )
-
-            # Compute returns using fast numba function
-            ew_ret_raw, vw_ret_raw = compute_all_dates_returns_fast(
-                ret_date_idx, aligned_ranks, returns, weights, TM, tot_nport
-            )
-
         else:
             # Staggered case: h>1
-
-            # Build rank lookup using numba (replaces slow Python loop)
-            rank_lookup = build_rank_lookup_fast(
-                form_date_idx, form_id_idx, form_ranks, TM, n_ids
-            )
-
-            # Align ranks for all cohorts using numba (replaces slow nested Python loops)
-            formation_ranks_matrix = align_ranks_staggered_fast(
-                ret_date_idx, ret_id_idx, rank_lookup, n_ids, TM, self.hor
-            )
-
-            # Compute staggered returns
-            ew_ret_raw, vw_ret_raw = compute_staggered_returns_fast(
-                ret_date_idx, formation_ranks_matrix, returns, weights,
-                TM, tot_nport, self.hor
+            ew_ret_raw, vw_ret_raw = compute_staggered_returns_ultrafast(
+                date_idx, id_idx, returns, dynamic_weights,
+                date_idx, id_idx, ranks,
+                TM, n_ids, tot_nport, self.hor
             )
 
         # Aggregate results (same format as standard path)
-        # ew_ret_raw and vw_ret_raw are shape (TM, nport)
         return self._aggregate_fast_results(ew_ret_raw, vw_ret_raw)
 
     def _aggregate_fast_results(self, ew_ret: np.ndarray, vw_ret: np.ndarray):

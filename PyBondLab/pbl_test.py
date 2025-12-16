@@ -178,6 +178,156 @@ def generate_synthetic_data(
     return df
 
 
+def generate_synthetic_data_fast(
+    n_dates: int,
+    n_bonds: int,
+    seed: int = 0,
+    n_chars: int = 3,
+    balanced_panel: bool = False,   # if True: full date x bond panel
+    allow_nans: bool = True,        # if False: no NaNs anywhere
+    pct_active_low: float = 0.70,   # used only if balanced_panel=False
+    pct_active_high: float = 0.95,  # used only if balanced_panel=False
+    exact_active_count: bool = True,# if False: faster Bernoulli mask per date
+    id_as_category: bool = True,    # saves memory a lot for big panels
+    float_dtype=np.float32,         # float32 is faster + smaller
+) -> pd.DataFrame:
+    """
+    Fast synthetic bond panel generator (vectorized; optional balanced panel).
+
+    For large panels (e.g., 300 dates x 10000 bonds = 3M rows), this is
+    significantly faster than the row-by-row generate_synthetic_data function.
+
+    Parameters
+    ----------
+    n_dates : int
+        Number of monthly periods
+    n_bonds : int
+        Total number of unique bonds
+    seed : int
+        Random seed for reproducibility
+    n_chars : int
+        Number of random characteristics to generate
+    balanced_panel : bool
+        If True, creates full date x bond panel (no missing observations)
+    allow_nans : bool
+        If True, inject ~1-2% NaN values (realistic missing data)
+    pct_active_low, pct_active_high : float
+        Range of active bond percentage per date (only if balanced_panel=False)
+    exact_active_count : bool
+        If True, use exact counts per date; if False, use faster Bernoulli mask
+    id_as_category : bool
+        If True, convert ID to category dtype (saves memory)
+    float_dtype : np.dtype
+        Float dtype for numeric columns (float32 is faster + smaller)
+
+    Returns
+    -------
+    pd.DataFrame
+        Synthetic bond panel with columns: date, ID, ret, RATING_NUM, VW,
+        PRICE, signal1, signal2, char1, char2, ...
+    """
+    rng = np.random.default_rng(seed)
+
+    dates = pd.date_range("2018-01-31", periods=n_dates, freq="ME")
+    bond_idx_all = np.arange(n_bonds, dtype=np.int32)
+    bond_ids = np.array([f"BOND_{i:04d}" for i in range(n_bonds)], dtype=object)
+
+    # ------------------------------------------------------------------
+    # Build (date_idx, bond_idx) for either balanced or unbalanced panel
+    # ------------------------------------------------------------------
+    if balanced_panel:
+        date_idx = np.repeat(np.arange(n_dates, dtype=np.int32), n_bonds)
+        bond_idx = np.tile(bond_idx_all, n_dates)
+        allow_nans = False  # balanced panel implies no missing values anywhere
+    else:
+        if exact_active_count:
+            pct = rng.uniform(pct_active_low, pct_active_high, size=n_dates)
+            n_active = (pct * n_bonds).astype(np.int32)
+
+            date_parts = []
+            bond_parts = []
+            for t in range(n_dates):
+                active = rng.choice(bond_idx_all, size=int(n_active[t]), replace=False)
+                bond_parts.append(active.astype(np.int32, copy=False))
+                date_parts.append(np.full(active.shape[0], t, dtype=np.int32))
+
+            date_idx = np.concatenate(date_parts)
+            bond_idx = np.concatenate(bond_parts)
+        else:
+            # Faster: Bernoulli mask per date (counts fluctuate around pct_active)
+            pct = rng.uniform(pct_active_low, pct_active_high, size=n_dates).astype(float_dtype)
+            mask = rng.random((n_dates, n_bonds)) < pct[:, None]
+            date_idx, bond_idx = np.nonzero(mask)
+            date_idx = date_idx.astype(np.int32, copy=False)
+            bond_idx = bond_idx.astype(np.int32, copy=False)
+
+    n = bond_idx.size
+
+    # ------------------------------------------------------------------
+    # Generate columns (vectorized)
+    # ------------------------------------------------------------------
+    # Market return per date; idiosyncratic per observation
+    market_ret = rng.normal(0.004, 0.015, size=n_dates).astype(float_dtype)
+    idio_ret = rng.normal(0.0, 0.025, size=n).astype(float_dtype)
+    ret = market_ret[date_idx] + idio_ret
+
+    # Rating: base by bond + occasional shock per observation
+    base_rating = (3 + (bond_idx_all % 18)).astype(np.int16)  # 3..20
+    shock = rng.choice(
+        np.array([-1, 0, 1], dtype=np.int16),
+        size=n,
+        p=np.array([1/6, 4/6, 1/6], dtype=np.float64),
+    )
+    rating = np.clip(base_rating[bond_idx] + shock, 1, 21).astype(np.int16)
+
+    # Value weight proxy
+    base_vw = (50 + (bond_idx_all % 450)).astype(float_dtype)
+    vw_noise = rng.uniform(0.9, 1.1, size=n).astype(float_dtype)
+    vw = base_vw[bond_idx] * vw_noise
+
+    # Signals
+    signal1 = rng.standard_normal(size=n).astype(float_dtype)
+    signal2 = (rng.standard_normal(size=n).astype(float_dtype) * float_dtype(0.5)
+               + float_dtype(0.3) * signal1)
+
+    # Price
+    price = rng.uniform(85, 115, size=n).astype(float_dtype)
+
+    # Random characteristics
+    chars = {
+        f"char{c}": rng.uniform(-10, 10, size=n).astype(float_dtype)
+        for c in range(1, n_chars + 1)
+    }
+
+    df = pd.DataFrame(
+        {
+            "date": dates.values[date_idx],
+            "ID": bond_ids[bond_idx],
+            "ret": ret,
+            "RATING_NUM": rating,
+            "VW": vw,
+            "PRICE": price,
+            "signal1": signal1,
+            "signal2": signal2,
+            **chars,
+        }
+    )
+
+    # Optional NaNs injection (only if allowed)
+    if allow_nans:
+        nan_mask_ret = rng.random(n) < 0.01
+        nan_mask_signal = rng.random(n) < 0.02
+        df.loc[nan_mask_ret, "ret"] = np.nan
+        df.loc[nan_mask_signal, "signal1"] = np.nan
+
+    # Sort and optionally category-encode ID
+    df = df.sort_values(["ID", "date"], kind="mergesort").reset_index(drop=True)
+    if id_as_category:
+        df["ID"] = df["ID"].astype("category")
+
+    return df
+
+
 # =============================================================================
 # Result Container
 # =============================================================================
