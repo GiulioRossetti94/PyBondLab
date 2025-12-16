@@ -271,6 +271,15 @@ def generate_synthetic_data_fast(
     idio_ret = rng.normal(0.0, 0.025, size=n).astype(float_dtype)
     ret = market_ret[date_idx] + idio_ret
 
+    # Add some extreme returns for filter testing (~2% of observations)
+    # These will be useful for trim/bounce filter tests
+    extreme_mask = rng.random(n) < 0.02
+    extreme_returns = rng.choice(
+        np.array([-0.50, -0.30, 0.30, 0.50, 0.80], dtype=float_dtype),
+        size=n
+    )
+    ret = np.where(extreme_mask, extreme_returns, ret)
+
     # Rating: base by bond + occasional shock per observation
     base_rating = (3 + (bond_idx_all % 18)).astype(np.int16)  # 3..20
     shock = rng.choice(
@@ -290,8 +299,16 @@ def generate_synthetic_data_fast(
     signal2 = (rng.standard_normal(size=n).astype(float_dtype) * float_dtype(0.5)
                + float_dtype(0.3) * signal1)
 
-    # Price
-    price = rng.uniform(85, 115, size=n).astype(float_dtype)
+    # Price: wide range 1-1000 with realistic distribution
+    # Most bonds 80-120, but some extreme values for filter testing
+    base_price = rng.lognormal(mean=4.5, sigma=0.3, size=n)  # centered ~90
+    # Add some extreme prices (~5% very low, ~5% very high)
+    price_extreme_low = rng.random(n) < 0.05
+    price_extreme_high = rng.random(n) < 0.05
+    price = np.where(price_extreme_low, rng.uniform(1, 30, size=n),
+                     np.where(price_extreme_high, rng.uniform(200, 1000, size=n),
+                              np.clip(base_price, 50, 150)))
+    price = price.astype(float_dtype)
 
     # Random characteristics
     chars = {

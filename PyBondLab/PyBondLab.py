@@ -1175,6 +1175,10 @@ class StrategyFormation:
         # Only monthly (staggered) rebalancing for now
         if self.rebalance_frequency != 'monthly':
             return False
+        # Disable fast path when filters are present (EA vs EP requires different return columns)
+        # TODO: Extend fast path to handle filters properly
+        if self.config.has_filters:
+            return False
         return True
 
     def _fit_fast_returns_only(self):
