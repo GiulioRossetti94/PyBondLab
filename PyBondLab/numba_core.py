@@ -869,3 +869,226 @@ def update_prev_scaled_weights(
         pos = positions[i]
         prev_scaled_ew[p, pos] = scaled_ew[i]
         prev_scaled_vw[p, pos] = scaled_vw[i]
+
+
+# =============================================================================
+# Multi-Signal Vectorized Functions (for Batch Processing)
+# =============================================================================
+
+@njit(cache=True, fastmath=True)
+def _compute_percentile_thresholds(
+    values: np.ndarray,
+    nport: int
+) -> np.ndarray:
+    """
+    Compute percentile thresholds for a single sorted array.
+
+    Parameters
+    ----------
+    values : np.ndarray
+        SORTED array of non-NaN values
+    nport : int
+        Number of portfolios
+
+    Returns
+    -------
+    np.ndarray
+        Threshold edges (length nport+1)
+    """
+    n = len(values)
+    thres = np.empty(nport + 1, dtype=np.float64)
+    thres[0] = -np.inf
+
+    if n == 0:
+        for i in range(1, nport + 1):
+            thres[i] = np.nan
+        return thres
+
+    for p in range(1, nport + 1):
+        pct = p * 100.0 / nport
+        if pct >= 100:
+            thres[p] = values[n - 1]
+        else:
+            idx_float = (n - 1) * pct / 100.0
+            idx_low = int(np.floor(idx_float))
+            idx_high = min(idx_low + 1, n - 1)
+            weight = idx_float - idx_low
+            thres[p] = values[idx_low] * (1 - weight) + values[idx_high] * weight
+
+    return thres
+
+
+@njit(cache=True, fastmath=True)
+def _assign_ranks_from_thresholds(
+    values: np.ndarray,
+    thres: np.ndarray,
+    nport: int
+) -> np.ndarray:
+    """
+    Assign portfolio ranks based on thresholds.
+
+    Parameters
+    ----------
+    values : np.ndarray
+        Signal values (may contain NaN)
+    thres : np.ndarray
+        Threshold edges (length nport+1)
+    nport : int
+        Number of portfolios
+
+    Returns
+    -------
+    np.ndarray
+        Ranks (1-based, NaN for unassigned)
+    """
+    n = len(values)
+    ranks = np.full(n, np.nan, dtype=np.float64)
+
+    for i in range(n):
+        val = values[i]
+        if np.isnan(val):
+            continue
+
+        for p in range(nport):
+            if val > thres[p] and val <= thres[p + 1]:
+                ranks[i] = p + 1
+                break
+
+    return ranks
+
+
+@njit(cache=True, parallel=True)
+def compute_ranks_multi_signal(
+    signal_matrix: np.ndarray,
+    nport: int
+) -> np.ndarray:
+    """
+    Compute portfolio ranks for multiple signals simultaneously.
+
+    This is the key function for batch processing speedup - it computes
+    ranks for ALL signals in parallel using numba prange.
+
+    Parameters
+    ----------
+    signal_matrix : np.ndarray
+        Signal values, shape (n_bonds, n_signals)
+    nport : int
+        Number of portfolios
+
+    Returns
+    -------
+    np.ndarray
+        Ranks for all signals, shape (n_bonds, n_signals)
+    """
+    n_bonds, n_signals = signal_matrix.shape
+    all_ranks = np.full((n_bonds, n_signals), np.nan, dtype=np.float64)
+
+    # Process each signal in parallel
+    for sig_idx in prange(n_signals):
+        # Extract signal values
+        values = signal_matrix[:, sig_idx].copy()
+
+        # Count and extract non-NaN values
+        n_valid = 0
+        for i in range(n_bonds):
+            if not np.isnan(values[i]):
+                n_valid += 1
+
+        if n_valid == 0:
+            continue
+
+        # Create sorted array of non-NaN values
+        sorted_vals = np.empty(n_valid, dtype=np.float64)
+        j = 0
+        for i in range(n_bonds):
+            if not np.isnan(values[i]):
+                sorted_vals[j] = values[i]
+                j += 1
+
+        # Sort
+        sorted_vals.sort()
+
+        # Compute thresholds
+        thres = _compute_percentile_thresholds(sorted_vals, nport)
+
+        # Assign ranks
+        for i in range(n_bonds):
+            val = values[i]
+            if np.isnan(val):
+                continue
+
+            for p in range(nport):
+                if val > thres[p] and val <= thres[p + 1]:
+                    all_ranks[i, sig_idx] = p + 1
+                    break
+
+    return all_ranks
+
+
+@njit(cache=True, parallel=True)
+def compute_portfolio_returns_multi_signal(
+    ranks_matrix: np.ndarray,
+    returns: np.ndarray,
+    weights: np.ndarray,
+    nport: int
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Compute portfolio returns for multiple signals simultaneously.
+
+    Parameters
+    ----------
+    ranks_matrix : np.ndarray
+        Ranks for all signals, shape (n_bonds, n_signals)
+    returns : np.ndarray
+        Bond returns, shape (n_bonds,)
+    weights : np.ndarray
+        Value weights, shape (n_bonds,)
+    nport : int
+        Number of portfolios
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray]
+        (ew_returns, vw_returns) - each shape (n_signals, nport)
+    """
+    n_bonds, n_signals = ranks_matrix.shape
+
+    ew_returns = np.full((n_signals, nport), np.nan, dtype=np.float64)
+    vw_returns = np.full((n_signals, nport), np.nan, dtype=np.float64)
+
+    # Process each signal in parallel
+    for sig_idx in prange(n_signals):
+        ranks = ranks_matrix[:, sig_idx]
+
+        # Accumulators
+        sum_ret = np.zeros(nport, dtype=np.float64)
+        sum_wret = np.zeros(nport, dtype=np.float64)
+        sum_weight = np.zeros(nport, dtype=np.float64)
+        count = np.zeros(nport, dtype=np.int64)
+
+        # Accumulate
+        for i in range(n_bonds):
+            r = ranks[i]
+            if np.isnan(r) or np.isnan(returns[i]):
+                continue
+
+            p = int(r) - 1
+            if p < 0 or p >= nport:
+                continue
+
+            ret = returns[i]
+            w = weights[i]
+
+            sum_ret[p] += ret
+            sum_wret[p] += ret * w
+            sum_weight[p] += w
+            count[p] += 1
+
+        # Compute final values
+        for p in range(nport):
+            if count[p] > 0:
+                ew_returns[sig_idx, p] = sum_ret[p] / count[p]
+                if sum_weight[p] > 0:
+                    vw_returns[sig_idx, p] = sum_wret[p] / sum_weight[p]
+
+    return ew_returns, vw_returns
