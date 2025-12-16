@@ -122,6 +122,31 @@ python examples/data_uncertainty_baseline.py
 
 This tests 13 filter configurations (trim, price, bounce, no_filter) with Momentum(3,3).
 
+### SingleSort Test Script (Standard Signal)
+
+```bash
+python examples/data_uncertainty_singlesort.py
+```
+
+This tests fast vs slow path using a standard signal column (not a derived signal like Momentum).
+Tests 28 configurations covering:
+- **Holding periods**: hp=1 and hp=3
+- **dynamic_weights**: True and False
+- **Filters**: trim, price, bounce, no_filter
+
+Key observations:
+- For hp=1, both `dynamic_weights=True` and `False` produce identical results
+- For hp=3, they produce different results (True uses VW from d-1, False uses VW from formation date)
+- Fast path matches slow path within 1e-10 tolerance for all configurations
+- Speedup: ~4x (after JIT warmup)
+
+Command line options:
+```bash
+python examples/data_uncertainty_singlesort.py --hp 1         # Test only hp=1
+python examples/data_uncertainty_singlesort.py --dw true      # Test only dynamic_weights=True
+python examples/data_uncertainty_singlesort.py --no-validate  # Skip slow/fast comparison
+```
+
 ---
 
 ## File Changes Summary
