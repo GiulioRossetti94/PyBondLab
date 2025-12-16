@@ -295,29 +295,33 @@ passed = validate_against_baseline(data, baseline)
 
 ## Known Issues & TODO
 
-### Fast Path VW Discrepancy for Momentum (No Filter)
+### Fast Path Requirements (RESOLVED)
 
-The ultra-fast path (`_fit_fast_returns_only`) has a VW discrepancy (~6.89e-04) for
-Momentum strategies without filters. This is due to ID intersection handling:
+The ultra-fast path (`_fit_fast_returns_only`) now correctly matches the slow path
+when `dynamic_weights=True`. The following issues were fixed:
 
-**Slow path behavior:**
-- Computes `It1` = intersection of bonds present at both formation AND return dates
-- VW normalization is done only on intersected bonds
+1. **Ranking algorithm mismatch**: Fast path used position-based ranking, slow path
+   uses `np.percentile` thresholds. Fixed by rewriting `compute_ranks_all_dates_fast`
+   to use percentile thresholds matching slow path.
 
-**Fast path behavior:**
-- Uses ALL observations at return date
-- VW normalization includes bonds that may not have been in formation set
+2. **VW date intersection**: Fast path included bonds without valid VW at t-1.
+   Fixed by adding `if np.isnan(weight): continue` checks in ultrafast functions.
 
-**Impact:**
-- EW returns: Match within 1e-6 (averaging reduces impact)
-- VW returns: ~6.89e-04 discrepancy (VW sensitive to which bonds included)
-- Filtered strategies: Use slow path (disabled in `_can_use_fast_path`)
+3. **dynamic_weights assumption**: Fast path assumes `dynamic_weights=True` (uses
+   VW from previous day), but default was `False`. Fixed by disabling fast path
+   when `dynamic_weights=False`.
 
-**Mitigation:** Fast path is disabled when filters are applied. For no-filter
-Momentum, use `turnover=True` to force slow path, or accept VW discrepancy.
+**Current status:** Fast path matches slow path within 1e-17 tolerance for both
+HP=1 and HP=3 when `dynamic_weights=True`.
 
-**To fix:** Update `compute_staggered_returns_ultrafast` to only include bonds
-that have valid ranks at formation date (proper ID intersection).
+**Requirements for fast path:**
+- `turnover=False`
+- `chars=None`
+- `banding_threshold=None`
+- `dynamic_weights=True` (baseline tests use this)
+- SingleSort only
+- Monthly rebalancing
+- No filters applied
 
 ### Parallelization (Phase 3) - Not Started
 
