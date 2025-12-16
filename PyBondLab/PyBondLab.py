@@ -63,6 +63,9 @@ from .numba_core import (
     compute_all_dates_returns_fast,
     compute_staggered_returns_fast,
     precompute_formation_ranks,
+    build_rank_lookup_fast,
+    align_ranks_for_returns_fast,
+    align_ranks_staggered_fast,
 )
 
 import statsmodels.api as sm
@@ -1276,24 +1279,15 @@ class StrategyFormation:
             # Formation at t, returns at t+1
             # For return date d, look up ranks from formation date d-1
 
-            # Build rank lookup: (formation_date, id) -> rank
-            rank_lookup = np.full(TM * n_ids, np.nan, dtype=np.float64)
-            for i in range(len(form_date_idx)):
-                d = form_date_idx[i]
-                bond_id = form_id_idx[i]
-                rank_lookup[d * n_ids + bond_id] = form_ranks[i]
+            # Build rank lookup using numba (replaces slow Python loop)
+            rank_lookup = build_rank_lookup_fast(
+                form_date_idx, form_id_idx, form_ranks, TM, n_ids
+            )
 
-            # For each return row, look up rank from previous date
-            aligned_ranks = np.full(len(ret_date_idx), np.nan, dtype=np.float64)
-            for i in range(len(ret_date_idx)):
-                d = ret_date_idx[i]
-                if d == 0:
-                    continue  # No formation date before first date
-                formation_d = d - 1
-                bond_id = ret_id_idx[i]
-                lookup_idx = formation_d * n_ids + bond_id
-                if lookup_idx >= 0 and lookup_idx < len(rank_lookup):
-                    aligned_ranks[i] = rank_lookup[lookup_idx]
+            # Align ranks for returns using numba (replaces slow Python loop)
+            aligned_ranks = align_ranks_for_returns_fast(
+                ret_date_idx, ret_id_idx, rank_lookup, n_ids
+            )
 
             # Compute returns using fast numba function
             ew_ret_raw, vw_ret_raw = compute_all_dates_returns_fast(
@@ -1302,46 +1296,16 @@ class StrategyFormation:
 
         else:
             # Staggered case: h>1
-            # Use precompute_formation_ranks to get ranks for each cohort
-            formation_ranks_arr = precompute_formation_ranks(
-                ret_date_idx, ret_id_idx,
-                np.full(len(ret_date_idx), np.nan),  # placeholder, will build lookup
-                TM, n_ids, self.hor
+
+            # Build rank lookup using numba (replaces slow Python loop)
+            rank_lookup = build_rank_lookup_fast(
+                form_date_idx, form_id_idx, form_ranks, TM, n_ids
             )
 
-            # Actually we need to build the rank lookup properly
-            # Build rank lookup: (date, id) -> rank
-            rank_lookup = np.full(TM * n_ids, np.nan, dtype=np.float64)
-            for i in range(len(form_date_idx)):
-                d = form_date_idx[i]
-                bond_id = form_id_idx[i]
-                rank_lookup[d * n_ids + bond_id] = form_ranks[i]
-
-            # For each return row, find formation ranks for each cohort
-            n_ret = len(ret_date_idx)
-            formation_ranks_matrix = np.full((n_ret, self.hor), np.nan, dtype=np.float64)
-
-            for i in range(n_ret):
-                d = ret_date_idx[i]
-                bond_id = ret_id_idx[i]
-
-                for cohort in range(self.hor):
-                    if d < cohort + 1:
-                        continue
-
-                    # Formation date for this cohort
-                    # At return date d, cohort c was formed at the most recent
-                    # formation date where (formation_date % hor) == cohort
-                    # and formation_date < d
-                    offset = (d - 1 - cohort) % self.hor
-                    formation_date = d - 1 - offset
-
-                    if formation_date < 0 or formation_date >= TM:
-                        continue
-
-                    lookup_idx = formation_date * n_ids + bond_id
-                    if lookup_idx >= 0 and lookup_idx < len(rank_lookup):
-                        formation_ranks_matrix[i, cohort] = rank_lookup[lookup_idx]
+            # Align ranks for all cohorts using numba (replaces slow nested Python loops)
+            formation_ranks_matrix = align_ranks_staggered_fast(
+                ret_date_idx, ret_id_idx, rank_lookup, n_ids, TM, self.hor
+            )
 
             # Compute staggered returns
             ew_ret_raw, vw_ret_raw = compute_staggered_returns_fast(

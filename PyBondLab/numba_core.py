@@ -1099,6 +1099,99 @@ def compute_portfolio_returns_multi_signal(
 # When turnover=False, chars=None, banding=None, we can be MUCH faster
 # =============================================================================
 
+@njit(cache=True)
+def build_rank_lookup_fast(
+    form_date_idx: np.ndarray,   # (n_formation,) date index for each formation row
+    form_id_idx: np.ndarray,     # (n_formation,) bond ID index for each formation row
+    form_ranks: np.ndarray,      # (n_formation,) portfolio ranks
+    n_dates: int,
+    n_ids: int
+) -> np.ndarray:
+    """
+    Build a lookup table mapping (date, bond_id) -> rank.
+
+    Replaces the slow Python loop with a fast numba implementation.
+    """
+    rank_lookup = np.full(n_dates * n_ids, np.nan, dtype=np.float64)
+    n = len(form_date_idx)
+    for i in range(n):
+        d = form_date_idx[i]
+        bond_id = form_id_idx[i]
+        rank_lookup[d * n_ids + bond_id] = form_ranks[i]
+    return rank_lookup
+
+
+@njit(cache=True, parallel=True)
+def align_ranks_for_returns_fast(
+    ret_date_idx: np.ndarray,    # (n_returns,) date index for each return row
+    ret_id_idx: np.ndarray,      # (n_returns,) bond ID index for each return row
+    rank_lookup: np.ndarray,     # (n_dates * n_ids,) flattened lookup table
+    n_ids: int
+) -> np.ndarray:
+    """
+    Align formation ranks with return data.
+
+    For each return row at date d, look up the rank from formation date d-1.
+    Replaces the slow Python loop with a fast numba implementation.
+    """
+    n = len(ret_date_idx)
+    aligned_ranks = np.full(n, np.nan, dtype=np.float64)
+    lookup_size = len(rank_lookup)
+
+    for i in prange(n):
+        d = ret_date_idx[i]
+        if d == 0:
+            continue  # No formation date before first date
+        formation_d = d - 1
+        bond_id = ret_id_idx[i]
+        lookup_idx = formation_d * n_ids + bond_id
+        if lookup_idx >= 0 and lookup_idx < lookup_size:
+            aligned_ranks[i] = rank_lookup[lookup_idx]
+
+    return aligned_ranks
+
+
+@njit(cache=True, parallel=True)
+def align_ranks_staggered_fast(
+    ret_date_idx: np.ndarray,    # (n_returns,) date index for each return row
+    ret_id_idx: np.ndarray,      # (n_returns,) bond ID index for each return row
+    rank_lookup: np.ndarray,     # (n_dates * n_ids,) flattened lookup table
+    n_ids: int,
+    n_dates: int,
+    hor: int                     # holding period (number of cohorts)
+) -> np.ndarray:
+    """
+    Align formation ranks for staggered portfolios (h > 1).
+
+    For each return row and each cohort, find the formation rank from the
+    corresponding formation date.
+    """
+    n = len(ret_date_idx)
+    formation_ranks_matrix = np.full((n, hor), np.nan, dtype=np.float64)
+    lookup_size = len(rank_lookup)
+
+    for i in prange(n):
+        d = ret_date_idx[i]
+        bond_id = ret_id_idx[i]
+
+        for cohort in range(hor):
+            if d < cohort + 1:
+                continue
+
+            # Formation date for this cohort
+            offset = (d - 1 - cohort) % hor
+            formation_date = d - 1 - offset
+
+            if formation_date < 0 or formation_date >= n_dates:
+                continue
+
+            lookup_idx = formation_date * n_ids + bond_id
+            if lookup_idx >= 0 and lookup_idx < lookup_size:
+                formation_ranks_matrix[i, cohort] = rank_lookup[lookup_idx]
+
+    return formation_ranks_matrix
+
+
 @njit(cache=True, parallel=True)
 def compute_all_dates_returns_fast(
     date_indices: np.ndarray,      # (n_rows,) - date index for each row
