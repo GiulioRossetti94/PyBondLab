@@ -1179,6 +1179,10 @@ class StrategyFormation:
         # TODO: Fix fast path to properly handle (formation_date, return_date) ID intersection
         if self.config.has_filters:
             return False
+        # Fast path assumes dynamic_weights=True (uses VW from previous day)
+        # If dynamic_weights=False, fall back to slow path which uses VW from formation date
+        if not self.dynamic_weights:
+            return False
         return True
 
     def _fit_fast_returns_only(self):

@@ -1630,18 +1630,41 @@ def compute_ranks_all_dates_fast(
         date_signals = valid_signals[start:end]
         date_indices = valid_indices[start:end]
 
-        # Compute order (argsort)
+        # Compute order (argsort) - sorted indices
         order = np.argsort(date_signals)
 
-        # Assign ranks based on percentile position
-        for rank_pos in range(count):
-            orig_idx = date_indices[order[rank_pos]]
-            # Percentile rank: (position / count) -> portfolio
-            pct = (rank_pos + 0.5) / count  # Use midpoint for stability
-            port = int(pct * nport) + 1
-            if port > nport:
-                port = nport
-            ranks[orig_idx] = port
+        # Compute percentile thresholds (matching slow path's np.percentile + assign_bond_bins)
+        # Percentiles: [0, 20, 40, 60, 80, 100] for nport=5
+        thresholds = np.zeros(nport + 1, dtype=np.float64)
+        thresholds[0] = -np.inf  # First threshold is always -inf
+
+        for p in range(1, nport + 1):
+            # np.percentile position (0-100 scale to 0-(count-1) index)
+            pct = (p * 100.0 / nport)
+            # Linear interpolation method (matches numpy default)
+            pos = (pct / 100.0) * (count - 1)
+            idx_low = int(pos)
+            idx_high = idx_low + 1
+            frac = pos - idx_low
+
+            if idx_high >= count:
+                thresholds[p] = date_signals[order[count - 1]]
+            else:
+                # Linear interpolation
+                val_low = date_signals[order[idx_low]]
+                val_high = date_signals[order[idx_high]]
+                thresholds[p] = val_low + frac * (val_high - val_low)
+
+        # Assign bins based on value > thres[p] AND value <= thres[p+1]
+        # (matching slow path's assign_bond_bins)
+        for i in range(count):
+            orig_idx = date_indices[i]
+            val = date_signals[i]
+
+            for p in range(nport):
+                if val > thresholds[p] and val <= thresholds[p + 1]:
+                    ranks[orig_idx] = p + 1
+                    break
 
     return ranks
 
@@ -1745,6 +1768,11 @@ def compute_all_returns_ultrafast(
             if np.isnan(rank) or np.isnan(ret_val):
                 continue
 
+            # Skip bonds that don't exist at VW date (d-1)
+            # This matches slow path's 3-way intersection logic
+            if np.isnan(weight):
+                continue
+
             p = int(rank) - 1  # Convert to 0-indexed
             if p < 0 or p >= nport:
                 continue
@@ -1752,7 +1780,7 @@ def compute_all_returns_ultrafast(
             sum_ret[p] += ret_val
             count[p] += 1
 
-            if not np.isnan(weight) and weight > 0:
+            if weight > 0:
                 sum_wret[p] += ret_val * weight
                 sum_weight[p] += weight
 
@@ -1856,6 +1884,11 @@ def compute_staggered_returns_ultrafast(
                 if np.isnan(rank) or np.isnan(ret_val):
                     continue
 
+                # Skip bonds that don't exist at VW date (d-1)
+                # This matches slow path's 3-way intersection logic
+                if np.isnan(weight):
+                    continue
+
                 p = int(rank) - 1
                 if p < 0 or p >= nport:
                     continue
@@ -1863,7 +1896,7 @@ def compute_staggered_returns_ultrafast(
                 sum_ret[p] += ret_val
                 count[p] += 1
 
-                if not np.isnan(weight) and weight > 0:
+                if weight > 0:
                     sum_wret[p] += ret_val * weight
                     sum_weight[p] += weight
 
