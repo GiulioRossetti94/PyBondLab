@@ -60,6 +60,70 @@ Dramatically speed up portfolio formation in PyBondLab using numba/prange, while
 
 ---
 
+## Filter Optimization (Phase 10)
+
+The ultra-fast path now supports **filtered strategies** (trim, price, bounce filters).
+
+### How It Works
+
+When filters are applied:
+1. **Ranking** uses the filtered signal (e.g., `signal_trim` for Momentum)
+2. **EA (Ex-Ante) returns** use original `ret` column
+3. **EP (Ex-Post) returns** use filtered `ret_{adj}` column (e.g., `ret_trim`)
+4. Both EA and EP use the **same ranking** - only return column differs
+
+### Performance (Filter Benchmark)
+
+| Metric | Slow Path | Fast Path | Speedup |
+|--------|-----------|-----------|---------|
+| 13 filter configs | ~33s | 0.87s | **38x** |
+| Average per filter | ~2.5s | 0.07s | **36x** |
+
+### Example Usage
+
+```python
+import PyBondLab as pbl
+
+# Initialize Momentum strategy
+mom = pbl.Momentum(holding_period=3, lookback_period=3, skip=1, num_portfolios=5)
+
+# Run with trim filter (fast path used automatically)
+result = pbl.StrategyFormation(
+    data,
+    strategy=mom,
+    filters={'adj': 'trim', 'level': 0.2},  # Trim returns > 20%
+    turnover=False,                          # Required for fast path
+    verbose=True
+).fit()
+
+# Get EA and EP results (they differ when filters are applied!)
+ew_ea, vw_ea = result.get_long_short()           # Ex-Ante (raw returns)
+ew_ep, vw_ep = result.get_long_short_ex_post()   # Ex-Post (filtered returns)
+
+print(f"EA mean: {ew_ea.mean():.6f}")
+print(f"EP mean: {ew_ep.mean():.6f}")
+print(f"EA-EP diff: {ew_ea.mean() - ew_ep.mean():.6f}")
+```
+
+### Verified Behavior
+
+| Scenario | EA vs EP |
+|----------|----------|
+| No filter | EA = EP (identical) |
+| Trim filter | EA ≠ EP (EA uses raw ret, EP uses trimmed ret) |
+| Price filter | EA ≠ EP (EA uses raw ret, EP excludes filtered prices) |
+| Bounce filter | EA ≠ EP (EA uses raw ret, EP excludes bounce-backs) |
+
+### Test Script
+
+```bash
+python examples/data_uncertainty_baseline.py
+```
+
+This tests 13 filter configurations (trim, price, bounce, no_filter) with Momentum(3,3).
+
+---
+
 ## File Changes Summary
 
 ### New Files Created
@@ -596,7 +660,11 @@ rank assignments due to floating-point comparison reordering with NaN values.
   - Bypasses `_precompute_data()` entirely for massive speedup
   - Vectorized rank computation across all dates using numba
   - `generate_synthetic_data_fast()` for large panel testing
-- **Total**: ~3x faster single-signal, ~2.5x parallel speedup for batch, **5x for large panels with fast path**
+- **Phase 10**: Filter optimization (38x speedup for filtered strategies)
+  - Fast path now supports trim, price, bounce filters
+  - EA uses original returns, EP uses filtered returns
+  - Same ranking for both, only return column differs
+- **Total**: ~3x faster single-signal, ~2.5x parallel speedup for batch, **5x for large panels, 38x for filtered strategies**
 
 ---
 
