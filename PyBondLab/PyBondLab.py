@@ -1335,6 +1335,14 @@ class StrategyFormation:
                     result['weights_df'],
                     result['weights_scaled_df']
                 )
+                # Set zero turnover for active cohorts that are NOT rebalancing
+                # (they hold positions and don't trade)
+                self.turnover_manager.set_zero_for_holding_cohorts(
+                    self.turnover_state,
+                    self.cohort,  # rebalancing cohort
+                    tot_nport,
+                    t_idx  # tau
+                )
 
     def _form_nonstaggered_portfolio(self, rebal_idx, precomp,
                                     ew_ret_arr, vw_ret_arr, ew_chars_arr, vw_chars_arr):

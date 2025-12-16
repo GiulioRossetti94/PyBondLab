@@ -239,12 +239,64 @@ class TurnoverManager:
         
         return self.state
     
-    def accumulate(self, state, cohort_or_key, tot_nport, tau, 
+    def accumulate(self, state, cohort_or_key, tot_nport, tau,
                    weights_df, weights_scaled_df):
         """Compute turnover (staggered)."""
         accumulate_turnover(state, cohort_or_key, tot_nport, tau,
                           weights_df, weights_scaled_df)
-    
+
+    def set_zero_for_holding_cohorts(self, state, rebalancing_cohort, tot_nport, tau):
+        """
+        Set turnover to 0.0 for active cohorts that are NOT rebalancing at time tau.
+
+        This reflects that holding cohorts do not trade and therefore have zero turnover.
+        Non-existent cohorts (not yet formed) remain as NaN.
+
+        Parameters
+        ----------
+        state : TurnoverState
+            The turnover state object
+        rebalancing_cohort : int
+            The cohort that IS rebalancing at this time (will be skipped)
+        tot_nport : int
+            Total number of portfolios
+        tau : int
+            Current time index (formation time)
+
+        Notes
+        -----
+        A cohort c is considered "active" (exists) at time tau if c <= tau.
+        - Cohort 0 is formed at t=0
+        - Cohort 1 is formed at t=1
+        - Cohort c is formed at t=c (first formation)
+
+        After first formation, each cohort rebalances every `hor` periods.
+        """
+        if not state.is_staggered:
+            return  # Only applies to staggered rebalancing
+
+        hor = state.hor
+
+        for cohort in range(hor):
+            # Skip the rebalancing cohort (it already has computed turnover)
+            if cohort == rebalancing_cohort:
+                continue
+
+            # Check if this cohort exists (has been formed at least once)
+            # Cohort c is first formed at time t=c
+            if cohort > tau:
+                # Cohort doesn't exist yet - leave as NaN
+                continue
+
+            # Cohort exists but is not rebalancing - set to 0.0 for all portfolios
+            for k in range(tot_nport):
+                # Only set to 0.0 if the cohort has been seen (prev_seen is True)
+                # This ensures we don't set zeros before the cohort has any data
+                if state.prev_seen_ew[cohort, k]:
+                    state.ew_turn_ea[tau, cohort, k] = 0.0
+                if state.prev_seen_vw[cohort, k]:
+                    state.vw_turn_ea[tau, cohort, k] = 0.0
+
     def compute(self, state, weights_df, weights_scaled_df, tau, tot_nport):
         """Compute turnover (non-staggered)."""
         # For non-staggered, we use cohort index 0 (single cohort)
