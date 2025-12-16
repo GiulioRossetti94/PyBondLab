@@ -8,26 +8,20 @@ Dramatically speed up portfolio formation in PyBondLab using numba/prange, while
 
 ---
 
-## ⚠️ Current Status (Dec 2025)
+## ✅ Current Status (Dec 2025)
 
-**Numba optimizations are currently DISABLED** due to a merge that reverted the changes.
+**Numba optimizations are ENABLED** and working with co-author's turnover fix.
 
-The following components exist but are NOT being used:
-- `numba_core.py` - Contains all numba kernels (intact but not imported)
-- Fast turnover path in `utils_turnover.py` - Removed
+**Active optimizations:**
+- `numba_core.py` - All numba kernels active in `PyBondLab.py`
+- `_accumulate_turnover_fast()` - Fast turnover path in `utils_turnover.py`
+- `set_zero_for_holding_cohorts()` - Co-author's fix for holding cohort turnover (sets to 0, not NaN)
 
-**Recent changes by co-author:**
-- FIX: Non-rebalancing cohorts now get turnover=0 (not NaN) via `set_zero_for_holding_cohorts()`
-- This is a semantic fix - holding cohorts should show zero turnover since they don't trade
-
-**To re-enable optimizations:**
-1. Re-add numba imports to `PyBondLab.py`
-2. Re-add `_accumulate_turnover_fast()` to `utils_turnover.py`
-3. Integrate the new `set_zero_for_holding_cohorts()` fix
+**Test results:** 12/12 tests pass in ~12.8s (3x faster than original ~38s)
 
 ---
 
-## Performance Results (Historical - When Optimizations Were Enabled)
+## Performance Results (Current State)
 
 | Metric | Before | After | Improvement |
 |--------|--------|-------|-------------|
