@@ -53,6 +53,14 @@ from .utils import (
 # Turnover utils
 from .utils_turnover import TurnoverManager
 
+# Numba-optimized core functions
+from .numba_core import (
+    compute_portfolio_returns_single,
+    compute_portfolio_weights_single,
+    compute_scaled_weights_single,
+    compute_characteristics_single,
+)
+
 import statsmodels.api as sm
 import matplotlib.pyplot as plt
 from PyBondLab.data.WRDS import load
@@ -1185,10 +1193,16 @@ class StrategyFormation:
         )
 
         # Option 6: Store shareable parts for caching by AssayAnomalyRunner
-        # Only It0 and vw_map_t0 are independent of hp/nport
+        # It0 and vw_map_t0 are independent of hp/nport
+        # It1, It2, It1m, vw_map_t1m are independent of signal (for batch processing)
         self._shareable_precomp = {
             'It0': precomp.It0,
-            'vw_map_t0': precomp.vw_map_t0
+            'vw_map_t0': precomp.vw_map_t0,
+            # Batch processing: return data is same for all signals
+            'It1': precomp.It1,
+            'It2': precomp.It2,
+            'It1m': precomp.It1m,
+            'vw_map_t1m': precomp.vw_map_t1m,
         }
 
         return precomp
@@ -1460,39 +1474,42 @@ class StrategyFormation:
         if self.banding_threshold is not None:
             It1 = self._apply_banding_to_period(It1, tot_nport)
 
-        # Compute weights
-        sums = It1.groupby('ptf_rank', sort=False)[ColumnNames.VALUE_WEIGHT].sum()
-        It1['weights'] = It1[ColumnNames.VALUE_WEIGHT] / It1['ptf_rank'].map(sums)
+        # Extract numpy arrays for numba processing
+        ranks_arr = It1['ptf_rank'].values.astype(np.float64)
+        returns_arr = It1[ret_col].values.astype(np.float64)
+        vw_arr = It1[ColumnNames.VALUE_WEIGHT].values.astype(np.float64)
 
-        # Compute portfolio returns
-        ptf_ret_ew = It1.groupby('ptf_rank', sort=False)[ret_col].mean()
-        ptf_ret_vw = (It1[ret_col] * It1['weights']).groupby(It1['ptf_rank'], sort=False).sum()
+        # Compute weights using numba kernel (replaces groupby)
+        eweights_arr, vweights_arr, counts_arr = compute_portfolio_weights_single(
+            ranks_arr, vw_arr, tot_nport
+        )
+        It1['weights'] = vweights_arr
+        It1['eweights'] = eweights_arr
+        It1['count'] = counts_arr
 
+        # Compute portfolio returns using numba kernel (replaces groupby)
+        ew_ret_arr, vw_ret_arr = compute_portfolio_returns_single(
+            ranks_arr, returns_arr, vw_arr, tot_nport
+        )
+
+        # Convert to pandas Series with proper index (for compatibility)
         nport_idx = range(1, tot_nport + 1)
-        ptf_ret_ew = ptf_ret_ew.reindex(nport_idx)
-        ptf_ret_vw = ptf_ret_vw.reindex(nport_idx)
+        ptf_ret_ew = pd.Series(ew_ret_arr, index=nport_idx)
+        ptf_ret_vw = pd.Series(vw_ret_arr, index=nport_idx)
 
         # Prepare weight outputs
         weights_df = pd.DataFrame()
         weights_scaled_df = pd.DataFrame()
 
         if self.turnover or self.save_idx:
-            rank = It1[[ColumnNames.ID, 'ptf_rank', ret_col]].rename(columns={ret_col: 'ret'}).copy()
-            counts = rank.groupby('ptf_rank', sort=False)[ColumnNames.ID].size()
-            rank['count'] = rank['ptf_rank'].map(counts)
-            rank['eweights'] = 1.0 / rank['count']
-
-            rank = rank.merge(It1[[ColumnNames.ID, 'weights']], on=ColumnNames.ID, how='left')
-            rank = rank.rename(columns={'weights': 'vweights'})
+            # Build rank DataFrame using already-computed weights
+            rank = It1[[ColumnNames.ID, 'ptf_rank', ret_col, 'eweights', 'weights', 'count']].copy()
+            rank = rank.rename(columns={ret_col: 'ret', 'weights': 'vweights'})
             rank['vweights'] = rank['vweights'].fillna(0.0)
 
             # For WithinFirmSort, also include VW column (needed for custom aggregation)
             if self.strategy.__strategy_name__ == "Within-Firm Sort":
-                rank = rank.merge(
-                    It1[[ColumnNames.ID, ColumnNames.VALUE_WEIGHT]].rename(columns={ColumnNames.VALUE_WEIGHT: 'VW'}),
-                    on=ColumnNames.ID,
-                    how='left'
-                )
+                rank['VW'] = It1[ColumnNames.VALUE_WEIGHT].values
                 weights_df = rank[[ColumnNames.ID, 'ptf_rank', 'eweights', 'vweights', 'ret', 'VW']]
             else:
                 weights_df = rank[[ColumnNames.ID, 'ptf_rank', 'eweights', 'vweights']]
@@ -1502,37 +1519,42 @@ class StrategyFormation:
                     self.port_idx = {}
                 self.port_idx[date_t] = weights_df
 
-            # Scaled weights
-            ew_series = ptf_ret_ew.to_frame(name='ewret').reset_index().rename(columns={'index': 'ptf_rank'})
-            vw_series = ptf_ret_vw.to_frame(name='vwret').reset_index().rename(columns={'index': 'ptf_rank'})
-            retscaled = rank.merge(ew_series, on='ptf_rank', how='left').merge(vw_series, on='ptf_rank', how='left')
-
-            retscaled['ewret_scaled'] = ((1.0 + retscaled['ret']) / (1.0 + retscaled['ewret'])) / retscaled['count']
-            retscaled['vwret_scaled'] = ((1.0 + retscaled['ret']) / (1.0 + retscaled['vwret'])) * retscaled['vweights']
-
-            weights_scaled_df = retscaled[[ColumnNames.ID, 'ptf_rank', 'ewret_scaled', 'vwret_scaled']].rename(
-                columns={'ewret_scaled': 'eweights', 'vwret_scaled': 'vweights'}
+            # Scaled weights using numba kernel
+            ew_scaled_arr, vw_scaled_arr = compute_scaled_weights_single(
+                ranks_arr, returns_arr, eweights_arr, vweights_arr,
+                counts_arr, ew_ret_arr, vw_ret_arr, tot_nport
             )
+
+            weights_scaled_df = pd.DataFrame({
+                ColumnNames.ID: It1[ColumnNames.ID].values,
+                'ptf_rank': It1['ptf_rank'].values,
+                'eweights': ew_scaled_arr,
+                'vweights': vw_scaled_arr
+            })
             weights_scaled_df['vweights'] = weights_scaled_df['vweights'].fillna(0.0)
 
-        # Compute characteristics
+        # Compute characteristics using numba kernels
         chars_ew = None
         chars_vw = None
         if self.chars:
+            # Merge to get characteristics aligned with returns data
             nm = [ColumnNames.ID, 'ptf_rank', 'weights']
             sub = It1[nm]
             It1m_aug = It1m.merge(sub, on=ColumnNames.ID, how='inner')
-            cols = nm + list(self.chars)
-            chars = It1m_aug[cols]
 
-            chars_ew = pd.DataFrame()
-            chars_vw = pd.DataFrame()
+            # Extract arrays for numba processing
+            char_ranks = It1m_aug['ptf_rank'].values.astype(np.float64)
+            char_weights = It1m_aug['weights'].values.astype(np.float64)
+
+            chars_ew = pd.DataFrame(index=nport_idx)
+            chars_vw = pd.DataFrame(index=nport_idx)
             for c in self.chars:
-                c_ew = chars.groupby('ptf_rank', sort=False)[c].mean().reindex(nport_idx)
-                c_vw = (chars[c] * chars['weights']).groupby(chars['ptf_rank'], sort=False).sum().reindex(nport_idx)
-                chars_ew = pd.concat([chars_ew, c_ew], axis=1)
-                chars_vw = pd.concat([chars_vw, c_vw], axis=1)
-            chars_vw.columns = chars_ew.columns = self.chars
+                char_values = It1m_aug[c].values.astype(np.float64)
+                c_ew_arr, c_vw_arr = compute_characteristics_single(
+                    char_ranks, char_weights, char_values, tot_nport
+                )
+                chars_ew[c] = c_ew_arr
+                chars_vw[c] = c_vw_arr
 
         return {
             'returns_ew': ptf_ret_ew.tolist(),

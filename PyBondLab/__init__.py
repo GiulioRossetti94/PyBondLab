@@ -6,6 +6,13 @@ except ImportError as e:
     StrategyFormation = None
     load_breakpoints_WRDS = None
 
+# Batch processing
+try:
+    from .batch import BatchStrategyFormation, BatchResults, batch_single_sort
+except ImportError as e:
+    print(f"Warning: Could not import batch processing: {e}")
+    BatchStrategyFormation = BatchResults = batch_single_sort = None
+
 # Strategy classes
 try:
     from .StrategyClass import SingleSort, DoubleSort, Momentum, LTreversal, WithinFirmSort
@@ -60,6 +67,9 @@ __version__ = '0.2.0'
 __all__ = [
     'StrategyFormation',
     'load_breakpoints_WRDS',
+    'BatchStrategyFormation',
+    'BatchResults',
+    'batch_single_sort',
     'SingleSort',
     'DoubleSort',
     'Momentum',

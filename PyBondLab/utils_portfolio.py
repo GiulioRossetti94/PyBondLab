@@ -20,12 +20,13 @@ from typing import Dict, Tuple, Optional, List
 from dataclasses import dataclass
 
 from .constants import ColumnNames, NumericConstants
-from .utils import (
-    assign_bond_bins,
-    double_sort_uncond,
-    double_sort_cond,
-    compute_thresholds,
-    intersect_id,
+# Use numba-optimized versions for performance (2-5x faster)
+from .utils_optimized import (
+    assign_bond_bins_optimized as assign_bond_bins,
+    double_sort_uncond_optimized as double_sort_uncond,
+    double_sort_cond_optimized as double_sort_cond,
+    compute_thresholds_optimized as compute_thresholds,
+    intersect_id_optimized as intersect_id,
     create_subset_mask,
 )
 

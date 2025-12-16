@@ -16,11 +16,12 @@ import warnings
 import numpy as np
 import pandas as pd
 
-from .utils import (
-    compute_thresholds,
-    assign_bond_bins,
-    double_sort_uncond,
-    double_sort_cond,
+# Use numba-optimized versions for performance (2-5x faster)
+from .utils_optimized import (
+    compute_thresholds_optimized as compute_thresholds,
+    assign_bond_bins_optimized as assign_bond_bins,
+    double_sort_uncond_optimized as double_sort_uncond,
+    double_sort_cond_optimized as double_sort_cond,
     create_subset_mask,
 )
 from .constants import ColumnNames
@@ -176,22 +177,34 @@ class PrecomputeBuilder:
             )
 
         # Step 2: Precompute return data (EA and EP paths)
-        # this returns:
-        # pre_It1: EA return data (unadjusted returns at time t)
-        # pre_It2: EP return data (adjusted returns at time t based on adj)
-        It1, It2 = self._precompute_return_data(
-            tab, tab_raw, datelist, ret_var, adj,
-            tab_by_date=tab_by_date,  # Pass pre-indexed data
-            tab_raw_by_date=tab_raw_by_date
-        )
+        # Check if we can reuse cached return data (shared across signals in batch mode)
+        if cached_precomp is not None and 'It1' in cached_precomp:
+            # Reuse cached return data (independent of signal/sort_var)
+            It1 = cached_precomp['It1']
+            It2 = cached_precomp.get('It2', {})
+        else:
+            # this returns:
+            # pre_It1: EA return data (unadjusted returns at time t)
+            # pre_It2: EP return data (adjusted returns at time t based on adj)
+            It1, It2 = self._precompute_return_data(
+                tab, tab_raw, datelist, ret_var, adj,
+                tab_by_date=tab_by_date,  # Pass pre-indexed data
+                tab_raw_by_date=tab_raw_by_date
+            )
 
         # Step 3: Precompute dynamic weighting data (VW at t+h-1)
-        # this returns:
-        # pre_It1m: data at t+h-1 with valid VW
-        It1m, vw_map_t1m = self._precompute_dynamic_weights(
-            tab, datelist,
-            tab_by_date=tab_by_date  # Pass pre-indexed data
-        )
+        # Check if we can reuse cached dynamic weights (shared across signals)
+        if cached_precomp is not None and 'It1m' in cached_precomp:
+            # Reuse cached dynamic weights (independent of signal/sort_var)
+            It1m = cached_precomp['It1m']
+            vw_map_t1m = cached_precomp['vw_map_t1m']
+        else:
+            # this returns:
+            # pre_It1m: data at t+h-1 with valid VW
+            It1m, vw_map_t1m = self._precompute_dynamic_weights(
+                tab, datelist,
+                tab_by_date=tab_by_date  # Pass pre-indexed data
+            )
 
         return PrecomputedData(
             It0=It0,

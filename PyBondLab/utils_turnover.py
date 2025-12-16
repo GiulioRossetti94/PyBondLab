@@ -28,6 +28,13 @@ try:
 except Exception:
     NUMBA_AVAILABLE = False
 
+# Import optimized turnover computation
+try:
+    from .numba_core import compute_turnover_all_portfolios, update_prev_scaled_weights
+    NUMBA_TURNOVER_AVAILABLE = True
+except ImportError:
+    NUMBA_TURNOVER_AVAILABLE = False
+
 # Import turnover tracking system
 try:
     from .turnover_tracking import (
@@ -318,7 +325,81 @@ class TurnoverManager:
 # Core turnover computation
 # =============================================================================
 
-def accumulate_turnover(state: TurnoverState, 
+def _accumulate_turnover_fast(state: TurnoverState,
+                              cohort: int,
+                              tot_nport: int,
+                              tau: int,
+                              weights_df: pd.DataFrame,
+                              weights_scaled_df: pd.DataFrame):
+    """
+    Fast path for turnover accumulation using numba.
+
+    Extracts all data to numpy arrays once, then processes all portfolios
+    in a single pass instead of looping with DataFrame filtering.
+    """
+    id_to_pos = state.id_to_pos
+    n_assets = state.prev_scaled_ew.shape[2]
+
+    # Extract arrays from weights_df
+    ranks = weights_df['ptf_rank'].values.astype(np.float64)
+    ids = weights_df['ID'].values
+    positions = id_to_pos.loc[ids].values.astype(np.int64)
+    raw_ew = weights_df['eweights'].values.astype(np.float64)
+    raw_vw = weights_df['vweights'].values.astype(np.float64)
+
+    # Get previous state for this cohort
+    prev_scaled_ew_cohort = state.prev_scaled_ew[cohort]  # (nport, n_assets)
+    prev_scaled_vw_cohort = state.prev_scaled_vw[cohort]
+    prev_sum_ew_cohort = state.prev_sum_ew[cohort]  # (nport,)
+    prev_sum_vw_cohort = state.prev_sum_vw[cohort]
+    prev_seen_ew_cohort = state.prev_seen_ew[cohort]  # (nport,)
+    prev_seen_vw_cohort = state.prev_seen_vw[cohort]
+
+    # Compute turnover for all portfolios at once
+    turn_ew, turn_vw, new_seen_ew, new_seen_vw, curr_sum_ew, curr_sum_vw = \
+        compute_turnover_all_portfolios(
+            ranks, positions, raw_ew, raw_vw,
+            prev_scaled_ew_cohort, prev_scaled_vw_cohort,
+            prev_sum_ew_cohort, prev_sum_vw_cohort,
+            prev_seen_ew_cohort, prev_seen_vw_cohort,
+            cohort, tot_nport, n_assets
+        )
+
+    # Store turnover values
+    for k0 in range(tot_nport):
+        if not np.isnan(turn_ew[k0]):
+            state.ew_turn_ea[tau, cohort, k0] = turn_ew[k0]
+        if not np.isnan(turn_vw[k0]):
+            state.vw_turn_ea[tau, cohort, k0] = turn_vw[k0]
+
+    # Update seen flags
+    state.prev_seen_ew[cohort] = new_seen_ew
+    state.prev_seen_vw[cohort] = new_seen_vw
+
+    # Update previous scaled weights and sums from scaled weights DataFrame
+    scaled_ranks = weights_scaled_df['ptf_rank'].values.astype(np.float64)
+    scaled_ids = weights_scaled_df['ID'].values
+    scaled_positions = id_to_pos.loc[scaled_ids].values.astype(np.int64)
+    scaled_ew = weights_scaled_df['eweights'].values.astype(np.float64)
+    scaled_vw = weights_scaled_df['vweights'].values.astype(np.float64)
+
+    # Use numba to update previous weights
+    update_prev_scaled_weights(
+        scaled_ew, scaled_vw, scaled_ranks, scaled_positions,
+        state.prev_scaled_ew[cohort], state.prev_scaled_vw[cohort],
+        tot_nport
+    )
+
+    # Update sums
+    for k0 in range(tot_nport):
+        k = k0 + 1
+        mask = scaled_ranks == k
+        if np.any(mask):
+            state.prev_sum_ew[cohort, k0] = np.sum(scaled_ew[mask])
+            state.prev_sum_vw[cohort, k0] = np.sum(scaled_vw[mask])
+
+
+def accumulate_turnover(state: TurnoverState,
                        cohort: int,
                        tot_nport: int,
                        tau: int,
@@ -326,12 +407,12 @@ def accumulate_turnover(state: TurnoverState,
                        weights_scaled_df: pd.DataFrame):
     """
     Accumulate turnover for staggered rebalancing at a given time and cohort.
-    
+
     This function:
     1. Computes turnover by comparing current weights with previous scaled weights
     2. Updates the state with current scaled weights for next period
     3. Stores turnover values in the state arrays
-    
+
     Parameters
     ----------
     state : TurnoverState
@@ -347,9 +428,14 @@ def accumulate_turnover(state: TurnoverState,
     weights_scaled_df : pd.DataFrame
         Scaled weights accounting for returns since formation
     """
+    # Fast path using numba-optimized batch computation
+    if NUMBA_TURNOVER_AVAILABLE and state.logger is None:
+        _accumulate_turnover_fast(state, cohort, tot_nport, tau, weights_df, weights_scaled_df)
+        return
+
     # Get ID positions for fast lookup
     id_to_pos = state.id_to_pos
-    
+
     # Process each portfolio
     for k in range(1, tot_nport + 1):
         k0 = k - 1  # Zero-based portfolio index
