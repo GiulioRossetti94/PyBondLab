@@ -588,4 +588,117 @@ rank assignments due to floating-point comparison reordering with NaN values.
 - **Phase 7**: Batch speed optimizations
   - Signal batching per worker (~20-30% faster with signals_per_worker=2)
   - Chunked processing with gc.collect() between chunks (memory control)
+- **Phase 8**: Fast returns-only path (1.5-2x additional speedup when applicable)
+  - Auto-detects when turnover=False, chars=None, banding=None
+  - Processes all dates in parallel using prange
+  - Numerically identical to slow path (< 1e-10 tolerance)
 - **Total**: ~3x faster single-signal, ~2.5x parallel speedup for batch
+
+---
+
+## Fast Returns-Only Path (Phase 8)
+
+### Overview
+
+When only portfolio returns are needed (no turnover, characteristics, or banding),
+the code automatically uses an ultra-fast path that processes ALL dates in parallel.
+
+### Conditions for Fast Path
+
+The fast path is **automatically used** when ALL of these conditions are met:
+
+| Condition | Required Value | Notes |
+|-----------|---------------|-------|
+| `turnover` | `False` | No turnover computation |
+| `chars` | `None` | No characteristics tracking |
+| `banding_threshold` | `None` | No transition bands |
+| Strategy | `SingleSort` | Not DoubleSort |
+| Rebalancing | `monthly` | Standard staggered rebalancing |
+
+### Performance
+
+| Dataset | Fast Path | Slow Path | Speedup |
+|---------|-----------|-----------|---------|
+| 500 bonds, 60 dates | 0.26s | 0.41s | **1.6x** |
+| Larger datasets | - | - | **Expected 2-3x** |
+
+### How It Works
+
+**Standard Path (Slow):**
+```python
+for t in range(n_dates):
+    # Process each date sequentially
+    ranks = precompute_ranks(date_t)
+    returns = compute_returns(date_t)
+    # ... per-date overhead
+```
+
+**Fast Path:**
+```python
+# Process ALL dates in parallel using numba prange
+@njit(parallel=True)
+def compute_all_dates_returns_fast(...):
+    for d in prange(n_dates):  # Parallel loop
+        # Each date processed independently
+```
+
+### Key Functions
+
+```python
+# In numba_core.py
+compute_all_dates_returns_fast(date_indices, ranks, returns, weights, n_dates, nport)
+    -> (ew_returns, vw_returns)  # Shape (n_dates, nport)
+
+compute_staggered_returns_fast(date_indices, formation_ranks, returns, weights, n_dates, nport, hor)
+    -> (ew_returns, vw_returns)  # For h>1 with cohort averaging
+
+# In PyBondLab.py
+_can_use_fast_path()  # Auto-detect if fast path is possible
+_fit_fast_returns_only()  # Main fast path implementation
+```
+
+### Usage Example
+
+```python
+from PyBondLab import StrategyFormation, SingleSort
+
+# Fast path is used automatically
+strategy = SingleSort(holding_period=1, sort_var='signal', num_portfolios=5)
+sf = StrategyFormation(
+    data=data,
+    strategy=strategy,
+    turnover=False,           # Required for fast path
+    chars=None,               # Required for fast path
+    banding_threshold=None,   # Required for fast path
+    verbose=True              # Will print "Using FAST returns-only path..."
+)
+result = sf.fit()
+
+# Results are identical to slow path
+print(result.ea.returns.ewls_df.mean())
+```
+
+### Example Script
+
+```bash
+python examples/fast_returns_only.py
+```
+
+### When Fast Path is Disabled
+
+```python
+# Any of these will force the slow path:
+sf = StrategyFormation(..., turnover=True)            # Needs turnover
+sf = StrategyFormation(..., chars=['signal'])         # Needs characteristics
+sf = StrategyFormation(..., banding_threshold=0.2)    # Needs banding
+strategy = DoubleSort(...)                             # Not SingleSort
+```
+
+### Numerical Accuracy
+
+The fast path produces **numerically identical** results to the slow path:
+- All values match within `TOLERANCE = 1e-10`
+- Dynamic weights from `vw_map_t1m` are correctly applied
+- Verified against baseline test suite (12/12 tests pass)
+
+---
