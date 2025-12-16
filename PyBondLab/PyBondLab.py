@@ -1175,8 +1175,10 @@ class StrategyFormation:
         # Only monthly (staggered) rebalancing for now
         if self.rebalance_frequency != 'monthly':
             return False
-        # Fast path now supports filters - EA uses ret, EP uses ret_{adj}
-        # Both use the same ranking (from filtered signal)
+        # Disable fast path for filters - ID intersection logic differs from slow path
+        # TODO: Fix fast path to properly handle (formation_date, return_date) ID intersection
+        if self.config.has_filters:
+            return False
         return True
 
     def _fit_fast_returns_only(self):

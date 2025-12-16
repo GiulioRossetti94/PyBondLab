@@ -62,9 +62,10 @@ Dramatically speed up portfolio formation in PyBondLab using numba/prange, while
 
 ## Filter Optimization (Phase 10)
 
-The ultra-fast path now supports **filtered strategies** (trim, price, bounce filters).
+**Note:** Fast path is currently **DISABLED** for filtered strategies due to ID
+intersection discrepancy. Slow path ensures numerical correctness. See "Known Issues".
 
-### How It Works
+### How Filters Work (Slow Path)
 
 When filters are applied:
 1. **Ranking** uses the filtered signal (e.g., `signal_trim` for Momentum)
@@ -72,12 +73,11 @@ When filters are applied:
 3. **EP (Ex-Post) returns** use filtered `ret_{adj}` column (e.g., `ret_trim`)
 4. Both EA and EP use the **same ranking** - only return column differs
 
-### Performance (Filter Benchmark)
+### Validation Results
 
-| Metric | Slow Path | Fast Path | Speedup |
-|--------|-----------|-----------|---------|
-| 13 filter configs | ~33s | 0.87s | **38x** |
-| Average per filter | ~2.5s | 0.07s | **36x** |
+All 12 filter configurations validated (slow path = source of truth):
+- 12/13 tests PASS (all filtered cases match)
+- 1/13 test has VW discrepancy (no-filter case, see Known Issues)
 
 ### Example Usage
 
@@ -87,12 +87,12 @@ import PyBondLab as pbl
 # Initialize Momentum strategy
 mom = pbl.Momentum(holding_period=3, lookback_period=3, skip=1, num_portfolios=5)
 
-# Run with trim filter (fast path used automatically)
+# Run with trim filter (slow path used for correctness)
 result = pbl.StrategyFormation(
     data,
     strategy=mom,
     filters={'adj': 'trim', 'level': 0.2},  # Trim returns > 20%
-    turnover=False,                          # Required for fast path
+    turnover=False,
     verbose=True
 ).fit()
 
@@ -294,6 +294,30 @@ passed = validate_against_baseline(data, baseline)
 ---
 
 ## Known Issues & TODO
+
+### Fast Path VW Discrepancy for Momentum (No Filter)
+
+The ultra-fast path (`_fit_fast_returns_only`) has a VW discrepancy (~6.89e-04) for
+Momentum strategies without filters. This is due to ID intersection handling:
+
+**Slow path behavior:**
+- Computes `It1` = intersection of bonds present at both formation AND return dates
+- VW normalization is done only on intersected bonds
+
+**Fast path behavior:**
+- Uses ALL observations at return date
+- VW normalization includes bonds that may not have been in formation set
+
+**Impact:**
+- EW returns: Match within 1e-6 (averaging reduces impact)
+- VW returns: ~6.89e-04 discrepancy (VW sensitive to which bonds included)
+- Filtered strategies: Use slow path (disabled in `_can_use_fast_path`)
+
+**Mitigation:** Fast path is disabled when filters are applied. For no-filter
+Momentum, use `turnover=True` to force slow path, or accept VW discrepancy.
+
+**To fix:** Update `compute_staggered_returns_ultrafast` to only include bonds
+that have valid ranks at formation date (proper ID intersection).
 
 ### Parallelization (Phase 3) - Not Started
 

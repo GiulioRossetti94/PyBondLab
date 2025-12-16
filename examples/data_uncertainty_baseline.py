@@ -161,7 +161,8 @@ class FilterTestResult:
 def run_single_filter_test(
     data: pd.DataFrame,
     params: Dict,
-    verbose: bool = True
+    verbose: bool = True,
+    use_fast_path: bool = True
 ) -> FilterTestResult:
     """
     Run a single filter test and capture EA and EP results.
@@ -174,6 +175,8 @@ def run_single_filter_test(
         Strategy parameters including filter specification
     verbose : bool
         Whether to print progress
+    use_fast_path : bool
+        If True, use fast path. If False, force slow path.
 
     Returns
     -------
@@ -185,18 +188,28 @@ def run_single_filter_test(
     # Make a copy of data for this test
     data_copy = data.copy()
 
-    # Run strategy formation
-    result = pbl.StrategyFormation(data_copy, **params).fit()
+    # Optionally disable fast path
+    if not use_fast_path:
+        original_method = pbl.StrategyFormation._can_use_fast_path
+        pbl.StrategyFormation._can_use_fast_path = lambda self: False
 
-    # Get EA results
-    ew_ea, vw_ea = result.get_long_short()  # Default is EA
-
-    # Get EP results (ex-post)
     try:
-        ew_ep, vw_ep = result.get_long_short_ex_post()
-    except (ValueError, AttributeError):
-        # EP not available (no filter applied)
-        ew_ep, vw_ep = ew_ea, vw_ea  # Use EA as fallback
+        # Run strategy formation
+        result = pbl.StrategyFormation(data_copy, **params).fit()
+
+        # Get EA results
+        ew_ea, vw_ea = result.get_long_short()  # Default is EA
+
+        # Get EP results (ex-post)
+        try:
+            ew_ep, vw_ep = result.get_long_short_ex_post()
+        except (ValueError, AttributeError):
+            # EP not available (no filter applied)
+            ew_ep, vw_ep = ew_ea, vw_ea  # Use EA as fallback
+    finally:
+        # Restore fast path if we disabled it
+        if not use_fast_path:
+            pbl.StrategyFormation._can_use_fast_path = original_method
 
     elapsed = time.time() - t0
 
@@ -226,9 +239,65 @@ def run_single_filter_test(
     )
 
     if verbose:
-        print(f"  {result.name}: EA={ew_ea.mean():.6f}, EP={ew_ep.mean():.6f}, time={elapsed:.2f}s")
+        path_type = "fast" if use_fast_path else "slow"
+        print(f"  [{path_type}] {result.name}: EA={ew_ea.mean():.6f}, EP={ew_ep.mean():.6f}, time={elapsed:.2f}s")
 
     return test_result
+
+
+def run_single_filter_test_with_validation(
+    data: pd.DataFrame,
+    params: Dict,
+    tolerance: float = 1e-6,
+    verbose: bool = True
+) -> Tuple[FilterTestResult, FilterTestResult, bool, Dict]:
+    """
+    Run a single filter test with BOTH slow and fast paths, and validate they match.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Bond panel data
+    params : dict
+        Strategy parameters including filter specification
+    tolerance : float
+        Maximum allowed difference between slow and fast path
+    verbose : bool
+        Whether to print progress
+
+    Returns
+    -------
+    Tuple containing:
+        - fast_result: FilterTestResult from fast path
+        - slow_result: FilterTestResult from slow path
+        - passed: bool indicating if results match within tolerance
+        - diffs: dict with differences for each metric
+    """
+    # Run with slow path (source of truth)
+    slow_result = run_single_filter_test(data, params, verbose=verbose, use_fast_path=False)
+
+    # Run with fast path
+    fast_result = run_single_filter_test(data, params, verbose=verbose, use_fast_path=True)
+
+    # Compare results (handle NaN gracefully)
+    def safe_diff(a, b):
+        if np.isnan(a) and np.isnan(b):
+            return 0.0  # Both NaN = match
+        elif np.isnan(a) or np.isnan(b):
+            return float('inf')  # One NaN = fail
+        return abs(a - b)
+
+    diffs = {
+        'ew_ea_mean': safe_diff(fast_result.ew_ea_mean, slow_result.ew_ea_mean),
+        'vw_ea_mean': safe_diff(fast_result.vw_ea_mean, slow_result.vw_ea_mean),
+        'ew_ep_mean': safe_diff(fast_result.ew_ep_mean, slow_result.ew_ep_mean),
+        'vw_ep_mean': safe_diff(fast_result.vw_ep_mean, slow_result.vw_ep_mean),
+    }
+
+    # Check if all diffs are within tolerance (inf = fail)
+    passed = all(d <= tolerance for d in diffs.values())
+
+    return fast_result, slow_result, passed, diffs
 
 
 def get_unique_key(params: Dict) -> str:
@@ -250,10 +319,12 @@ def get_unique_key(params: Dict) -> str:
 
 def run_all_baseline_tests(
     data: pd.DataFrame,
-    verbose: bool = True
-) -> Dict[str, FilterTestResult]:
+    verbose: bool = True,
+    validate: bool = True,
+    tolerance: float = 1e-6
+) -> Tuple[Dict[str, FilterTestResult], Dict[str, FilterTestResult], bool]:
     """
-    Run all baseline filter tests.
+    Run all baseline filter tests with BOTH slow and fast paths.
 
     Parameters
     ----------
@@ -261,11 +332,17 @@ def run_all_baseline_tests(
         Bond panel data
     verbose : bool
         Whether to print progress
+    validate : bool
+        If True, run both slow and fast paths and compare
+    tolerance : float
+        Maximum allowed difference between slow and fast path
 
     Returns
     -------
-    dict
-        Dictionary mapping test name to FilterTestResult
+    Tuple containing:
+        - fast_results: dict mapping test name to FilterTestResult (fast path)
+        - slow_results: dict mapping test name to FilterTestResult (slow path / source of truth)
+        - all_passed: bool indicating if all tests passed validation
     """
     # Initialize Momentum strategy
     mom = pbl.Momentum(
@@ -281,33 +358,80 @@ def run_all_baseline_tests(
 
     if verbose:
         print(f"\nRunning {len(params_list)} filter configurations...")
+        if validate:
+            print("Comparing SLOW path (source of truth) vs FAST path")
         print("=" * 70)
 
-    results = {}
-    total_time = 0
+    fast_results = {}
+    slow_results = {}
+    validation_results = []
+    total_slow_time = 0
+    total_fast_time = 0
 
     for i, params in enumerate(params_list):
+        filters = params.get('filters')
+        if filters:
+            filter_desc = f"{filters['adj']}={filters['level']}"
+        else:
+            filter_desc = "no filter"
+
         if verbose:
-            filters = params.get('filters')
-            if filters:
-                filter_desc = f"{filters['adj']}={filters['level']}"
-            else:
-                filter_desc = "no filter"
             print(f"\n[{i+1}/{len(params_list)}] {filter_desc}")
 
-        result = run_single_filter_test(data, params, verbose=verbose)
-
-        # Use unique key based on filter config (not strategy name which is the same for all)
         unique_key = get_unique_key(params)
-        results[unique_key] = result
-        total_time += result.runtime_seconds
+
+        if validate:
+            # Run both paths and compare
+            fast_result, slow_result, passed, diffs = run_single_filter_test_with_validation(
+                data, params, tolerance=tolerance, verbose=verbose
+            )
+            fast_results[unique_key] = fast_result
+            slow_results[unique_key] = slow_result
+            total_fast_time += fast_result.runtime_seconds
+            total_slow_time += slow_result.runtime_seconds
+
+            # Report validation result
+            max_diff = max(diffs.values())
+            status = "✓ PASS" if passed else "✗ FAIL"
+            if verbose:
+                print(f"  {status} max_diff={max_diff:.2e} (tol={tolerance:.0e})")
+                if not passed:
+                    for metric, diff in diffs.items():
+                        if diff > tolerance:
+                            print(f"    {metric}: diff={diff:.2e}")
+            validation_results.append((unique_key, passed, max_diff, diffs))
+        else:
+            # Just run fast path
+            fast_result = run_single_filter_test(data, params, verbose=verbose, use_fast_path=True)
+            fast_results[unique_key] = fast_result
+            slow_results[unique_key] = fast_result  # Same as fast when not validating
+            total_fast_time += fast_result.runtime_seconds
+            validation_results.append((unique_key, True, 0.0, {}))
+
+    # Summary
+    all_passed = all(passed for _, passed, _, _ in validation_results)
 
     if verbose:
-        print("=" * 70)
-        print(f"Total time: {total_time:.2f}s")
-        print(f"Average per filter: {total_time/len(params_list):.2f}s")
+        print("\n" + "=" * 70)
+        if validate:
+            print(f"Total slow path time: {total_slow_time:.2f}s")
+            print(f"Total fast path time: {total_fast_time:.2f}s")
+            print(f"Speedup: {total_slow_time/total_fast_time:.1f}x")
+        else:
+            print(f"Total time: {total_fast_time:.2f}s")
+        print(f"Average per filter: {total_fast_time/len(params_list):.2f}s")
 
-    return results
+        if validate:
+            n_passed = sum(1 for _, passed, _, _ in validation_results if passed)
+            n_failed = len(validation_results) - n_passed
+            print(f"\nValidation: {n_passed}/{len(validation_results)} passed, {n_failed} failed")
+            if not all_passed:
+                print("\nFailed tests:")
+                for name, passed, max_diff, diffs in validation_results:
+                    if not passed:
+                        print(f"  {name}: max_diff={max_diff:.2e}")
+
+    return fast_results, slow_results, all_passed
 
 
 # =============================================================================
@@ -400,8 +524,17 @@ def validate_against_baseline(
 # Main
 # =============================================================================
 
-def main():
-    """Run baseline tests and save results."""
+def main(validate: bool = True, tolerance: float = 1e-6):
+    """
+    Run baseline tests and save results.
+
+    Parameters
+    ----------
+    validate : bool
+        If True, run both slow and fast paths and compare
+    tolerance : float
+        Maximum allowed difference between slow and fast path
+    """
     print("=" * 70)
     print("DATA UNCERTAINTY BASELINE TEST")
     print("=" * 70)
@@ -424,28 +557,49 @@ def main():
 
     # Run baseline tests
     print("\n2. Running baseline tests...")
-    results = run_all_baseline_tests(data, verbose=True)
+    fast_results, slow_results, all_passed = run_all_baseline_tests(
+        data, verbose=True, validate=validate, tolerance=tolerance
+    )
 
-    # Print summary
-    print("\n3. Results Summary")
+    # Print summary (using slow path as source of truth)
+    print("\n3. Results Summary (SLOW PATH = Source of Truth)")
     print("=" * 70)
     print(f"{'Filter':<25} {'EA Mean':>12} {'EP Mean':>12} {'EA-EP Diff':>12} {'Time':>8}")
     print("-" * 70)
-    for key, r in results.items():
+    for key, r in slow_results.items():
         ea_ep_diff = r.ew_ea_mean - r.ew_ep_mean
         print(f"{key:<25} {r.ew_ea_mean:>12.6f} {r.ew_ep_mean:>12.6f} {ea_ep_diff:>12.6f} {r.runtime_seconds:>7.2f}s")
 
-    # Save results
-    print("\n4. Saving baseline results...")
-    save_baseline_results(results, RESULTS_DIR)
+    # Save slow path results as baseline (source of truth)
+    print("\n4. Saving baseline results (slow path = source of truth)...")
+    save_baseline_results(slow_results, RESULTS_DIR)
 
+    # Final status
     print("\n" + "=" * 70)
+    if validate:
+        if all_passed:
+            print("✓ ALL VALIDATION TESTS PASSED")
+            print("Fast path matches slow path within tolerance")
+        else:
+            print("✗ SOME VALIDATION TESTS FAILED")
+            print("Fast path does NOT match slow path - needs investigation")
     print("BASELINE TESTS COMPLETE")
-    print("These results are the SOURCE OF TRUTH for optimization validation")
+    print("Slow path results saved as SOURCE OF TRUTH")
     print("=" * 70)
 
-    return results
+    return fast_results, slow_results, all_passed
 
 
 if __name__ == "__main__":
-    results = main()
+    import argparse
+    parser = argparse.ArgumentParser(description="Run data uncertainty baseline tests")
+    parser.add_argument("--no-validate", action="store_true",
+                        help="Skip slow vs fast path validation (faster)")
+    parser.add_argument("--tolerance", type=float, default=1e-6,
+                        help="Tolerance for validation (default: 1e-6)")
+    args = parser.parse_args()
+
+    fast_results, slow_results, all_passed = main(
+        validate=not args.no_validate,
+        tolerance=args.tolerance
+    )
