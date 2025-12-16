@@ -38,6 +38,7 @@ Created: 2024
 
 import os
 import sys
+import gc
 import platform
 import warnings
 from dataclasses import dataclass, field
@@ -155,6 +156,61 @@ def _process_single_signal(args: Tuple) -> Tuple[str, Any, float, Optional[str]]
     except Exception as e:
         elapsed = time.time() - t_start
         return (signal, None, elapsed, str(e))
+
+
+def _process_signal_batch(args: Tuple) -> List[Tuple[str, Any, float, Optional[str]]]:
+    """
+    Process multiple signals in a single worker - reduces overhead.
+
+    Parameters
+    ----------
+    args : tuple
+        (signals_list, data, holding_period, num_portfolios, turnover,
+         chars, rating, banding_threshold)
+
+    Returns
+    -------
+    list of tuple
+        [(signal_name, result_or_none, elapsed_time, error_or_none), ...]
+    """
+    (signals_list, data, holding_period, num_portfolios, turnover,
+     chars, rating, banding_threshold) = args
+
+    results = []
+    for signal in signals_list:
+        t_start = time.time()
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+
+                strategy = SingleSort(
+                    holding_period=holding_period,
+                    sort_var=signal,
+                    num_portfolios=num_portfolios,
+                    verbose=False
+                )
+
+                sf_config = StrategyFormationConfig(
+                    data=DataConfig(rating=rating, chars=chars),
+                    formation=FormationConfig(
+                        dynamic_weights=True,
+                        compute_turnover=turnover,
+                        banding_threshold=banding_threshold,
+                        verbose=False,
+                    )
+                )
+
+                sf = StrategyFormation(data=data, strategy=strategy, config=sf_config)
+                result = sf.fit()
+
+                elapsed = time.time() - t_start
+                results.append((signal, result, elapsed, None))
+
+        except Exception as e:
+            elapsed = time.time() - t_start
+            results.append((signal, None, elapsed, str(e)))
+
+    return results
 
 
 # =============================================================================
@@ -289,6 +345,12 @@ class BatchStrategyFormation:
         Banding parameter
     n_jobs : int, default=1
         Number of parallel jobs. Use -1 for all cores, 1 for sequential.
+    signals_per_worker : int, default=1
+        Number of signals to process per worker. Higher values reduce overhead
+        but increase per-worker memory. Recommended: 2-4 for large datasets.
+    chunk_size : int, optional
+        Process signals in chunks of this size to limit peak memory usage.
+        If None, processes all signals at once. Recommended for 50+ signals.
     verbose : bool, default=True
         Whether to show progress
     """
@@ -304,6 +366,8 @@ class BatchStrategyFormation:
         rating: Optional[Union[str, tuple]] = None,
         banding: Optional[int] = None,
         n_jobs: int = 1,
+        signals_per_worker: int = 1,
+        chunk_size: Optional[int] = None,
         verbose: bool = True,
     ):
         self._validate_inputs(data, signals)
@@ -317,6 +381,8 @@ class BatchStrategyFormation:
         self.rating = rating
         self.banding = banding
         self.n_jobs = n_jobs
+        self.signals_per_worker = max(1, signals_per_worker)
+        self.chunk_size = chunk_size
         self.verbose = verbose
 
         self.banding_threshold = None
@@ -331,6 +397,8 @@ class BatchStrategyFormation:
             'rating': rating,
             'banding': banding,
             'n_jobs': n_jobs,
+            'signals_per_worker': signals_per_worker,
+            'chunk_size': chunk_size,
         }
 
     def _validate_inputs(self, data: pd.DataFrame, signals: List[str]):
@@ -470,13 +538,40 @@ class BatchStrategyFormation:
 
         return self.data[cols].copy()
 
+    def _get_minimal_data_batch(self, signals: List[str]) -> pd.DataFrame:
+        """
+        Extract only required columns for a batch of signals.
+
+        More efficient than calling _get_minimal_data for each signal
+        when signals_per_worker > 1.
+        """
+        cols = list(REQUIRED_COLUMNS)
+
+        # Add all signal columns
+        for signal in signals:
+            if signal not in cols:
+                cols.append(signal)
+
+        # Add characteristic columns if specified
+        if self.chars:
+            for char in self.chars:
+                if char not in cols and char in self.data.columns:
+                    cols.append(char)
+
+        cols = [c for c in cols if c in self.data.columns]
+        return self.data[cols].copy()
+
     def _fit_parallel(self, results: BatchResults, n_workers: int) -> BatchResults:
-        """Parallel processing of signals using ProcessPoolExecutor."""
+        """Parallel processing of signals with chunking and batching support."""
 
         # Determine start method based on platform
         start_method = _get_start_method()
         if self.verbose:
             print(f"  Platform: {platform.system()}, using '{start_method}' start method")
+            if self.signals_per_worker > 1:
+                print(f"  Signals per worker: {self.signals_per_worker}")
+            if self.chunk_size:
+                print(f"  Chunk size: {self.chunk_size} signals")
 
         # First, run one signal sequentially (warmup + first result)
         first_signal = self.signals[0]
@@ -519,68 +614,147 @@ class BatchStrategyFormation:
         if not remaining_signals:
             return results
 
-        # Process remaining signals in parallel
-        if self.verbose:
-            print(f"  Processing {len(remaining_signals)} remaining signals in parallel...")
+        # Determine effective chunk size
+        effective_chunk_size = self.chunk_size if self.chunk_size else len(remaining_signals)
 
-        # Prepare arguments for workers with MINIMAL data (no shared_precomp)
-        # Each worker gets only the columns it needs
-        worker_args = []
-        for signal in remaining_signals:
-            minimal_data = self._get_minimal_data(signal)
-            worker_args.append((
-                signal, minimal_data, self.holding_period, self.num_portfolios,
-                self.turnover, self.chars, self.rating, self.banding_threshold
-            ))
+        # Process remaining signals in chunks
+        total_remaining = len(remaining_signals)
+        processed = 0
 
-        if self.verbose:
-            # Show data reduction stats
-            full_size = self.data.memory_usage(deep=True).sum() / 1024 / 1024
-            min_size = worker_args[0][1].memory_usage(deep=True).sum() / 1024 / 1024
-            reduction = (1 - min_size / full_size) * 100
-            print(f"  Data size: {full_size:.1f}MB → {min_size:.1f}MB per worker ({reduction:.0f}% reduction)")
+        for chunk_start in range(0, total_remaining, effective_chunk_size):
+            chunk_end = min(chunk_start + effective_chunk_size, total_remaining)
+            chunk_signals = remaining_signals[chunk_start:chunk_end]
 
-        # Use ProcessPoolExecutor for parallel execution
-        # Note: On Linux/macOS with fork, this benefits from copy-on-write
-        completed = 0
-        mp_context = mp.get_context(start_method)
-        with ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_context) as executor:
-            # Submit all tasks
-            future_to_signal = {
-                executor.submit(_process_single_signal, args): args[0]
-                for args in worker_args
-            }
+            if self.verbose:
+                if self.chunk_size:
+                    print(f"\n  Processing chunk {chunk_start // effective_chunk_size + 1} "
+                          f"({len(chunk_signals)} signals)...")
+                else:
+                    print(f"  Processing {len(chunk_signals)} remaining signals in parallel...")
 
-            # Collect results as they complete
-            if self.verbose and TQDM_AVAILABLE:
-                futures_iter = tqdm(
-                    as_completed(future_to_signal),
-                    total=len(remaining_signals),
-                    desc="Parallel processing"
-                )
-            else:
-                futures_iter = as_completed(future_to_signal)
+            # Process this chunk
+            self._process_chunk(
+                chunk_signals, results, n_workers, start_method, processed, total_remaining
+            )
+            processed += len(chunk_signals)
 
-            for future in futures_iter:
-                signal = future_to_signal[future]
-                try:
-                    sig_name, result, elapsed, error = future.result()
-                    if error is None:
-                        results.results[sig_name] = result
-                        results.timings[sig_name] = elapsed
-                    else:
-                        results.errors[sig_name] = error
-                    completed += 1
-
-                    if self.verbose and not TQDM_AVAILABLE:
-                        status = "OK" if error is None else f"ERROR: {error[:30]}"
-                        print(f"  [{completed}/{len(remaining_signals)}] {sig_name}: {status}")
-
-                except Exception as e:
-                    results.errors[signal] = str(e)
-                    completed += 1
+            # Memory cleanup between chunks
+            if self.chunk_size and chunk_end < total_remaining:
+                gc.collect()
 
         return results
+
+    def _process_chunk(self, signals: List[str], results: BatchResults,
+                       n_workers: int, start_method: str,
+                       offset: int, total: int):
+        """Process a chunk of signals in parallel."""
+
+        # Group signals into batches for workers
+        if self.signals_per_worker > 1:
+            # Batch mode: group signals for each worker
+            signal_batches = []
+            for i in range(0, len(signals), self.signals_per_worker):
+                batch = signals[i:i + self.signals_per_worker]
+                signal_batches.append(batch)
+
+            # Prepare worker args with batched data
+            worker_args = []
+            for batch in signal_batches:
+                batch_data = self._get_minimal_data_batch(batch)
+                worker_args.append((
+                    batch, batch_data, self.holding_period, self.num_portfolios,
+                    self.turnover, self.chars, self.rating, self.banding_threshold
+                ))
+
+            if self.verbose and offset == 0:
+                # Show data reduction stats on first chunk
+                full_size = self.data.memory_usage(deep=True).sum() / 1024 / 1024
+                batch_size = worker_args[0][1].memory_usage(deep=True).sum() / 1024 / 1024
+                reduction = (1 - batch_size / full_size) * 100
+                print(f"  Data size: {full_size:.1f}MB → {batch_size:.1f}MB per worker ({reduction:.0f}% reduction)")
+                print(f"  Worker batches: {len(worker_args)} (processing {len(signals)} signals)")
+
+            # Execute batched workers
+            mp_context = mp.get_context(start_method)
+            with ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_context) as executor:
+                future_to_batch = {
+                    executor.submit(_process_signal_batch, args): args[0]
+                    for args in worker_args
+                }
+
+                completed = 0
+                for future in as_completed(future_to_batch):
+                    batch_signals = future_to_batch[future]
+                    try:
+                        batch_results = future.result()
+                        for sig_name, result, elapsed, error in batch_results:
+                            if error is None:
+                                results.results[sig_name] = result
+                                results.timings[sig_name] = elapsed
+                            else:
+                                results.errors[sig_name] = error
+                            completed += 1
+
+                            if self.verbose and not TQDM_AVAILABLE:
+                                status = "OK" if error is None else f"ERROR"
+                                print(f"  [{offset + completed}/{total}] {sig_name}: {status}")
+
+                    except Exception as e:
+                        for sig in batch_signals:
+                            results.errors[sig] = str(e)
+                        completed += len(batch_signals)
+
+        else:
+            # Single signal mode (original behavior)
+            worker_args = []
+            for signal in signals:
+                minimal_data = self._get_minimal_data(signal)
+                worker_args.append((
+                    signal, minimal_data, self.holding_period, self.num_portfolios,
+                    self.turnover, self.chars, self.rating, self.banding_threshold
+                ))
+
+            if self.verbose and offset == 0:
+                full_size = self.data.memory_usage(deep=True).sum() / 1024 / 1024
+                min_size = worker_args[0][1].memory_usage(deep=True).sum() / 1024 / 1024
+                reduction = (1 - min_size / full_size) * 100
+                print(f"  Data size: {full_size:.1f}MB → {min_size:.1f}MB per worker ({reduction:.0f}% reduction)")
+
+            mp_context = mp.get_context(start_method)
+            completed = 0
+            with ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_context) as executor:
+                future_to_signal = {
+                    executor.submit(_process_single_signal, args): args[0]
+                    for args in worker_args
+                }
+
+                if self.verbose and TQDM_AVAILABLE:
+                    futures_iter = tqdm(
+                        as_completed(future_to_signal),
+                        total=len(signals),
+                        desc="Parallel processing"
+                    )
+                else:
+                    futures_iter = as_completed(future_to_signal)
+
+                for future in futures_iter:
+                    signal = future_to_signal[future]
+                    try:
+                        sig_name, result, elapsed, error = future.result()
+                        if error is None:
+                            results.results[sig_name] = result
+                            results.timings[sig_name] = elapsed
+                        else:
+                            results.errors[sig_name] = error
+                        completed += 1
+
+                        if self.verbose and not TQDM_AVAILABLE:
+                            status = "OK" if error is None else f"ERROR: {error[:30]}"
+                            print(f"  [{offset + completed}/{total}] {sig_name}: {status}")
+
+                    except Exception as e:
+                        results.errors[signal] = str(e)
+                        completed += 1
 
     def _print_summary(self, results: BatchResults):
         """Print summary of batch processing."""
