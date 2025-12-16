@@ -12,18 +12,19 @@ Dramatically speed up portfolio formation in PyBondLab using numba/prange, while
 
 | Metric | Before | After | Improvement |
 |--------|--------|-------|-------------|
-| Total test suite time | 38.48s | 28.46s | **1.35x faster** |
+| Total test suite time | 38.48s | 12.93s | **3x faster** |
 | All 12 tests pass | YES | YES | Exact match (<1e-10) |
 
 ### Per-Test Performance (JIT Warmed)
 
 | Test | Before | After | Speedup |
 |------|--------|-------|---------|
-| SingleSort hp=1, no turnover | 0.94s | 0.57s | 1.6x |
-| SingleSort hp=1, turnover | 1.63s | 0.82s | 2.0x |
-| SingleSort hp=3, turnover | 3.24s | 2.01s | 1.6x |
-| DoubleSort hp=1, turnover | 2.41s | 2.20s | 1.1x |
-| DoubleSort hp=3, turnover | 7.25s | 6.19s | 1.2x |
+| SingleSort hp=1, no turnover | 0.94s | 0.74s | 1.3x |
+| SingleSort hp=1, turnover | 1.63s | 0.61s | **2.7x** |
+| SingleSort hp=3, no turnover | 1.19s | 0.79s | 1.5x |
+| SingleSort hp=3, turnover | 3.24s | 1.21s | **2.7x** |
+| DoubleSort hp=1, turnover | 2.41s | 0.69s | **3.5x** |
+| DoubleSort hp=3, turnover | 7.25s | 1.40s | **5.2x** |
 
 ---
 
@@ -36,13 +37,13 @@ Dramatically speed up portfolio formation in PyBondLab using numba/prange, while
 | **Phase 1** | Enable existing numba functions | ✅ Complete | `precompute.py`, `utils_portfolio.py` |
 | **Phase 2a** | Pre-extract data to numpy arrays | ✅ Complete | `PyBondLab.py` |
 | **Phase 2b** | Vectorize return/weight computation | ✅ Complete | `PyBondLab.py`, `numba_core.py` |
+| **Phase 4** | Batch turnover computation | ✅ Complete | `utils_turnover.py`, `numba_core.py` |
 
 ### Pending Phases
 
 | Phase | Description | Status | Notes |
 |-------|-------------|--------|-------|
-| **Phase 3** | Parallelize main loop with prange | ⏳ Pending | Complex due to banding dependencies |
-| **Phase 4** | Batch turnover computation | ⚠️ Infrastructure ready | Disabled - needs debugging for double sorts |
+| **Phase 3** | Parallelize main loop with prange | ⏳ Pending | Complex due to turnover state dependencies |
 
 ---
 
@@ -63,7 +64,7 @@ Dramatically speed up portfolio formation in PyBondLab using numba/prange, while
 | `PyBondLab/PyBondLab.py` | Import numba kernels; replace pandas groupby in `_form_single_period` with numba functions |
 | `PyBondLab/precompute.py` | Import optimized functions from `utils_optimized.py` |
 | `PyBondLab/utils_portfolio.py` | Import optimized functions from `utils_optimized.py` |
-| `PyBondLab/utils_turnover.py` | Add fast turnover path (disabled), import numba kernels |
+| `PyBondLab/utils_turnover.py` | Add fast turnover path (enabled), import numba kernels |
 
 ### Unchanged Files (by design)
 
@@ -109,7 +110,7 @@ compute_all_portfolio_returns_batch(all_ranks, all_returns, all_weights,
     -> (ew_ret_all, vw_ret_all)  # Shape (n_periods, nport)
 ```
 
-### Turnover Functions (infrastructure ready, disabled)
+### Turnover Functions (enabled - 3-5x speedup for turnover computation)
 
 ```python
 # Batch turnover for all portfolios at once
@@ -121,6 +122,7 @@ compute_turnover_all_portfolios(ranks, positions, raw_ew, raw_vw,
     -> (turn_ew, turn_vw, new_seen_ew, new_seen_vw, curr_sum_ew, curr_sum_vw)
 
 # Update previous weights for next period
+# NOTE: Only zeros portfolios present in current data (bug fix)
 update_prev_scaled_weights(scaled_ew, scaled_vw, ranks, positions,
                            prev_scaled_ew, prev_scaled_vw, nport)
 ```
@@ -216,32 +218,18 @@ passed = validate_against_baseline(data, baseline)
 
 ## Known Issues & TODO
 
-### Batch Turnover (Phase 4) - Disabled
-
-The fast turnover path in `utils_turnover.py` is disabled because it produces
-slightly different results (~0.006 difference) for double sorts (unconditional).
-
-**Location:** `utils_turnover.py:372-376`
-```python
-# Fast path disabled - needs debugging for double sorts
-# TODO: Fix numerical differences in compute_turnover_all_portfolios
-# if NUMBA_TURNOVER_AVAILABLE and state.logger is None:
-#     _accumulate_turnover_fast(...)
-```
-
-**To debug:**
-1. The `_accumulate_turnover_fast` function exists and is ready
-2. The numba kernel `compute_turnover_all_portfolios` exists
-3. Issue is likely in how positions/indices map between arrays
-4. Single sorts work fine; issue appears in double sorts (25 portfolios)
-
 ### Parallelization (Phase 3) - Not Started
 
 The main loop in `_form_cohort_portfolios` could be parallelized with `prange`,
 but this is complex because:
+- Turnover state has sequential dependencies (each period depends on previous)
 - Banding creates dependencies between cohorts (lag_rank state)
-- Turnover state needs careful handling across parallel iterations
-- Without banding, parallelization is straightforward
+- Without turnover, parallelization would be more straightforward
+
+**Potential approaches:**
+1. Parallelize only when `turnover=False`
+2. Restructure to batch portfolio formation first, then sequential turnover
+3. Accept current 3x speedup as sufficient
 
 ---
 
@@ -275,7 +263,7 @@ StrategyFormation.fit()
                 → compute_portfolio_returns_single() ← numba (NEW)
                 → compute_scaled_weights_single()    ← numba (NEW)
                 → compute_characteristics_single()   ← numba (NEW)
-                → accumulate_turnover()              ← original (fast path disabled)
+                → accumulate_turnover()              ← numba (fast path enabled)
     → _finalize_results()
 ```
 
@@ -352,8 +340,14 @@ git push -u origin claude/numba-portfolio-optimization-WZSI1
 
 ## Future Optimization Opportunities
 
-1. **Enable batch turnover** - Debug and enable `_accumulate_turnover_fast`
-2. **Parallelize main loop** - Use `prange` when banding is disabled
-3. **Pre-allocate all arrays** - Avoid repeated allocations in the loop
-4. **Vectorize ID intersection** - Currently still uses pandas operations
-5. **Profile with larger data** - Current tests use 500 bonds, 60 dates
+1. **Parallelize main loop** - Use `prange` when turnover is disabled
+2. **Pre-allocate all arrays** - Avoid repeated allocations in the loop
+3. **Vectorize ID intersection** - Currently still uses pandas operations
+4. **Profile with larger data** - Current tests use 500 bonds, 60 dates
+
+## Completed Optimizations Summary
+
+- **Phase 1**: Enabled existing numba functions (1.05x speedup)
+- **Phase 2**: Vectorized portfolio computation with numba kernels (1.35x speedup)
+- **Phase 4**: Batch turnover computation (additional 2.2x speedup)
+- **Total**: ~3x faster than original baseline
