@@ -27,3 +27,6 @@ examples/turnover_tracking_examples
 examples/real_data_examples/fama_french_factors/data/
 
 test/
+
+# Ignore turnover analysis folder
+turnover_analysis/
