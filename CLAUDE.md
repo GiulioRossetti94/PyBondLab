@@ -592,16 +592,24 @@ rank assignments due to floating-point comparison reordering with NaN values.
   - Auto-detects when turnover=False, chars=None, banding=None
   - Processes all dates in parallel using prange
   - Numerically identical to slow path (< 1e-10 tolerance)
-- **Total**: ~3x faster single-signal, ~2.5x parallel speedup for batch
+- **Phase 9**: Ultra-fast path bypassing pandas (5x speedup for large panels)
+  - Bypasses `_precompute_data()` entirely for massive speedup
+  - Vectorized rank computation across all dates using numba
+  - `generate_synthetic_data_fast()` for large panel testing
+- **Total**: ~3x faster single-signal, ~2.5x parallel speedup for batch, **5x for large panels with fast path**
 
 ---
 
-## Fast Returns-Only Path (Phase 8)
+## Fast Returns-Only Path (Phase 8 + 9)
 
 ### Overview
 
 When only portfolio returns are needed (no turnover, characteristics, or banding),
-the code automatically uses an ultra-fast path that processes ALL dates in parallel.
+the code automatically uses an ultra-fast path that:
+1. Bypasses pandas precomputation entirely
+2. Converts DataFrame to numpy arrays once
+3. Computes ranks for ALL dates in parallel using numba
+4. Computes returns for ALL dates in parallel using numba
 
 ### Conditions for Fast Path
 
@@ -615,46 +623,62 @@ The fast path is **automatically used** when ALL of these conditions are met:
 | Strategy | `SingleSort` | Not DoubleSort |
 | Rebalancing | `monthly` | Standard staggered rebalancing |
 
-### Performance
+### Performance (Large Panels)
 
-| Dataset | Fast Path | Slow Path | Speedup |
+| Dataset | Ultra-Fast | Slow Path | Speedup |
 |---------|-----------|-----------|---------|
-| 500 bonds, 60 dates | 0.26s | 0.41s | **1.6x** |
-| Larger datasets | - | - | **Expected 2-3x** |
+| 3M rows (300×10K, balanced) | **1.16s** | 5.70s | **4.9x** |
+| 2.5M rows (unbalanced) | **1.01s** | 5.67s | **5.6x** |
+| 30K rows (60×500, test) | 0.24s | 0.41s | **1.7x** |
 
 ### How It Works
 
 **Standard Path (Slow):**
 ```python
+# 1. Precompute data (4s for 3M rows - pandas groupby per date)
+precomp = self._precompute_data()
+
+# 2. Per-date loops with pandas operations
 for t in range(n_dates):
-    # Process each date sequentially
-    ranks = precompute_ranks(date_t)
-    returns = compute_returns(date_t)
-    # ... per-date overhead
+    ranks = precomp.ranks_map[date_t]
+    returns = precomp.It1[date_t]
+    # ... pandas operations
 ```
 
-**Fast Path:**
+**Ultra-Fast Path:**
 ```python
-# Process ALL dates in parallel using numba prange
-@njit(parallel=True)
-def compute_all_dates_returns_fast(...):
-    for d in prange(n_dates):  # Parallel loop
-        # Each date processed independently
+# 1. Convert DataFrame to numpy arrays ONCE (0.1s)
+date_idx = data['date'].map(date_to_idx).values
+signal = data['signal'].values
+returns = data['ret'].values
+
+# 2. Compute ALL ranks in parallel using numba (0.3s)
+ranks = compute_ranks_all_dates_fast(date_idx, signal, n_dates, nport)
+
+# 3. Compute ALL returns in parallel using numba (0.5s)
+ew_ret, vw_ret = compute_all_returns_ultrafast(...)
 ```
 
 ### Key Functions
 
 ```python
-# In numba_core.py
-compute_all_dates_returns_fast(date_indices, ranks, returns, weights, n_dates, nport)
+# In numba_core.py - Ultra-fast path (Phase 9)
+compute_ranks_all_dates_fast(date_idx, signal, n_dates, nport)
+    -> ranks  # Portfolio rank for each observation
+
+build_vw_lookup_and_dynamic_weights(date_idx, id_idx, vw, n_dates, n_ids)
+    -> dynamic_weights  # VW from previous period for each observation
+
+compute_all_returns_ultrafast(ret_date_idx, ret_id_idx, returns, weights,
+                              form_date_idx, form_id_idx, form_ranks,
+                              n_dates, n_ids, nport)
     -> (ew_returns, vw_returns)  # Shape (n_dates, nport)
 
-compute_staggered_returns_fast(date_indices, formation_ranks, returns, weights, n_dates, nport, hor)
-    -> (ew_returns, vw_returns)  # For h>1 with cohort averaging
+compute_staggered_returns_ultrafast(...)  # For h>1 with cohort averaging
 
 # In PyBondLab.py
 _can_use_fast_path()  # Auto-detect if fast path is possible
-_fit_fast_returns_only()  # Main fast path implementation
+_fit_fast_returns_only()  # Main ultra-fast path implementation
 ```
 
 ### Usage Example
@@ -670,13 +694,41 @@ sf = StrategyFormation(
     turnover=False,           # Required for fast path
     chars=None,               # Required for fast path
     banding_threshold=None,   # Required for fast path
-    verbose=True              # Will print "Using FAST returns-only path..."
+    verbose=True              # Will print "Using ULTRA-FAST returns-only path..."
 )
 result = sf.fit()
 
 # Results are identical to slow path
 print(result.ea.returns.ewls_df.mean())
 ```
+
+### Integration with BatchStrategyFormation
+
+The ultra-fast path **automatically works** with `BatchStrategyFormation` when conditions are met:
+
+```python
+from PyBondLab import BatchStrategyFormation
+
+# Each worker uses ultra-fast path automatically!
+batch = BatchStrategyFormation(
+    data=data,
+    signals=['signal1', 'signal2', 'signal3', ...],
+    holding_period=1,
+    num_portfolios=5,
+    turnover=False,    # <-- Enables fast path
+    chars=None,        # <-- Enables fast path
+    banding=None,      # <-- Enables fast path
+    n_jobs=4,
+)
+results = batch.fit()
+```
+
+**Performance with BatchStrategyFormation (3M rows, 10 signals):**
+| Configuration | Time | Notes |
+|---------------|------|-------|
+| turnover=True (slow) | ~57s | Each worker uses slow path |
+| turnover=False (fast) | ~12s | Each worker uses ultra-fast path |
+| **Speedup** | **~5x** | Plus parallel speedup from n_jobs |
 
 ### Example Script
 
@@ -698,7 +750,53 @@ strategy = DoubleSort(...)                             # Not SingleSort
 
 The fast path produces **numerically identical** results to the slow path:
 - All values match within `TOLERANCE = 1e-10`
-- Dynamic weights from `vw_map_t1m` are correctly applied
+- Dynamic weights from previous period are correctly applied
 - Verified against baseline test suite (12/12 tests pass)
+
+---
+
+## Large Panel Data Generation
+
+For testing with large panels, use `generate_synthetic_data_fast`:
+
+```python
+from PyBondLab.pbl_test import generate_synthetic_data_fast
+
+# Balanced panel (full date × bond matrix)
+data = generate_synthetic_data_fast(
+    n_dates=300,
+    n_bonds=10000,
+    seed=42,
+    n_chars=3,
+    balanced_panel=True,   # Full panel, no missing observations
+)
+# Shape: (3000000, 11)
+
+# Unbalanced panel (realistic missing data)
+data = generate_synthetic_data_fast(
+    n_dates=300,
+    n_bonds=10000,
+    seed=42,
+    balanced_panel=False,
+    pct_active_low=0.70,   # 70-95% of bonds active per date
+    pct_active_high=0.95,
+)
+# Shape: ~(2500000, 11)
+```
+
+### Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `n_dates` | required | Number of monthly periods |
+| `n_bonds` | required | Total number of unique bonds |
+| `seed` | 0 | Random seed for reproducibility |
+| `n_chars` | 3 | Number of characteristic columns (char1, char2, ...) |
+| `balanced_panel` | False | If True, full date × bond panel |
+| `allow_nans` | True | Inject ~1-2% NaN values (realistic) |
+| `pct_active_low` | 0.70 | Min % of bonds active per date (unbalanced only) |
+| `pct_active_high` | 0.95 | Max % of bonds active per date (unbalanced only) |
+| `id_as_category` | True | Convert ID to category dtype (saves memory) |
+| `float_dtype` | np.float32 | Use float32 for smaller memory footprint |
 
 ---
