@@ -1193,10 +1193,16 @@ class StrategyFormation:
         )
 
         # Option 6: Store shareable parts for caching by AssayAnomalyRunner
-        # Only It0 and vw_map_t0 are independent of hp/nport
+        # It0 and vw_map_t0 are independent of hp/nport
+        # It1, It2, It1m, vw_map_t1m are independent of signal (for batch processing)
         self._shareable_precomp = {
             'It0': precomp.It0,
-            'vw_map_t0': precomp.vw_map_t0
+            'vw_map_t0': precomp.vw_map_t0,
+            # Batch processing: return data is same for all signals
+            'It1': precomp.It1,
+            'It2': precomp.It2,
+            'It1m': precomp.It1m,
+            'vw_map_t1m': precomp.vw_map_t1m,
         }
 
         return precomp
