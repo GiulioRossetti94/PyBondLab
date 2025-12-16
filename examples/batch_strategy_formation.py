@@ -135,19 +135,24 @@ def main():
     print("-" * 50)
 
     # -------------------------------------------------------------------------
-    # Step 5: Access results
+    # Step 5: Using chars and banding options
     # -------------------------------------------------------------------------
-    print("\n5. Accessing batch results...")
+    print("\n5. Using chars and banding options...")
 
-    # Run batch again with verbose=True to show progress
+    # BatchStrategyFormation supports additional parameters:
+    # - chars: List of characteristics to aggregate at portfolio level
+    # - banding: Integer threshold (1 or 2) for portfolio reassignment
+
     batch = BatchStrategyFormation(
         data=data,
         signals=signals[:3],  # Just first 3 for demo
         holding_period=1,
         num_portfolios=5,
         turnover=True,
+        chars=['char_0', 'char_1'],  # Aggregate these characteristics
+        banding=1,                    # Banding threshold
         n_jobs=2,
-        verbose=True,  # Show progress
+        verbose=True,
     )
     results = batch.fit()
 
@@ -169,15 +174,21 @@ def main():
     ew_returns = signal_result.get_returns(weight_type='ew')
     print(f"      Portfolio return shape: {ew_returns.shape}")
 
+    # Get characteristics (when chars parameter was specified)
+    ew_chars, vw_chars = signal_result.get_characteristics()
+    print(f"      EW characteristics shape: {ew_chars.shape}")
+    print(f"      VW characteristics shape: {vw_chars.shape}")
+
     # -------------------------------------------------------------------------
     # Step 6: Show available result attributes
     # -------------------------------------------------------------------------
     print("\n6. Available result methods:")
-    print("   - results['signal_name'].get_long_short()   # EW and VW L-S returns")
-    print("   - results['signal_name'].get_turnover()     # EW and VW turnover")
-    print("   - results['signal_name'].get_returns()      # Portfolio returns")
-    print("   - results['signal_name'].get_ptf()          # Portfolio assignments")
-    print("   - results['signal_name'].summary()          # Summary statistics")
+    print("   - results['signal_name'].get_long_short()       # EW and VW L-S returns")
+    print("   - results['signal_name'].get_turnover()         # EW and VW turnover")
+    print("   - results['signal_name'].get_returns()          # Portfolio returns")
+    print("   - results['signal_name'].get_ptf()              # Portfolio assignments")
+    print("   - results['signal_name'].get_characteristics()  # EW and VW chars (if specified)")
+    print("   - results['signal_name'].summary()              # Summary statistics")
 
     # List all signals
     print(f"\n   Processed signals: {list(results.signals)}")
