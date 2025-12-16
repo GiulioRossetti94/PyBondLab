@@ -10,6 +10,11 @@ sequential processing.
 Usage:
     python examples/batch_strategy_formation.py
 
+Memory Optimizations:
+    - Only required columns are sent to workers (50-80% reduction)
+    - On Linux/macOS, uses 'fork' for copy-on-write memory sharing
+    - On Windows, uses 'spawn' (standard pickle-based approach)
+
 Performance:
     With 4 workers, expect ~2x speedup over sequential processing.
 """
@@ -41,8 +46,12 @@ def main():
     # Generate base data with required columns
     data = generate_synthetic_data(n_dates=60, n_bonds=500, seed=42)
 
-    # Add multiple signal columns for testing
+    # Add extra columns to simulate real data with many columns
     np.random.seed(42)
+    for i in range(30):  # 30 extra characteristic columns
+        data[f'char_{i}'] = np.random.randn(len(data))
+
+    # Add multiple signal columns for testing
     n_signals = 10
     for i in range(n_signals):
         data[f'signal_{i}'] = np.random.randn(len(data))
@@ -50,6 +59,7 @@ def main():
     signals = [f'signal_{i}' for i in range(n_signals)]
 
     print(f"   Data shape: {data.shape}")
+    print(f"   Data memory: {data.memory_usage(deep=True).sum() / 1024 / 1024:.1f} MB")
     print(f"   Unique bonds: {data['ID'].nunique()}")
     print(f"   Date range: {data['date'].min()} to {data['date'].max()}")
     print(f"   Signals to process: {len(signals)}")
