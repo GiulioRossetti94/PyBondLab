@@ -1175,10 +1175,8 @@ class StrategyFormation:
         # Only monthly (staggered) rebalancing for now
         if self.rebalance_frequency != 'monthly':
             return False
-        # Disable fast path when filters are present (EA vs EP requires different return columns)
-        # TODO: Extend fast path to handle filters properly
-        if self.config.has_filters:
-            return False
+        # Fast path now supports filters - EA uses ret, EP uses ret_{adj}
+        # Both use the same ranking (from filtered signal)
         return True
 
     def _fit_fast_returns_only(self):
@@ -1198,9 +1196,15 @@ class StrategyFormation:
         - banding=None
         - SingleSort only
         - Monthly rebalancing
+
+        Supports filters:
+        - EA (Ex-Ante): Uses original returns ('ret')
+        - EP (Ex-Post): Uses filtered returns ('ret_{adj}')
+        - Both use the same ranking (from filtered signal)
         """
+        path_type = "EP" if self._computing_ep else "EA"
         if self.verbose:
-            print("Using ULTRA-FAST returns-only path (bypassing pandas)...")
+            print(f"Using ULTRA-FAST returns-only path ({path_type})...")
 
         TM = len(self.datelist)
         tot_nport = self._get_total_portfolios()
@@ -1220,17 +1224,32 @@ class StrategyFormation:
         if data.empty:
             return self._create_empty_results()
 
-        # Create ID mapping
+        # Determine which return column to use
+        # EA: Use original returns (ColumnNames.RETURN = 'ret')
+        # EP: Use filtered returns ('ret_{adj}') when filters are applied
+        if self._computing_ep and self.adj:
+            ret_col = f'ret_{self.adj}'
+        else:
+            ret_col = ColumnNames.RETURN
+
+        if data.empty:
+            return self._create_empty_results()
+
+        # Create ID mapping (from ALL data - needed for rank lookup)
         all_ids = data[ColumnNames.ID].unique()
         id_to_idx = {id_val: idx for idx, id_val in enumerate(all_ids)}
         n_ids = len(all_ids)
 
         # Convert to numpy arrays
+        # Formation data: use all rows with valid signal (NaN signals excluded by rank computation)
         date_idx = data[ColumnNames.DATE].map(date_to_idx).values.astype(np.int64)
         id_idx = data[ColumnNames.ID].map(id_to_idx).values.astype(np.int64)
         signal = data[sort_var_main].values.astype(np.float64)
-        returns = data[ColumnNames.RETURN].values.astype(np.float64)
         vw = data[ColumnNames.VALUE_WEIGHT].values.astype(np.float64)
+
+        # Return data: need to handle NaN in ret_col properly
+        # For EP, set NaN returns so they're excluded from return calculation
+        returns = data[ret_col].values.astype(np.float64)
 
         # Step 2: Compute ranks for ALL dates in parallel using numba
         # This replaces the slow per-date pandas groupby/rank operations
