@@ -816,6 +816,9 @@ def update_prev_scaled_weights(
     """
     Update previous scaled weights arrays for next period.
 
+    Only updates portfolios that appear in the current scaled weights.
+    Portfolios not present in current data keep their previous values.
+
     Parameters
     ----------
     scaled_ew : np.ndarray
@@ -834,12 +837,24 @@ def update_prev_scaled_weights(
         Number of portfolios
     """
     n = len(ranks)
+    n_assets = prev_scaled_ew.shape[1]
 
-    # Zero out arrays first
+    # First, find which portfolios appear in current data
+    portfolio_present = np.zeros(nport, dtype=np.bool_)
+    for i in range(n):
+        r = ranks[i]
+        if np.isnan(r):
+            continue
+        p = int(r) - 1
+        if p >= 0 and p < nport:
+            portfolio_present[p] = True
+
+    # Only zero out portfolios that are present in current data
     for p in range(nport):
-        for j in range(prev_scaled_ew.shape[1]):
-            prev_scaled_ew[p, j] = 0.0
-            prev_scaled_vw[p, j] = 0.0
+        if portfolio_present[p]:
+            for j in range(n_assets):
+                prev_scaled_ew[p, j] = 0.0
+                prev_scaled_vw[p, j] = 0.0
 
     # Fill with current scaled weights
     for i in range(n):

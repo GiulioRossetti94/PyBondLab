@@ -376,11 +376,10 @@ def accumulate_turnover(state: TurnoverState,
     weights_scaled_df : pd.DataFrame
         Scaled weights accounting for returns since formation
     """
-    # Fast path disabled - needs debugging for double sorts
-    # TODO: Fix numerical differences in compute_turnover_all_portfolios
-    # if NUMBA_TURNOVER_AVAILABLE and state.logger is None:
-    #     _accumulate_turnover_fast(state, cohort, tot_nport, tau, weights_df, weights_scaled_df)
-    #     return
+    # Fast path using numba-optimized batch computation
+    if NUMBA_TURNOVER_AVAILABLE and state.logger is None:
+        _accumulate_turnover_fast(state, cohort, tot_nport, tau, weights_df, weights_scaled_df)
+        return
 
     # Get ID positions for fast lookup
     id_to_pos = state.id_to_pos
