@@ -338,16 +338,184 @@ git push -u origin claude/numba-portfolio-optimization-WZSI1
 
 ---
 
+---
+
+## BatchStrategyFormation (Multi-Signal Processing)
+
+### Overview
+
+`BatchStrategyFormation` processes multiple signals in parallel using Python's `multiprocessing`.
+
+```python
+from PyBondLab import BatchStrategyFormation
+
+batch = BatchStrategyFormation(
+    data=data,
+    signals=['momentum', 'value', 'size', 'reversal'],
+    holding_period=1,
+    num_portfolios=5,
+    turnover=True,
+    n_jobs=4,  # Number of parallel workers
+)
+results = batch.fit()
+
+# Access results (same API as StrategyFormation)
+results['momentum'].get_long_short()
+results['momentum'].get_turnover()
+```
+
+### Example Script
+
+```bash
+python examples/batch_strategy_formation.py
+```
+
+### What Gets Parallelized
+
+**Current implementation** (`batch.py`):
+- Uses `ProcessPoolExecutor` with `n_jobs` workers
+- Each worker runs a complete `StrategyFormation.fit()` for one signal
+- First signal runs sequentially to extract "shared" precompute data
+
+**What runs in parallel:**
+```
+Worker 1: signal_1 → StrategyFormation.fit() → result_1
+Worker 2: signal_2 → StrategyFormation.fit() → result_2
+Worker 3: signal_3 → StrategyFormation.fit() → result_3
+Worker 4: signal_4 → StrategyFormation.fit() → result_4
+```
+
+### Current Performance
+
+| Data Size | Signals | n_jobs=1 | n_jobs=4 | Speedup |
+|-----------|---------|----------|----------|---------|
+| 25K rows (test) | 10 | 7.4s | 2.9s | **2.5x** |
+| 25K rows (test) | 20 | 13.0s | 4.8s | **2.7x** |
+| 2M rows (real) | 10 | ~34s | ~17s | **~2x** |
+| 2M rows (real) | 20 | ~81s | ~40s | **~2x** |
+
+### Scaling Limitations & Memory Issues
+
+**The Core Problem:**
+```python
+# In batch.py line 482-486:
+worker_args = [
+    (signal, self.data, ...)  # ENTIRE DataFrame copied to each worker!
+    for signal in remaining_signals
+]
+```
+
+**Memory impact with 2M row dataset:**
+| Component | Size (est.) | With 4 workers |
+|-----------|-------------|----------------|
+| Data DataFrame | 500 MB | 2 GB (4 copies) |
+| shared_precomp | 200 MB | 800 MB (4 copies) |
+| Worker overhead | 50 MB | 200 MB |
+| **Total** | **750 MB** | **3 GB** |
+
+**Why it doesn't scale linearly:**
+1. **Pickle serialization**: Each worker receives data via pickle (slow for large DataFrames)
+2. **Memory pressure**: 4 copies of data = 4x RAM usage
+3. **GIL not released**: Python code holds GIL; only numba kernels run truly parallel
+4. **Startup overhead**: Each `ProcessPoolExecutor` task has fixed overhead
+
+---
+
+## Batch Optimization Opportunities (TODO)
+
+### Option 1: Use Fork Instead of Spawn (Linux Only)
+```python
+import multiprocessing as mp
+mp.set_start_method('fork')  # Copy-on-write, no pickle
+```
+- **Pros**: Zero-copy data sharing on Linux
+- **Cons**: Not portable (Windows uses spawn), can cause issues with some libraries
+
+### Option 2: Minimize Data Sent to Workers
+```python
+# Only send required columns + the signal column
+required_cols = ['date', 'ID', 'ret', 'VW', 'RATING_NUM', signal]
+minimal_data = data[required_cols].copy()
+```
+- **Pros**: Reduces pickle size by 50-80%
+- **Cons**: Still copies data
+
+### Option 3: Shared Memory Arrays (Best for Large Data)
+```python
+import multiprocessing.shared_memory as shm
+
+# Convert DataFrame to numpy arrays in shared memory
+# Workers read directly without copying
+```
+- **Pros**: True zero-copy, works on all platforms
+- **Cons**: Requires significant refactoring, only works with numpy arrays
+
+### Option 4: Memory-Mapped Files
+```python
+# Write data to temp file, workers mmap it
+data.to_parquet('/tmp/data.parquet')
+# Workers: pd.read_parquet('/tmp/data.parquet', memory_map=True)
+```
+- **Pros**: OS handles caching efficiently
+- **Cons**: Disk I/O overhead, cleanup needed
+
+### Option 5: Don't Pass shared_precomp
+```python
+# Let each worker compute its own precompute (small overhead)
+# Avoids pickling large dict-of-DataFrames
+shared_precomp = None  # Don't pass
+```
+- **Pros**: Simple change, reduces memory significantly
+- **Cons**: Each worker recomputes precompute (~5% overhead)
+
+### Recommended Approach
+
+**Short-term (easy wins):**
+1. Don't pass `shared_precomp` to workers (let each recompute)
+2. Only pass required columns to workers
+3. Use `fork` on Linux systems
+
+**Long-term (for datasets > 1M rows):**
+1. Implement shared memory for numpy arrays
+2. Keep DataFrame on disk, workers mmap as needed
+3. Consider dask or ray for distributed processing
+
+---
+
+## Multi-Signal Vectorized Functions (Experimental)
+
+Located in `numba_core.py`, these attempt to process all signals at once:
+
+```python
+# Compute ranks for all signals in parallel
+compute_ranks_multi_signal(signal_matrix, nport)  # shape: (n_bonds, n_signals)
+
+# Compute returns for all signals
+compute_portfolio_returns_multi_signal(ranks_matrix, returns, weights, nport)
+```
+
+**Important:** Do NOT use `fastmath=True` with these functions - it causes incorrect
+rank assignments due to floating-point comparison reordering with NaN values.
+
+**Status:** These don't provide speedup over sequential processing because:
+- Sorting inside prange loops has overhead
+- Memory allocation inside loops is expensive
+- The real bottleneck is the full StrategyFormation pipeline, not just rank computation
+
+---
+
 ## Future Optimization Opportunities
 
 1. **Parallelize main loop** - Use `prange` when turnover is disabled
 2. **Pre-allocate all arrays** - Avoid repeated allocations in the loop
 3. **Vectorize ID intersection** - Currently still uses pandas operations
 4. **Profile with larger data** - Current tests use 500 bonds, 60 dates
+5. **Optimize BatchStrategyFormation memory** - See options above
 
 ## Completed Optimizations Summary
 
 - **Phase 1**: Enabled existing numba functions (1.05x speedup)
 - **Phase 2**: Vectorized portfolio computation with numba kernels (1.35x speedup)
 - **Phase 4**: Batch turnover computation (additional 2.2x speedup)
-- **Total**: ~3x faster than original baseline
+- **Phase 5**: BatchStrategyFormation for multi-signal processing (2-2.5x speedup with 4 workers)
+- **Total**: ~3x faster single-signal, ~2x parallel speedup for batch
