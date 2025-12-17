@@ -73,7 +73,9 @@ def run_signal_analysis(n_jobs: int = 1, quick: bool = False):
     else:
         filters = {
             'trim': [0.2, 0.5, -0.3, [-0.3, 0.3]],
-            'price': [50, 200, 500],
+            # Price: nested format [[left_levels], [right_levels]]
+            # Left: exclude price < threshold, Right: exclude price > threshold
+            'price': [[1, 5], [150, 200]],  # 2 left + 2 right + 4 both = 8 configs
             'bounce': [0.05, -0.05],
             'wins': [(99, 'both'), (99, 'right'), (95, 'both')],
         }

@@ -768,12 +768,13 @@ rank assignments due to floating-point comparison reordering with NaN values.
   - Fast path now supports trim, price, bounce filters
   - EA uses original returns, EP uses filtered returns
   - Same ranking for both, only return column differs
-- **Phase 11**: DataUncertaintyAnalysis fast path (8.3x speedup)
-  - Bypasses StrategyFormation for pre-computed signals
-  - Correct filter exclusion (trim/price/bounce exclude NaN observations)
-  - Full ID intersection (formation, return, VW dates)
-  - Wins EP returns NaN (matches slow path behavior)
-- **Total**: ~3x faster single-signal, ~2.5x parallel speedup for batch, **5x for large panels, 8x for DataUncertaintyAnalysis**
+- **Phase 11**: DataUncertaintyAnalysis blazing fast path (**75x speedup**)
+  - Parallel numba kernels process ALL (date × filter) combinations via prange
+  - `compute_ranks_all_filters`: Ranks for all filters at once
+  - `compute_ls_returns_all_filters_hp1/staggered`: Returns for all filters in parallel
+  - Filter-specific ranking with correct exclusion behavior
+  - New price filter format: `[[left_levels], [right_levels]]`
+- **Total**: ~3x faster single-signal, ~2.5x parallel speedup for batch, **5x for large panels, 75x for DataUncertaintyAnalysis**
 
 ---
 
@@ -1085,8 +1086,10 @@ filters = {
     'trim': [0.2, 0.5, -0.3, [-0.3, 0.3]],
 
     # Price: exclude bonds with extreme prices
-    # Single value or [low, high] range
-    'price': [50, 200, 500, [20, 500]],
+    # REQUIRES nested format: [[left_levels], [right_levels]]
+    # Left: exclude price < threshold, Right: exclude price > threshold
+    # Generates: left configs, right configs, and all left×right "both" combinations
+    'price': [[1, 2, 5], [125, 150, 200]],  # 3 left + 3 right + 9 both = 15 configs
 
     # Bounce: exclude reversal returns
     # Positive = right tail, Negative = left tail, List = both tails
@@ -1100,7 +1103,7 @@ filters = {
 
 ### Location Inference
 
-For trim, bounce, and price filters, the tail location is inferred from the level:
+For **trim** and **bounce** filters, the tail location is inferred from the level:
 
 | Level Type | Location | Example |
 |------------|----------|---------|
@@ -1108,7 +1111,14 @@ For trim, bounce, and price filters, the tail location is inferred from the leve
 | Negative value | `left` | `-0.3` → left tail |
 | List `[low, high]` | `both` | `[-0.3, 0.3]` → both tails |
 
-For wins filters, location is explicitly specified: `(99, 'both')`.
+For **wins** filters, location is explicitly specified: `(99, 'both')`.
+
+For **price** filters, location is determined by the nested format:
+- `[[left], [right]]` where left levels exclude `price < threshold`, right levels exclude `price > threshold`
+- Example: `[[1, 5], [150, 200]]` generates:
+  - 2 left configs: `price_1_left`, `price_5_left`
+  - 2 right configs: `price_150_right`, `price_200_right`
+  - 4 both configs: `price_1_150_both`, `price_1_200_both`, `price_5_150_both`, `price_5_200_both`
 
 ### Results Object
 
@@ -1314,19 +1324,43 @@ python examples/data_uncertainty_analysis.py
 When running DataUncertaintyAnalysis with pre-computed signals (not strategy objects),
 an optimized fast path is automatically used that provides significant speedup.
 
-**Performance:**
+**Performance (Blazing Fast - Parallel Numba):**
 | Dataset | Fast Path | Slow Path | Speedup |
 |---------|-----------|-----------|---------|
-| 60 dates × 500 bonds, 20 configs | **2.8s** | 23.6s | **8.3x** |
+| 60 dates × 500 bonds, 20 configs | **0.43s** | 31.9s | **75x** |
+| 120 dates × 1000 bonds, 50 configs | **1.2s** | ~80s | **~65x** |
 
 **How It Works:**
 
-The fast path bypasses the full `StrategyFormation` pipeline by:
+The blazing fast path uses parallel numba kernels to process ALL (date × filter) combinations
+simultaneously:
+
 1. Converting DataFrame to numpy arrays once
-2. Applying filters and building filtered return arrays for all filter types
-3. Computing ranks for all dates in parallel using numba (per-filter ranking)
-4. Computing portfolio returns for all dates in parallel using numba
-5. Handling ID intersection correctly (bonds must exist at formation, return, AND VW dates)
+2. Building filter masks for ALL filter configurations at once
+3. Computing ranks for ALL (date × filter) combinations in parallel using `prange`
+4. Building rank lookup tables for ALL filters in parallel
+5. Computing portfolio returns for ALL (date × filter × hp) combinations in parallel
+6. Handling ID intersection correctly (bonds must exist at formation, return, AND VW dates)
+
+**Key Numba Kernels (in `numba_core.py`):**
+
+```python
+# Compute ranks for ALL filters at once (parallel over date × filter)
+compute_ranks_all_filters(date_idx, signal, filter_masks, n_dates, nport, n_filters)
+    -> ranks_all  # Shape: (n_obs, n_filters)
+
+# Build rank lookup tables for ALL filters
+build_rank_lookups_all_filters(date_idx, id_idx, ranks_all, n_dates, n_ids, n_filters)
+    -> rank_lookups  # Shape: (n_dates, n_ids, n_filters)
+
+# HP=1: Compute returns for ALL filters in parallel
+compute_ls_returns_all_filters_hp1(form_date_idx, form_id_idx, ...)
+    -> (ew_ea_ls, vw_ea_ls, ew_ep_ls, vw_ep_ls)  # Shape: (n_dates, n_filters)
+
+# HP>1: Staggered rebalancing for ALL filters in parallel
+compute_ls_returns_all_filters_staggered(...)
+    -> (ew_ea_ls, vw_ea_ls, ew_ep_ls, vw_ep_ls)  # Shape: (n_dates, n_filters)
+```
 
 **Filter Handling:**
 
@@ -1340,29 +1374,39 @@ The fast path bypasses the full `StrategyFormation` pipeline by:
 
 **Key Implementation Details:**
 
-1. **Filter exclusion**: For trim/price/bounce filters, observations with NaN filtered returns
+1. **Parallel (date × filter) processing**: Each (date, filter) combination is processed
+   independently using `prange`, enabling massive parallelization.
+
+2. **Filter exclusion**: For trim/price/bounce filters, observations with NaN filtered returns
    are completely excluded from portfolio formation (not ranked, not included in returns).
 
-2. **ID intersection**: Fast path replicates the slow path's `intersect_id` behavior:
+3. **ID intersection**: Fast path replicates the slow path's `intersect_id` behavior:
    - Bonds must have valid signal at formation date (for ranking)
    - Bonds must have valid VW at d-1 (for weighting)
    - Bonds must have valid return at return date
 
-3. **Wins filter EP**: The slow path returns NaN for wins EP because winsorization clips
+4. **Wins filter EP**: The slow path returns NaN for wins EP because winsorization clips
    extreme values rather than creating a separate `ret_wins` column. Fast path matches this.
 
-4. **`fastmath=True` disabled**: The numba kernel `compute_portfolio_returns_single` cannot
+5. **`fastmath=True` disabled**: The numba kernel `compute_portfolio_returns_single` cannot
    use `fastmath=True` because it causes incorrect NaN comparisons, leading to NaN results.
 
 **Code Location:**
-- Fast path implementation: `PyBondLab/data_uncertainty.py` (`_run_fast_path()`)
-- Rank computation with filter mask: `PyBondLab/numba_core.py` (`compute_ranks_with_filter_mask`)
+- Fast path implementation: `PyBondLab/data_uncertainty.py` (`_fit_fast()`)
+- Blazing fast kernels: `PyBondLab/numba_core.py`:
+  - `compute_ranks_all_filters()` - Parallel rank computation
+  - `build_rank_lookups_all_filters()` - Parallel lookup table building
+  - `compute_ls_returns_all_filters_hp1()` - HP=1 parallel returns
+  - `compute_ls_returns_all_filters_staggered()` - HP>1 parallel returns
 
 **When Fast Path is Used:**
 
 Fast path is automatically used when:
 - `signals` parameter is provided (pre-computed signals)
 - `strategy` parameter is NOT provided
+- `use_fast_path=True` (default)
+
+To force slow path for validation: `DataUncertaintyAnalysis(..., use_fast_path=False)`
 
 When a `strategy` object is provided (Momentum, LTreversal), the slow path is used because
 the strategy must recompute signals using filtered returns.
