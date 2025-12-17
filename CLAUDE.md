@@ -1031,8 +1031,11 @@ DataUncertaintyAnalysis(
     filters: Dict[str, List] = None,
     include_baseline: bool = True,
 
+    # Rating configuration
+    rating: str = None,              # Single rating: 'IG', 'NIG', or None
+    ratings: List[str] = None,       # Multiple ratings: ['IG', 'NIG', None] for dimension
+
     # Optional
-    rating: str = None,              # 'IG', 'NIG', or None (all)
     n_jobs: int = 1,                 # Parallel workers
     verbose: bool = True,
 )
@@ -1043,16 +1046,17 @@ DataUncertaintyAnalysis(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `data` | DataFrame | required | Bond panel data |
-| `signals` | List[str] | None | Column name(s) for pre-computed signals |
-| `strategy` | Strategy | None | Strategy object (Momentum, LTreversal) |
+| `signals` | List[str] | None | Column name(s) for pre-computed signals (uses fast path) |
+| `strategy` | Strategy | None | Strategy object (Momentum, LTreversal) - uses slow path |
 | `holding_periods` | List[int] | [1, 3, 6] | Holding periods to test |
 | `num_portfolios` | int | 5 | Number of quantile buckets |
 | `dynamic_weights` | bool | True | VW from d-1 (True) or formation date (False) |
 | `filters` | Dict | None | Filter configurations (see below) |
 | `include_baseline` | bool | True | Always include no-filter baseline |
-| `rating` | str | None | Rating filter: 'IG', 'NIG', or None |
+| `rating` | str | None | Single rating filter: 'IG', 'NIG', or None |
+| `ratings` | List | None | **NEW**: Rating as dimension: `['IG', 'NIG', None]` |
 | `columns` | Dict | None | Column name mapping (see below) |
-| `n_jobs` | int | 1 | Parallel workers for (hp × filter) configs |
+| `n_jobs` | int | 1 | Parallel workers (only used by slow path) |
 | `verbose` | bool | True | Show progress output |
 
 ### Column Name Mapping
@@ -1120,6 +1124,40 @@ For **price** filters, location is determined by the nested format:
   - 2 right configs: `price_150_right`, `price_200_right`
   - 4 both configs: `price_1_150_both`, `price_1_200_both`, `price_5_150_both`, `price_5_200_both`
 
+### Rating as a Dimension
+
+Use the `ratings` parameter to run analysis across multiple rating categories in parallel:
+
+```python
+results = DataUncertaintyAnalysis(
+    data=data,
+    signals=['mom3_1', 'mom6_1'],  # Multiple signals supported!
+    holding_periods=[1, 3],
+    filters={'trim': [0.2]},
+    ratings=['IG', 'NIG', None],   # Run for all rating categories
+).fit()
+
+# Results: 2 signals × 3 ratings × 2 filters × 2 HPs = 24 configs
+# Column names: mom3_1_hp1_baseline_IG, mom3_1_hp1_baseline_NIG, mom3_1_hp1_baseline
+```
+
+**Rating filtering behavior:**
+- Rating is applied at **formation date** only (not a pre-filter)
+- Bonds are ranked based on their rating at formation
+- Returns are included regardless of rating changes during holding period
+- IG: RATING_NUM 1-10, NIG: RATING_NUM 11-22
+
+**Filter by rating in results:**
+```python
+# Filter for specific rating categories
+ig_results = results.filter(rating='IG')
+nig_results = results.filter(rating='NIG')
+all_bonds = results.filter(rating=None)  # No rating restriction
+
+# Summary includes rating column
+print(results.summary()[['signal', 'hp', 'rating', 'filter_type', 'ew_ea_mean']])
+```
+
 ### Results Object
 
 ```python
@@ -1154,7 +1192,7 @@ class DataUncertaintyResults:
         """Summary statistics for all configurations.
 
         Returns DataFrame with:
-        - signal, hp, filter_type, level, location
+        - signal, hp, rating, filter_type, level, location
         - ew_ea_mean, ew_ea_tstat (Newey-West)
         - vw_ea_mean, vw_ea_tstat
         - ew_ep_mean, ew_ep_tstat
@@ -1166,9 +1204,11 @@ class DataUncertaintyResults:
         """
 
     def filter(self, signal=None, hp=None, filter_type=None,
-               location=None) -> 'DataUncertaintyResults':
+               location=None, rating=None) -> 'DataUncertaintyResults':
         """Filter to subset of configurations.
 
+        Parameters: signal, hp, filter_type, location, rating
+        Use rating=None to filter for configs with no rating restriction.
         Returns new DataUncertaintyResults with filtered configs.
         """
 
@@ -1308,9 +1348,23 @@ vw_ep_factors = results.vw_ep
 hp1_results = results.filter(hp=1)
 trim_results = results.filter(filter_type='trim')
 right_tail = results.filter(location='right')
+ig_results = results.filter(rating='IG')
+all_bonds = results.filter(rating=None)  # No rating restriction
 
 # Export to Excel
 results.to_excel('data_uncertainty_results.xlsx')
+
+# Example with ratings as a dimension
+results_ratings = DataUncertaintyAnalysis(
+    data=data,
+    signals=['signal1', 'signal2'],    # Multiple signals - uses fast path
+    holding_periods=[1, 3],
+    filters={'trim': [0.2]},
+    ratings=['IG', 'NIG', None],       # Run for all rating categories
+    verbose=True,
+).fit()
+
+# This produces: 2 signals × 3 ratings × 2 filters × 2 HPs = 24 configs
 ```
 
 ### Example Script

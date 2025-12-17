@@ -272,6 +272,92 @@ def run_multi_signal_analysis(n_jobs: int = 1):
     return results
 
 
+def run_rating_analysis(n_jobs: int = 1):
+    """
+    Run data uncertainty analysis with ratings as a dimension.
+
+    This demonstrates using the `ratings` parameter to run analysis
+    across multiple rating categories (IG, NIG, All) in parallel.
+
+    Parameters
+    ----------
+    n_jobs : int
+        Number of parallel workers
+    """
+    print("\n" + "=" * 70)
+    print("DATA UNCERTAINTY ANALYSIS - Ratings as Dimension")
+    print("=" * 70)
+
+    # Generate synthetic data
+    print("\n1. Generating synthetic data...")
+    t0 = time.time()
+    data = generate_synthetic_data_fast(
+        n_dates=60,
+        n_bonds=500,
+        seed=42,
+        n_chars=3,
+        balanced_panel=False,
+        allow_nans=True,
+    )
+    print(f"   Shape: {data.shape}")
+    print(f"   IG observations: {(data['RATING_NUM'] <= 10).sum()}")
+    print(f"   NIG observations: {(data['RATING_NUM'] > 10).sum()}")
+    print(f"   Time: {time.time()-t0:.2f}s")
+
+    # Define filters
+    filters = {
+        'trim': [0.2, -0.3],
+    }
+
+    # Run analysis with ratings as dimension
+    print("\n2. Running data uncertainty analysis with ratings dimension...")
+    t0 = time.time()
+    results = DataUncertaintyAnalysis(
+        data=data,
+        signals=['signal1'],
+        holding_periods=[1, 3],
+        filters=filters,
+        ratings=['IG', 'NIG', None],  # Run for all rating categories
+        num_portfolios=5,
+        dynamic_weights=True,
+        include_baseline=True,
+        n_jobs=n_jobs,
+        verbose=True,
+    ).fit()
+    print(f"   Total time: {time.time()-t0:.2f}s")
+
+    # Display results
+    n_signals = 1
+    n_ratings = 3
+    n_filters = 3  # baseline + 2 trim
+    n_hps = 2
+    expected = n_signals * n_ratings * n_filters * n_hps
+    print(f"\n3. Results Summary")
+    print("-" * 70)
+    print(f"  Expected configs: {n_signals} × {n_ratings} × {n_filters} × {n_hps} = {expected}")
+    print(f"  Actual configs: {len(results.configs)}")
+
+    # Display summary with rating column
+    print("\n4. Summary Statistics by Rating")
+    print("-" * 100)
+    summary = results.summary()
+    print(summary[['signal', 'hp', 'rating', 'filter_type', 'ew_ea_mean', 'ew_ea_tstat']].to_string(index=False))
+
+    # Filter by rating
+    print("\n5. Filter Results by Rating Category")
+    print("-" * 70)
+    for rating in ['IG', 'NIG', None]:
+        rating_results = results.filter(rating=rating)
+        rating_summary = rating_results.summary()
+        rating_label = rating if rating else 'All'
+        baseline = rating_summary[rating_summary['filter_type'] == 'baseline']['ew_ea_mean'].values
+        print(f"\nRating = {rating_label}:")
+        print(f"  Configs: {len(rating_results.configs)}")
+        print(f"  Baseline EW EA: {baseline[0]:.4f}% (HP=1), {baseline[1]:.4f}% (HP=3)")
+
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Run data uncertainty analysis examples"
@@ -289,7 +375,7 @@ def main():
         help="Run quick test with fewer configurations"
     )
     parser.add_argument(
-        "--example", choices=['signal', 'strategy', 'multi', 'all'],
+        "--example", choices=['signal', 'strategy', 'multi', 'rating', 'all'],
         default='all',
         help="Which example to run (default: all)"
     )
@@ -307,6 +393,9 @@ def main():
 
     if args.example in ['multi', 'all']:
         results['multi'] = run_multi_signal_analysis(n_jobs=n_jobs)
+
+    if args.example in ['rating', 'all']:
+        results['rating'] = run_rating_analysis(n_jobs=n_jobs)
 
     print("\n" + "=" * 70)
     print("ALL EXAMPLES COMPLETED SUCCESSFULLY")
