@@ -825,12 +825,11 @@ class LTreversal(Strategy):
 
         if self.drop_na:
             # Option B: Variable window to accumulate valid (non-NaN) returns
-            # For LT reversal: signal = sum of (J - skip) valid returns, excluding most recent skip
-            # We need J valid returns for long-term, skip valid returns for recent
+            # For LT reversal: compound return over J periods excluding recent skip periods
+            # signal = exp(long_log - recent_log) - 1
 
-            # Fill NaN with 0 for cumsum, but track validity separately
-            data['ret_filled'] = data['ret'].fillna(0)
-            data['cumret'] = data.groupby('ID')['ret_filled'].cumsum()
+            data['logret'] = np.log(data['ret'] + 1)
+            data['cumlogret'] = data.groupby('ID')['logret'].cumsum()
             data['cumvalid'] = data.groupby('ID')['ret'].transform(
                 lambda x: x.notna().cumsum()
             )
@@ -841,7 +840,7 @@ class LTreversal(Strategy):
                 group = group.copy()
                 n = len(group)
                 signal = np.full(n, np.nan)
-                cumret = group['cumret'].values
+                cumlogret = group['cumlogret'].values
                 cumvalid = group['cumvalid'].values
                 is_valid = group['is_valid'].values
 
@@ -849,71 +848,77 @@ class LTreversal(Strategy):
                     if not is_valid[i] or cumvalid[i] < J:
                         continue
 
-                    # Long-term: sum of J valid returns ending at i
+                    # Long-term: sum of log returns for J valid returns ending at i
                     target_lt = cumvalid[i] - J
-                    # Recent: sum of skip valid returns ending at i
+                    # Recent: sum of log returns for skip valid returns ending at i
                     target_recent = cumvalid[i] - skip
 
-                    lt_sum = None
-                    recent_sum = None
+                    lt_logsum = None
+                    recent_logsum = None
 
                     if target_lt == 0:
-                        lt_sum = cumret[i]
+                        lt_logsum = cumlogret[i]
                     else:
                         # Find the last VALID row where cumvalid == target_lt
                         for j in range(i - 1, -1, -1):
                             if is_valid[j] and cumvalid[j] == target_lt:
-                                lt_sum = cumret[i] - cumret[j]
+                                lt_logsum = cumlogret[i] - cumlogret[j]
                                 break
 
                     if target_recent == 0:
-                        recent_sum = cumret[i]
+                        recent_logsum = cumlogret[i]
                     else:
                         # Find the last VALID row where cumvalid == target_recent
                         for j in range(i - 1, -1, -1):
                             if is_valid[j] and cumvalid[j] == target_recent:
-                                recent_sum = cumret[i] - cumret[j]
+                                recent_logsum = cumlogret[i] - cumlogret[j]
                                 break
 
-                    if lt_sum is not None and recent_sum is not None:
-                        signal[i] = lt_sum - recent_sum
+                    if lt_logsum is not None and recent_logsum is not None:
+                        signal[i] = lt_logsum - recent_logsum
 
                 group['signal'] = signal
                 return group
 
             data = data.groupby('ID', group_keys=False).apply(compute_drop_na_signal)
-            data.drop(columns=['cumret', 'cumvalid', 'ret_filled', 'is_valid'], inplace=True)
+            data['signal'] = np.exp(data['signal']) - 1
+            data.drop(columns=['cumlogret', 'cumvalid', 'logret', 'is_valid'], inplace=True)
 
         elif self.fill_na:
             # Option A: Fixed window, NaN returns treated as 0%
-            data['ret_filled'] = data['ret'].fillna(0)
+            ret_col = data['ret'].fillna(0)
+            data['logret'] = np.log(ret_col + 1)
 
-            long_term = (
-                data.groupby(['ID'], group_keys=False)['ret_filled']
+            long_log = (
+                data.groupby(['ID'], group_keys=False)['logret']
                 .rolling(window=J, min_periods=J)
                 .sum()
             )
-            recent = (
-                data.groupby(['ID'], group_keys=False)['ret_filled']
+            recent_log = (
+                data.groupby(['ID'], group_keys=False)['logret']
                 .rolling(window=skip, min_periods=skip)
                 .sum()
             )
-            data['signal'] = long_term.values - recent.values
-            data.drop(columns=['ret_filled'], inplace=True)
+            data['signal'] = np.exp(long_log.values - recent_log.values) - 1
+            data.drop(columns=['logret'], inplace=True)
 
         else:
             # Default: Standard rolling, NaN propagates
-            long_term = (
-                data.groupby(['ID'], group_keys=False)['ret']
+            # signal = exp(long_log - recent_log) - 1
+            data['logret'] = np.log(data['ret'] + 1)
+
+            long_log = (
+                data.groupby(['ID'], group_keys=False)['logret']
                 .rolling(window=J, min_periods=J)
                 .sum()
             )
-            recent = (
-                data.groupby(['ID'], group_keys=False)['ret']
+            recent_log = (
+                data.groupby(['ID'], group_keys=False)['logret']
                 .rolling(window=skip, min_periods=skip)
                 .sum()
             )
-            data['signal'] = long_term.values - recent.values
+            data['signal'] = np.exp(long_log.values - recent_log.values) - 1
+            data.drop(columns=['logret'], inplace=True)
 
         # Apply no_gap check: invalidate signal if months are not consecutive
         if self.no_gap:
