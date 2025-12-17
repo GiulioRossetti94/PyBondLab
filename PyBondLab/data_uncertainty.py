@@ -589,7 +589,8 @@ class DataUncertaintyAnalysis:
         rating: Optional[str] = None,
         columns: Optional[Dict[str, str]] = None,
         n_jobs: int = 1,
-        verbose: bool = True
+        verbose: bool = True,
+        use_fast_path: bool = True
     ):
         # Validate inputs
         if signals is None and strategy is None:
@@ -608,6 +609,7 @@ class DataUncertaintyAnalysis:
         self.rating = rating
         self.n_jobs = n_jobs
         self.verbose = verbose
+        self.use_fast_path = use_fast_path
 
         # Build column mapping (merge defaults with user-provided)
         self.columns = DEFAULT_COLUMNS.copy()
@@ -930,10 +932,13 @@ class DataUncertaintyAnalysis:
         Check if fast path can be used.
 
         Fast path requires:
+        - use_fast_path=True (default)
         - Pre-computed signals (not strategy-based)
         - Single signal (multiple signals need different rankings)
         - No strategy object (Momentum/LTreversal compute signal from returns)
         """
+        if not self.use_fast_path:
+            return False
         if self.strategy is not None:
             return False
         if len(self.signals) != 1 or self.signals[0] is None:
