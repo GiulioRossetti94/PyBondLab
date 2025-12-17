@@ -23,7 +23,7 @@ import pandas as pd
 # Portfolio Return Computation (Numba Kernels)
 # =============================================================================
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)  # NOTE: fastmath=True causes NaN comparison issues
 def compute_portfolio_returns_single(
     ranks: np.ndarray,
     returns: np.ndarray,
@@ -1998,6 +1998,113 @@ def compute_staggered_returns_ultrafast(
 # =============================================================================
 # Data Uncertainty Fast Path - Batched Filter Processing
 # =============================================================================
+
+@njit(cache=True, parallel=True)
+def compute_ranks_with_filter_mask(
+    date_idx: np.ndarray,      # (n,) date index for each row
+    signal: np.ndarray,        # (n,) signal values to rank
+    filter_mask: np.ndarray,   # (n,) boolean mask - True = include in ranking
+    n_dates: int,
+    nport: int
+) -> np.ndarray:
+    """
+    Compute portfolio ranks for observations that pass the filter.
+
+    Only observations with filter_mask = True are included in ranking.
+    Observations with filter_mask = False get rank = NaN.
+
+    Parameters
+    ----------
+    date_idx : np.ndarray
+        Date index (0-indexed) for each observation
+    signal : np.ndarray
+        Signal values to rank
+    filter_mask : np.ndarray
+        Boolean mask - True means include in ranking, False means exclude
+    n_dates : int
+        Total number of dates
+    nport : int
+        Number of portfolios
+
+    Returns
+    -------
+    np.ndarray
+        Portfolio rank (1-indexed) for each observation, NaN for excluded
+    """
+    n = len(date_idx)
+    ranks = np.full(n, np.nan, dtype=np.float64)
+
+    # Count valid observations per date (filter_mask=True AND signal not NaN)
+    counts = np.zeros(n_dates, dtype=np.int64)
+    for i in range(n):
+        d = date_idx[i]
+        if d >= 0 and d < n_dates and filter_mask[i] and not np.isnan(signal[i]):
+            counts[d] += 1
+
+    # Build index arrays
+    date_starts = np.zeros(n_dates + 1, dtype=np.int64)
+    for d in range(n_dates):
+        date_starts[d + 1] = date_starts[d] + counts[d]
+
+    total_valid = date_starts[n_dates]
+    valid_indices = np.zeros(total_valid, dtype=np.int64)
+    valid_signals = np.zeros(total_valid, dtype=np.float64)
+
+    pos = np.zeros(n_dates, dtype=np.int64)
+    for d in range(n_dates):
+        pos[d] = date_starts[d]
+
+    for i in range(n):
+        d = date_idx[i]
+        if d >= 0 and d < n_dates and filter_mask[i] and not np.isnan(signal[i]):
+            valid_indices[pos[d]] = i
+            valid_signals[pos[d]] = signal[i]
+            pos[d] += 1
+
+    # Process each date in parallel
+    for d in prange(n_dates):
+        start = date_starts[d]
+        end = date_starts[d + 1]
+        count = end - start
+
+        if count == 0:
+            continue
+
+        date_signals = valid_signals[start:end]
+        date_indices = valid_indices[start:end]
+
+        order = np.argsort(date_signals)
+
+        # Compute percentile thresholds
+        thresholds = np.zeros(nport + 1, dtype=np.float64)
+        thresholds[0] = -np.inf
+
+        for p in range(1, nport + 1):
+            pct = (p * 100.0 / nport)
+            pos_f = (pct / 100.0) * (count - 1)
+            idx_low = int(pos_f)
+            idx_high = idx_low + 1
+            frac = pos_f - idx_low
+
+            if idx_high >= count:
+                thresholds[p] = date_signals[order[count - 1]]
+            else:
+                val_low = date_signals[order[idx_low]]
+                val_high = date_signals[order[idx_high]]
+                thresholds[p] = val_low + frac * (val_high - val_low)
+
+        # Assign bins
+        for i in range(count):
+            orig_idx = date_indices[i]
+            val = date_signals[i]
+
+            for p in range(nport):
+                if val > thresholds[p] and val <= thresholds[p + 1]:
+                    ranks[orig_idx] = p + 1
+                    break
+
+    return ranks
+
 
 @njit(cache=True, parallel=True)
 def compute_returns_multi_filter_hp1(
