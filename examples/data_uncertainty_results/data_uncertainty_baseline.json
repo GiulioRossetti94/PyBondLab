@@ -12,7 +12,7 @@
     "ew_ep_std": 0.004819412980041553,
     "vw_ep_std": 0.0058791354823554244,
     "n_dates": 60,
-    "runtime_seconds": 3.4240105152130127
+    "runtime_seconds": 2.2630105018615723
   },
   "trim_0.5": {
     "filter_type": "trim",
@@ -27,7 +27,7 @@
     "ew_ep_std": 0.007836944842098483,
     "vw_ep_std": 0.00838017234856734,
     "n_dates": 60,
-    "runtime_seconds": 1.67732834815979
+    "runtime_seconds": 1.7717342376708984
   },
   "trim_-0.3": {
     "filter_type": "trim",
@@ -42,7 +42,7 @@
     "ew_ep_std": 0.009710998884531863,
     "vw_ep_std": 0.01195456683126395,
     "n_dates": 60,
-    "runtime_seconds": 1.7534315586090088
+    "runtime_seconds": 1.819847583770752
   },
   "trim_-0.3_0.3": {
     "filter_type": "trim",
@@ -57,7 +57,7 @@
     "ew_ep_std": 0.0044379608788796075,
     "vw_ep_std": 0.005280130664183437,
     "n_dates": 60,
-    "runtime_seconds": 1.6398670673370361
+    "runtime_seconds": 1.7028720378875732
   },
   "price_50": {
     "filter_type": "price",
@@ -72,7 +72,7 @@
     "ew_ep_std": NaN,
     "vw_ep_std": NaN,
     "n_dates": 60,
-    "runtime_seconds": 0.4748218059539795
+    "runtime_seconds": 0.5802192687988281
   },
   "price_200": {
     "filter_type": "price",
@@ -87,7 +87,7 @@
     "ew_ep_std": 0.011710769700614253,
     "vw_ep_std": 0.014029437848956406,
     "n_dates": 60,
-    "runtime_seconds": 1.6548683643341064
+    "runtime_seconds": 1.8911542892456055
   },
   "price_500": {
     "filter_type": "price",
@@ -102,7 +102,7 @@
     "ew_ep_std": 0.011748055953052334,
     "vw_ep_std": 0.014227115512062375,
     "n_dates": 60,
-    "runtime_seconds": 1.705820083618164
+    "runtime_seconds": 1.8287746906280518
   },
   "price_20_500": {
     "filter_type": "price",
@@ -117,7 +117,7 @@
     "ew_ep_std": 0.010355485914139666,
     "vw_ep_std": 0.01301003759403761,
     "n_dates": 60,
-    "runtime_seconds": 1.7366957664489746
+    "runtime_seconds": 1.7638638019561768
   },
   "bounce_0.05": {
     "filter_type": "bounce",
@@ -132,7 +132,7 @@
     "ew_ep_std": 0.010220011994660208,
     "vw_ep_std": 0.012346624365902286,
     "n_dates": 60,
-    "runtime_seconds": 1.7508373260498047
+    "runtime_seconds": 1.7335500717163086
   },
   "bounce_-0.05": {
     "filter_type": "bounce",
@@ -147,7 +147,7 @@
     "ew_ep_std": 0.01042748323330185,
     "vw_ep_std": 0.012780390575794531,
     "n_dates": 60,
-    "runtime_seconds": 1.6682729721069336
+    "runtime_seconds": 1.800950050354004
   },
   "bounce_0.1": {
     "filter_type": "bounce",
@@ -162,7 +162,7 @@
     "ew_ep_std": 0.010341850947994778,
     "vw_ep_std": 0.012399328880912134,
     "n_dates": 60,
-    "runtime_seconds": 1.713902473449707
+    "runtime_seconds": 1.80515718460083
   },
   "bounce_-0.05_0.05": {
     "filter_type": "bounce",
@@ -177,7 +177,67 @@
     "ew_ep_std": 0.010167558664630257,
     "vw_ep_std": 0.0123235021853626,
     "n_dates": 60,
-    "runtime_seconds": 1.7038836479187012
+    "runtime_seconds": 1.8366098403930664
+  },
+  "wins_99_both": {
+    "filter_type": "wins",
+    "filter_level": "99",
+    "strategy_name": "3_3_1",
+    "ew_ea_mean": 0.0028232224499042968,
+    "vw_ea_mean": 0.004001572525832013,
+    "ew_ea_std": 0.01063222319541995,
+    "vw_ea_std": 0.012798764627284989,
+    "ew_ep_mean": NaN,
+    "vw_ep_mean": NaN,
+    "ew_ep_std": NaN,
+    "vw_ep_std": NaN,
+    "n_dates": 60,
+    "runtime_seconds": 1.4766430854797363
+  },
+  "wins_99_right": {
+    "filter_type": "wins",
+    "filter_level": "99",
+    "strategy_name": "3_3_1",
+    "ew_ea_mean": 0.002851169464962946,
+    "vw_ea_mean": 0.003980575799872788,
+    "ew_ea_std": 0.01051657009787162,
+    "vw_ea_std": 0.01270946921190033,
+    "ew_ep_mean": NaN,
+    "vw_ep_mean": NaN,
+    "ew_ep_std": NaN,
+    "vw_ep_std": NaN,
+    "n_dates": 60,
+    "runtime_seconds": 1.5329432487487793
+  },
+  "wins_95_both": {
+    "filter_type": "wins",
+    "filter_level": "95",
+    "strategy_name": "3_3_1",
+    "ew_ea_mean": 0.0025060148667595526,
+    "vw_ea_mean": 0.003335040969092315,
+    "ew_ea_std": 0.009698732202884452,
+    "vw_ea_std": 0.01207638964694645,
+    "ew_ep_mean": NaN,
+    "vw_ep_mean": NaN,
+    "ew_ep_std": NaN,
+    "vw_ep_std": NaN,
+    "n_dates": 60,
+    "runtime_seconds": 1.5538890361785889
+  },
+  "wins_95_left": {
+    "filter_type": "wins",
+    "filter_level": "95",
+    "strategy_name": "3_3_1",
+    "ew_ea_mean": 0.0026028343112495375,
+    "vw_ea_mean": 0.003609067180164523,
+    "ew_ea_std": 0.010540968514563376,
+    "vw_ea_std": 0.013075784190934012,
+    "ew_ep_mean": NaN,
+    "vw_ep_mean": NaN,
+    "ew_ep_std": NaN,
+    "vw_ep_std": NaN,
+    "n_dates": 60,
+    "runtime_seconds": 1.4498894214630127
   },
   "no_filter": {
     "filter_type": "none",
@@ -192,6 +252,6 @@
     "ew_ep_std": 0.010514285081165628,
     "vw_ep_std": 0.012703626195208428,
     "n_dates": 60,
-    "runtime_seconds": 0.7712738513946533
+    "runtime_seconds": 0.8196723461151123
   }
 }

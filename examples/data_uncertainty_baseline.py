@@ -12,7 +12,7 @@ Based on: DataUncertainty_DRR.py (Dickerson, Robotti, Rossetti 2024)
 Test Configurations:
 --------------------
 - Strategy: Momentum(3,3) with skip=1
-- Filter types: trim, price, bounce
+- Filter types: trim, price, bounce, wins
 - Multiple levels per filter type
 - Both EA and EP returns captured
 
@@ -108,7 +108,23 @@ def get_filter_params(strategy) -> List[Dict]:
         })
 
     # ------------------------------------------------------------------
-    # 4. NO FILTER baseline (for comparison)
+    # 4. WINS filters (winsorize extreme returns)
+    # ------------------------------------------------------------------
+    wins_configs = [
+        (99, 'both'),   # Winsorize both tails at 1st/99th percentile
+        (99, 'right'),  # Winsorize only upper tail at 99th percentile
+        (95, 'both'),   # Winsorize both tails at 5th/95th percentile
+        (95, 'left'),   # Winsorize only lower tail at 5th percentile
+    ]
+    for level, loc in wins_configs:
+        params.append({
+            'strategy': strategy,
+            'rating': RATING,
+            'filters': {'adj': 'wins', 'level': level, 'location': loc}
+        })
+
+    # ------------------------------------------------------------------
+    # 5. NO FILTER baseline (for comparison)
     # ------------------------------------------------------------------
     params.append({
         'strategy': strategy,
@@ -126,7 +142,7 @@ def get_filter_params(strategy) -> List[Dict]:
 @dataclass
 class FilterTestResult:
     """Container for a single filter test result."""
-    filter_type: str          # 'trim', 'price', 'bounce', 'none'
+    filter_type: str          # 'trim', 'price', 'bounce', 'wins', 'none'
     filter_level: Any         # The filter level parameter
     strategy_name: str        # Full strategy name from result
 
@@ -313,6 +329,10 @@ def get_unique_key(params: Dict) -> str:
         level_str = f"{level[0]}_{level[1]}"
     else:
         level_str = str(level)
+
+    # Include location for wins filter
+    if adj == 'wins' and 'location' in filters:
+        return f"{adj}_{level_str}_{filters['location']}"
 
     return f"{adj}_{level_str}"
 

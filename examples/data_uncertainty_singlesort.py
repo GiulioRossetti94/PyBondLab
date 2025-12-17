@@ -136,7 +136,24 @@ def get_filter_params(holding_period: int, dynamic_weights: bool) -> List[Dict]:
         })
 
     # ------------------------------------------------------------------
-    # 4. NO FILTER baseline (for comparison)
+    # 4. WINS filters (winsorize extreme returns)
+    # ------------------------------------------------------------------
+    # Winsorization replaces extreme values with percentile thresholds
+    # 'location' can be 'both', 'left', or 'right'
+    wins_configs = [
+        (99, 'both'),   # Winsorize both tails at 1st/99th percentile
+        (99, 'right'),  # Winsorize only upper tail at 99th percentile
+        (95, 'both'),   # Winsorize both tails at 5th/95th percentile
+    ]
+    for level, loc in wins_configs:
+        params.append({
+            'strategy': strategy,
+            'config': config,
+            'filters': {'adj': 'wins', 'level': level, 'location': loc}
+        })
+
+    # ------------------------------------------------------------------
+    # 5. NO FILTER baseline (for comparison)
     # ------------------------------------------------------------------
     params.append({
         'strategy': strategy,
@@ -259,7 +276,14 @@ def run_single_test(
 
     # Generate test name
     dw_str = "dw_true" if dynamic_weights else "dw_false"
-    filter_str = f"{filter_type}_{filter_level}" if filter_level else "no_filter"
+    if filter_level is not None:
+        # For wins filters, include location in the name
+        if filter_type == 'wins' and 'location' in filters:
+            filter_str = f"{filter_type}_{filter_level}_{filters['location']}"
+        else:
+            filter_str = f"{filter_type}_{filter_level}"
+    else:
+        filter_str = "no_filter"
     test_name = f"hp{holding_period}_{dw_str}_{filter_str}"
 
     path_type = "fast" if use_fast_path else "slow"
