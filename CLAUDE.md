@@ -1045,8 +1045,31 @@ DataUncertaintyAnalysis(
 | `filters` | Dict | None | Filter configurations (see below) |
 | `include_baseline` | bool | True | Always include no-filter baseline |
 | `rating` | str | None | Rating filter: 'IG', 'NIG', or None |
+| `columns` | Dict | None | Column name mapping (see below) |
 | `n_jobs` | int | 1 | Parallel workers for (hp × filter) configs |
 | `verbose` | bool | True | Show progress output |
+
+### Column Name Mapping
+
+If your data uses different column names than PyBondLab expects, use the `columns` parameter:
+
+```python
+# PyBondLab expected names -> Your column names
+columns = {
+    'date': 'date',           # Date column (usually same)
+    'ID': 'cusip_id',         # Bond identifier
+    'ret': 'ret',             # Return column (usually same)
+    'VW': 'mcap_e',           # Value weight column
+    'RATING_NUM': 'spc_rat',  # Rating column
+    'PRICE': 'prc_eom',       # Price column (for price filters)
+}
+```
+
+**Required columns**: `date`, `ID`, `ret`, `VW`, `RATING_NUM`
+**Optional columns**: `PRICE` (only needed for price filters)
+
+**Memory optimization**: Only specify mappings for columns that differ from defaults.
+The wrapper automatically subsets data to only required columns (typically 80%+ memory reduction).
 
 ### Filter Specification
 

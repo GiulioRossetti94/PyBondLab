@@ -18,6 +18,14 @@ Example Usage:
 ...         'price': [50, 200],
 ...         'wins': [(99, 'both')],
 ...     },
+...     columns={  # Map your column names to expected names
+...         'date': 'date',
+...         'ID': 'cusip_id',
+...         'ret': 'ret',
+...         'VW': 'mcap_e',
+...         'RATING_NUM': 'spc_rat',
+...         'PRICE': 'prc_eom',
+...     },
 ...     n_jobs=4,
 ... ).fit()
 >>> print(results.summary())
@@ -38,6 +46,28 @@ import pandas as pd
 # Import PyBondLab components
 from .PyBondLab import StrategyFormation
 from .StrategyClass import SingleSort, Momentum, LTreversal
+
+
+# =============================================================================
+# Default Column Mapping
+# =============================================================================
+
+# Default expected column names (PyBondLab internal names)
+DEFAULT_COLUMNS = {
+    'date': 'date',           # Date column
+    'ID': 'ID',               # Bond identifier
+    'ret': 'ret',             # Return column
+    'VW': 'VW',               # Value weight column
+    'RATING_NUM': 'RATING_NUM',  # Rating column (optional)
+    'PRICE': 'PRICE',         # Price column (for price filters, optional)
+}
+
+# Required columns (must be present)
+# Note: RATING_NUM is required by StrategyFormation even if no rating filter is used
+REQUIRED_COLUMNS = {'date', 'ID', 'ret', 'VW', 'RATING_NUM'}
+
+# Optional columns (used if available)
+OPTIONAL_COLUMNS = {'PRICE'}
 
 
 # =============================================================================
@@ -494,6 +524,12 @@ class DataUncertaintyAnalysis:
         Always include no-filter baseline (default: True)
     rating : str, optional
         Rating filter: 'IG', 'NIG', or None
+    columns : dict, optional
+        Column name mapping from PyBondLab expected names to your data's names.
+        Keys are PyBondLab names: 'date', 'ID', 'ret', 'VW', 'RATING_NUM', 'PRICE'
+        Values are the corresponding column names in your data.
+        Only specify columns that have different names in your data.
+        Example: {'ID': 'cusip_id', 'VW': 'mcap_e', 'PRICE': 'prc_eom'}
     n_jobs : int
         Number of parallel workers (default: 1)
     verbose : bool
@@ -501,17 +537,27 @@ class DataUncertaintyAnalysis:
 
     Examples
     --------
+    >>> # With default column names
     >>> results = DataUncertaintyAnalysis(
     ...     data=data,
     ...     signals=['momentum'],
     ...     holding_periods=[1, 3],
-    ...     filters={
-    ...         'trim': [0.2, 0.5],
-    ...         'wins': [(99, 'both')],
-    ...     },
-    ...     n_jobs=4,
+    ...     filters={'trim': [0.2, 0.5]},
     ... ).fit()
-    >>> print(results.summary())
+
+    >>> # With custom column names
+    >>> results = DataUncertaintyAnalysis(
+    ...     data=data,
+    ...     signals=['var_90'],
+    ...     holding_periods=[1, 3],
+    ...     filters={'trim': [0.2], 'price': [50, 200]},
+    ...     columns={
+    ...         'ID': 'cusip_id',
+    ...         'VW': 'mcap_e',
+    ...         'RATING_NUM': 'spc_rat',
+    ...         'PRICE': 'prc_eom',
+    ...     },
+    ... ).fit()
     """
 
     def __init__(
@@ -525,6 +571,7 @@ class DataUncertaintyAnalysis:
         filters: Optional[Dict[str, List]] = None,
         include_baseline: bool = True,
         rating: Optional[str] = None,
+        columns: Optional[Dict[str, str]] = None,
         n_jobs: int = 1,
         verbose: bool = True
     ):
@@ -534,7 +581,7 @@ class DataUncertaintyAnalysis:
         if signals is not None and strategy is not None:
             raise ValueError("Cannot specify both 'signals' and 'strategy'")
 
-        self.data = data
+        self.data_raw = data
         self.signals = signals if signals is not None else [None]
         self.strategy = strategy
         self.holding_periods = holding_periods or [1, 3, 6]
@@ -546,8 +593,16 @@ class DataUncertaintyAnalysis:
         self.n_jobs = n_jobs
         self.verbose = verbose
 
+        # Build column mapping (merge defaults with user-provided)
+        self.columns = DEFAULT_COLUMNS.copy()
+        if columns is not None:
+            self.columns.update(columns)
+
         # Parse filter configurations
         self._filter_configs = self._parse_filters()
+
+        # Prepare data (rename columns, subset to required columns only)
+        self.data = self._prepare_data()
 
     def _parse_filters(self) -> List[FilterConfig]:
         """Parse filter dict into FilterConfig objects."""
@@ -597,6 +652,83 @@ class DataUncertaintyAnalysis:
                     ))
 
         return configs
+
+    def _prepare_data(self) -> pd.DataFrame:
+        """
+        Prepare data by renaming columns and subsetting to required columns only.
+
+        This method:
+        1. Validates that required columns are present (using user's column names)
+        2. Renames columns from user names to PyBondLab expected names
+        3. Subsets to only required columns + signals to minimize memory usage
+
+        Returns
+        -------
+        pd.DataFrame
+            Prepared data with standardized column names
+        """
+        # Build reverse mapping: user_col_name -> pbl_name
+        user_to_pbl = {v: k for k, v in self.columns.items()}
+
+        # Determine which columns are needed
+        needed_pbl_cols = set(REQUIRED_COLUMNS)
+
+        # Add PRICE if price filter is used
+        if 'price' in self.filters:
+            needed_pbl_cols.add('PRICE')
+
+        # Get user column names for required columns
+        needed_user_cols = []
+        missing_cols = []
+        rename_map = {}
+
+        for pbl_name in needed_pbl_cols:
+            user_name = self.columns.get(pbl_name, pbl_name)
+            if user_name in self.data_raw.columns:
+                needed_user_cols.append(user_name)
+                if user_name != pbl_name:
+                    rename_map[user_name] = pbl_name
+            elif pbl_name in REQUIRED_COLUMNS:
+                missing_cols.append(f"{pbl_name} (expected: '{user_name}')")
+            # Optional columns (PRICE) - warn but don't fail
+            elif pbl_name == 'PRICE' and 'price' in self.filters:
+                warnings.warn(f"Price filter requested but '{user_name}' column not found. "
+                             "Price filters will be skipped.")
+                # Remove price filters
+                self.filters = {k: v for k, v in self.filters.items() if k != 'price'}
+                self._filter_configs = [fc for fc in self._filter_configs
+                                       if fc.filter_type != 'price']
+
+        if missing_cols:
+            raise ValueError(
+                f"Missing required columns: {missing_cols}. "
+                f"Use the 'columns' parameter to map your column names. "
+                f"Example: columns={{'ID': 'your_id_col', 'VW': 'your_vw_col'}}"
+            )
+
+        # Add signal columns (keep original names)
+        if self.signals[0] is not None:
+            for sig in self.signals:
+                if sig in self.data_raw.columns:
+                    if sig not in needed_user_cols:
+                        needed_user_cols.append(sig)
+                else:
+                    raise ValueError(f"Signal column '{sig}' not found in data")
+
+        # Subset and rename
+        data = self.data_raw[needed_user_cols].copy()
+        if rename_map:
+            data = data.rename(columns=rename_map)
+
+        if self.verbose:
+            original_cols = len(self.data_raw.columns)
+            subset_cols = len(data.columns)
+            original_mem = self.data_raw.memory_usage(deep=True).sum() / 1e6
+            subset_mem = data.memory_usage(deep=True).sum() / 1e6
+            print(f"Data prepared: {subset_cols}/{original_cols} columns, "
+                  f"{subset_mem:.1f}MB/{original_mem:.1f}MB ({100*subset_mem/original_mem:.0f}%)")
+
+        return data
 
     def _generate_analysis_configs(self) -> List[AnalysisConfig]:
         """Generate all analysis configurations."""
