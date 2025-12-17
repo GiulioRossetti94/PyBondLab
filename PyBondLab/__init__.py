@@ -63,6 +63,13 @@ try:
 except ImportError:
     validate_panel = check_duplicates = None
 
+# Data Uncertainty Analysis
+try:
+    from .data_uncertainty import DataUncertaintyAnalysis, DataUncertaintyResults
+except ImportError as e:
+    print(f"Warning: Could not import DataUncertaintyAnalysis: {e}")
+    DataUncertaintyAnalysis = DataUncertaintyResults = None
+
 __version__ = '0.2.0'
 __all__ = [
     'StrategyFormation',
@@ -82,5 +89,7 @@ __all__ = [
     'PreAnalysisResult',
     'validate_panel',
     'check_duplicates',
+    'DataUncertaintyAnalysis',
+    'DataUncertaintyResults',
 ]
 name = 'PyBondLab'

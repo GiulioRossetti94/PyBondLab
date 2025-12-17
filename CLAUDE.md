@@ -972,3 +972,313 @@ data = generate_synthetic_data_fast(
 | `float_dtype` | np.float32 | Use float32 for smaller memory footprint |
 
 ---
+
+## DataUncertaintyAnalysis (User-Friendly Wrapper)
+
+### Overview
+
+`DataUncertaintyAnalysis` is a high-level wrapper that simplifies running data uncertainty
+analysis across multiple holding periods and filter configurations. It returns long-short
+factor returns for EW/VW and EA/EP combinations.
+
+### Quick Start
+
+```python
+from PyBondLab import DataUncertaintyAnalysis
+
+# Run analysis on a pre-computed signal
+results = DataUncertaintyAnalysis(
+    data=data,
+    signals=['my_signal'],           # Column name(s) in data
+    holding_periods=[1, 3, 6],
+    filters={
+        'trim': [0.2, 0.5, -0.3],
+        'price': [50, 200],
+        'bounce': [0.05, -0.05],
+        'wins': [(99, 'both'), (95, 'both')],
+    },
+    num_portfolios=5,
+    n_jobs=4,
+).fit()
+
+# Access results
+results.ew_ea                        # DataFrame: dates × configs
+results.summary()                    # Summary stats with NW t-stats
+```
+
+### Full API
+
+```python
+DataUncertaintyAnalysis(
+    data: pd.DataFrame,
+
+    # Signal specification (one of these required)
+    signals: List[str] = None,       # Column name(s) for pre-computed signals
+    strategy: Strategy = None,       # Strategy object (Momentum, LTreversal)
+
+    # Core parameters
+    holding_periods: List[int] = [1, 3, 6],
+    num_portfolios: int = 5,
+    dynamic_weights: bool = True,
+
+    # Filter configurations
+    filters: Dict[str, List] = None,
+    include_baseline: bool = True,
+
+    # Optional
+    rating: str = None,              # 'IG', 'NIG', or None (all)
+    n_jobs: int = 1,                 # Parallel workers
+    verbose: bool = True,
+)
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `data` | DataFrame | required | Bond panel data |
+| `signals` | List[str] | None | Column name(s) for pre-computed signals |
+| `strategy` | Strategy | None | Strategy object (Momentum, LTreversal) |
+| `holding_periods` | List[int] | [1, 3, 6] | Holding periods to test |
+| `num_portfolios` | int | 5 | Number of quantile buckets |
+| `dynamic_weights` | bool | True | VW from d-1 (True) or formation date (False) |
+| `filters` | Dict | None | Filter configurations (see below) |
+| `include_baseline` | bool | True | Always include no-filter baseline |
+| `rating` | str | None | Rating filter: 'IG', 'NIG', or None |
+| `n_jobs` | int | 1 | Parallel workers for (hp × filter) configs |
+| `verbose` | bool | True | Show progress output |
+
+### Filter Specification
+
+```python
+filters = {
+    # Trim: exclude extreme returns
+    # Positive = right tail, Negative = left tail, List = both tails
+    'trim': [0.2, 0.5, -0.3, [-0.3, 0.3]],
+
+    # Price: exclude bonds with extreme prices
+    # Single value or [low, high] range
+    'price': [50, 200, 500, [20, 500]],
+
+    # Bounce: exclude reversal returns
+    # Positive = right tail, Negative = left tail, List = both tails
+    'bounce': [0.05, -0.05, 0.10, [-0.05, 0.05]],
+
+    # Wins: winsorize extreme returns
+    # Tuple of (percentile, location) where location = 'left', 'right', 'both'
+    'wins': [(99, 'both'), (99, 'right'), (95, 'both'), (95, 'left')],
+}
+```
+
+### Location Inference
+
+For trim, bounce, and price filters, the tail location is inferred from the level:
+
+| Level Type | Location | Example |
+|------------|----------|---------|
+| Positive value | `right` | `0.2` → right tail |
+| Negative value | `left` | `-0.3` → left tail |
+| List `[low, high]` | `both` | `[-0.3, 0.3]` → both tails |
+
+For wins filters, location is explicitly specified: `(99, 'both')`.
+
+### Results Object
+
+```python
+class DataUncertaintyResults:
+    """Container for data uncertainty analysis results."""
+
+    # Factor panels: DataFrame with dates as index, configs as columns
+    @property
+    def ew_ea(self) -> pd.DataFrame:
+        """EW Ex-Ante long-short factors."""
+
+    @property
+    def vw_ea(self) -> pd.DataFrame:
+        """VW Ex-Ante long-short factors."""
+
+    @property
+    def ew_ep(self) -> pd.DataFrame:
+        """EW Ex-Post long-short factors."""
+
+    @property
+    def vw_ep(self) -> pd.DataFrame:
+        """VW Ex-Post long-short factors."""
+
+    @property
+    def configs(self) -> pd.DataFrame:
+        """Metadata for all configurations.
+
+        Columns: column_name, signal, hp, filter_type, level, location
+        """
+
+    def summary(self) -> pd.DataFrame:
+        """Summary statistics for all configurations.
+
+        Returns DataFrame with:
+        - signal, hp, filter_type, level, location
+        - ew_ea_mean, ew_ea_tstat (Newey-West)
+        - vw_ea_mean, vw_ea_tstat
+        - ew_ep_mean, ew_ep_tstat
+        - vw_ep_mean, vw_ep_tstat
+        - n_obs, sharpe (annualized)
+
+        All means in % (×100).
+        Newey-West lag = int(T^0.25).
+        """
+
+    def filter(self, signal=None, hp=None, filter_type=None,
+               location=None) -> 'DataUncertaintyResults':
+        """Filter to subset of configurations.
+
+        Returns new DataUncertaintyResults with filtered configs.
+        """
+
+    def to_excel(self, path: str):
+        """Export results to Excel file."""
+```
+
+### Column Naming Convention
+
+Factor DataFrame columns use the format:
+```
+{signal}_hp{hp}_{filter_type}_{level}[_{location}]
+```
+
+Examples:
+- `momentum_hp1_baseline`
+- `momentum_hp1_trim_0.2`
+- `momentum_hp3_trim_-0.3_0.3`
+- `momentum_hp1_wins_99_both`
+
+### Summary Statistics
+
+The `summary()` method returns:
+
+| Column | Description |
+|--------|-------------|
+| `signal` | Signal name |
+| `hp` | Holding period |
+| `filter_type` | 'baseline', 'trim', 'price', 'bounce', 'wins' |
+| `level` | Filter level value |
+| `location` | Tail location: 'left', 'right', 'both', or None |
+| `ew_ea_mean` | EW EA mean return (%) |
+| `ew_ea_tstat` | EW EA Newey-West t-statistic |
+| `vw_ea_mean` | VW EA mean return (%) |
+| `vw_ea_tstat` | VW EA Newey-West t-statistic |
+| `ew_ep_mean` | EW EP mean return (%) |
+| `ew_ep_tstat` | EW EP Newey-West t-statistic |
+| `vw_ep_mean` | VW EP mean return (%) |
+| `vw_ep_tstat` | VW EP Newey-West t-statistic |
+| `n_obs` | Number of observations (T) |
+| `sharpe` | Annualized Sharpe ratio (EW EA) |
+
+**Newey-West t-statistics**: Uses `statsmodels` with lag = int(T^0.25).
+
+### Signal vs Strategy
+
+**Pre-computed signal** (most common):
+```python
+# Signal column already exists in data
+results = DataUncertaintyAnalysis(
+    data=data,
+    signals=['my_momentum', 'my_value'],  # Column names
+    ...
+)
+```
+
+**Strategy object** (for Momentum/LTreversal):
+```python
+# Strategy computes signal from returns; filters affect signal computation
+mom = pbl.Momentum(lookback_period=3, skip=1)
+results = DataUncertaintyAnalysis(
+    data=data,
+    strategy=mom,
+    ...
+)
+```
+
+Note: When using a strategy object with filters, the signal is recomputed using
+filtered returns (e.g., `ret_trim` for Momentum).
+
+### Multiple Signals
+
+```python
+# Test multiple signals with same filter configurations
+results = DataUncertaintyAnalysis(
+    data=data,
+    signals=['momentum', 'value', 'size'],  # Multiple columns
+    holding_periods=[1, 3],
+    filters={'trim': [0.2, 0.5]},
+).fit()
+
+# Access by signal
+results.filter(signal='momentum').ew_ea
+results.filter(signal='value').summary()
+```
+
+### Parallelization
+
+Parallelizes over (hp × filter × signal) configurations using `n_jobs` workers:
+
+```python
+# With 4 workers and 3 signals × 3 hp × 10 filters = 90 configs
+results = DataUncertaintyAnalysis(
+    data=data,
+    signals=['sig1', 'sig2', 'sig3'],
+    holding_periods=[1, 3, 6],
+    filters={'trim': [0.2, 0.5], 'price': [50, 200], ...},
+    n_jobs=4,  # Parallelize across configs
+).fit()
+```
+
+### Example Usage
+
+```python
+import PyBondLab as pbl
+from PyBondLab import DataUncertaintyAnalysis
+from PyBondLab.pbl_test import generate_synthetic_data_fast
+
+# Generate test data
+data = generate_synthetic_data_fast(n_dates=120, n_bonds=500, seed=42)
+
+# Run data uncertainty analysis
+results = DataUncertaintyAnalysis(
+    data=data,
+    signals=['signal1'],
+    holding_periods=[1, 3, 6],
+    filters={
+        'trim': [0.2, 0.5, -0.3, [-0.3, 0.3]],
+        'price': [50, 200, 500],
+        'bounce': [0.05, -0.05],
+        'wins': [(99, 'both'), (95, 'both')],
+    },
+    num_portfolios=5,
+    dynamic_weights=True,
+    n_jobs=4,
+    verbose=True,
+).fit()
+
+# View summary statistics
+print(results.summary())
+
+# Access specific factor panels
+ew_ea_factors = results.ew_ea  # DataFrame: dates × configs
+vw_ep_factors = results.vw_ep
+
+# Filter to specific configurations
+hp1_results = results.filter(hp=1)
+trim_results = results.filter(filter_type='trim')
+right_tail = results.filter(location='right')
+
+# Export to Excel
+results.to_excel('data_uncertainty_results.xlsx')
+```
+
+### Example Script
+
+```bash
+python examples/data_uncertainty_analysis.py
+```
+
+---
