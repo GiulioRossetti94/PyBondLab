@@ -768,7 +768,12 @@ rank assignments due to floating-point comparison reordering with NaN values.
   - Fast path now supports trim, price, bounce filters
   - EA uses original returns, EP uses filtered returns
   - Same ranking for both, only return column differs
-- **Total**: ~3x faster single-signal, ~2.5x parallel speedup for batch, **5x for large panels, 38x for filtered strategies**
+- **Phase 11**: DataUncertaintyAnalysis fast path (8.3x speedup)
+  - Bypasses StrategyFormation for pre-computed signals
+  - Correct filter exclusion (trim/price/bounce exclude NaN observations)
+  - Full ID intersection (formation, return, VW dates)
+  - Wins EP returns NaN (matches slow path behavior)
+- **Total**: ~3x faster single-signal, ~2.5x parallel speedup for batch, **5x for large panels, 8x for DataUncertaintyAnalysis**
 
 ---
 
@@ -1303,5 +1308,63 @@ results.to_excel('data_uncertainty_results.xlsx')
 ```bash
 python examples/data_uncertainty_analysis.py
 ```
+
+### Fast Path Optimization (Phase 11)
+
+When running DataUncertaintyAnalysis with pre-computed signals (not strategy objects),
+an optimized fast path is automatically used that provides significant speedup.
+
+**Performance:**
+| Dataset | Fast Path | Slow Path | Speedup |
+|---------|-----------|-----------|---------|
+| 60 dates × 500 bonds, 20 configs | **2.8s** | 23.6s | **8.3x** |
+
+**How It Works:**
+
+The fast path bypasses the full `StrategyFormation` pipeline by:
+1. Converting DataFrame to numpy arrays once
+2. Applying filters and building filtered return arrays for all filter types
+3. Computing ranks for all dates in parallel using numba (per-filter ranking)
+4. Computing portfolio returns for all dates in parallel using numba
+5. Handling ID intersection correctly (bonds must exist at formation, return, AND VW dates)
+
+**Filter Handling:**
+
+| Filter Type | Ranking Behavior | EA Returns | EP Returns |
+|-------------|-----------------|------------|------------|
+| `baseline` | Rank by valid signal | Original `ret` | Original `ret` |
+| `trim` | Exclude NaN filtered ret from ranking | Original `ret` | Filtered `ret_trim` |
+| `price` | Exclude NaN filtered ret from ranking | Original `ret` | Filtered `ret_price` |
+| `bounce` | Exclude NaN filtered ret from ranking | Original `ret` | Filtered `ret_bounce` |
+| `wins` | Rank by valid signal (clips, doesn't exclude) | Original `ret` | **NaN** (not available) |
+
+**Key Implementation Details:**
+
+1. **Filter exclusion**: For trim/price/bounce filters, observations with NaN filtered returns
+   are completely excluded from portfolio formation (not ranked, not included in returns).
+
+2. **ID intersection**: Fast path replicates the slow path's `intersect_id` behavior:
+   - Bonds must have valid signal at formation date (for ranking)
+   - Bonds must have valid VW at d-1 (for weighting)
+   - Bonds must have valid return at return date
+
+3. **Wins filter EP**: The slow path returns NaN for wins EP because winsorization clips
+   extreme values rather than creating a separate `ret_wins` column. Fast path matches this.
+
+4. **`fastmath=True` disabled**: The numba kernel `compute_portfolio_returns_single` cannot
+   use `fastmath=True` because it causes incorrect NaN comparisons, leading to NaN results.
+
+**Code Location:**
+- Fast path implementation: `PyBondLab/data_uncertainty.py` (`_run_fast_path()`)
+- Rank computation with filter mask: `PyBondLab/numba_core.py` (`compute_ranks_with_filter_mask`)
+
+**When Fast Path is Used:**
+
+Fast path is automatically used when:
+- `signals` parameter is provided (pre-computed signals)
+- `strategy` parameter is NOT provided
+
+When a `strategy` object is provided (Momentum, LTreversal), the slow path is used because
+the strategy must recompute signals using filtered returns.
 
 ---
