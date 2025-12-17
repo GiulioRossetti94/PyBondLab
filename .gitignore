@@ -30,3 +30,8 @@ test/
 
 # Ignore turnover analysis folder
 turnover_analysis/
+
+# Ignore comparison folder (branch comparison tests)
+comparison/
+comparison_after_fix/
+comparison_strategies/
