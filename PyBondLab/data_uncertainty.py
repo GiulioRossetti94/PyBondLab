@@ -253,7 +253,7 @@ class DataUncertaintyResults:
         Compute summary statistics for all configurations.
 
         Returns DataFrame with:
-        - signal, hp, filter_type, level, location
+        - signal, hp, rating, filter_type, level, location
         - ew_ea_mean, ew_ea_tstat (Newey-West)
         - vw_ea_mean, vw_ea_tstat
         - ew_ep_mean, ew_ep_tstat
@@ -282,7 +282,7 @@ class DataUncertaintyResults:
             else:
                 sharpe = np.nan
 
-            rows.append({
+            row = {
                 'signal': config['signal'],
                 'hp': config['hp'],
                 'filter_type': config['filter_type'],
@@ -298,17 +298,27 @@ class DataUncertaintyResults:
                 'vw_ep_tstat': vw_ep_tstat,
                 'n_obs': n_obs,
                 'sharpe': sharpe,
-            })
+            }
+
+            # Add rating if present in config
+            if 'rating' in config:
+                row['rating'] = config['rating']
+
+            rows.append(row)
 
         self._summary_cache = pd.DataFrame(rows)
         return self._summary_cache
+
+    # Sentinel value to distinguish "not provided" from "filter for None"
+    _NOT_PROVIDED = object()
 
     def filter(
         self,
         signal: Optional[Union[str, List[str]]] = None,
         hp: Optional[Union[int, List[int]]] = None,
         filter_type: Optional[Union[str, List[str]]] = None,
-        location: Optional[Union[str, List[str]]] = None
+        location: Optional[Union[str, List[str]]] = None,
+        rating: Optional[Union[str, List[str]]] = _NOT_PROVIDED
     ) -> 'DataUncertaintyResults':
         """
         Filter to subset of configurations.
@@ -323,6 +333,9 @@ class DataUncertaintyResults:
             Filter by type(s): 'baseline', 'trim', 'price', 'bounce', 'wins'
         location : str or list, optional
             Filter by tail location(s): 'left', 'right', 'both'
+        rating : str, list, or None, optional
+            Filter by rating category(s): 'IG', 'NIG', or None (for all bonds)
+            Use rating=None to filter for configs with no rating restriction.
 
         Returns
         -------
@@ -350,6 +363,22 @@ class DataUncertaintyResults:
             if isinstance(location, str):
                 location = [location]
             mask &= self._configs['location'].isin(location)
+
+        # Rating filter: use sentinel to distinguish "not provided" from "filter for None"
+        if rating is not self._NOT_PROVIDED and 'rating' in self._configs.columns:
+            # Handle filtering by rating - need special handling for None values
+            if not isinstance(rating, list):
+                rating = [rating]
+
+            # Build mask that handles None values correctly
+            rating_mask = pd.Series([False] * len(self._configs))
+            for r in rating:
+                if r is None:
+                    # Match None/NaN values in the rating column
+                    rating_mask |= self._configs['rating'].isna()
+                else:
+                    rating_mask |= (self._configs['rating'] == r)
+            mask &= rating_mask
 
         filtered_configs = self._configs[mask].reset_index(drop=True)
         cols = filtered_configs['column_name'].tolist()
@@ -587,6 +616,7 @@ class DataUncertaintyAnalysis:
         filters: Optional[Dict[str, List]] = None,
         include_baseline: bool = True,
         rating: Optional[str] = None,
+        ratings: Optional[List[Optional[str]]] = None,
         columns: Optional[Dict[str, str]] = None,
         n_jobs: int = 1,
         verbose: bool = True,
@@ -598,6 +628,22 @@ class DataUncertaintyAnalysis:
         if signals is not None and strategy is not None:
             raise ValueError("Cannot specify both 'signals' and 'strategy'")
 
+        # Handle rating vs ratings parameter
+        # If both specified, ratings takes precedence
+        # If neither, default to [None] (all bonds)
+        if ratings is not None:
+            self.ratings = ratings
+        elif rating is not None:
+            self.ratings = [rating]
+        else:
+            self.ratings = [None]  # Default: all bonds
+
+        # Validate ratings
+        valid_ratings = {'IG', 'NIG', None}
+        for r in self.ratings:
+            if r not in valid_ratings:
+                raise ValueError(f"Invalid rating '{r}'. Must be 'IG', 'NIG', or None")
+
         self.data_raw = data
         self.signals = signals if signals is not None else [None]
         self.strategy = strategy
@@ -606,7 +652,7 @@ class DataUncertaintyAnalysis:
         self.dynamic_weights = dynamic_weights
         self.filters = filters or {}
         self.include_baseline = include_baseline
-        self.rating = rating
+        self.rating = rating  # Keep for backward compatibility (slow path)
         self.n_jobs = n_jobs
         self.verbose = verbose
         self.use_fast_path = use_fast_path
@@ -818,7 +864,7 @@ class DataUncertaintyAnalysis:
         """
         # Check if fast path can be used
         if self._can_use_fast_path():
-            return self._fit_fast()
+            return self._fit_fast_all_signals()
 
         # Fall back to slow path
         t0 = time.time()
@@ -974,14 +1020,15 @@ class DataUncertaintyAnalysis:
         Fast path requires:
         - use_fast_path=True (default)
         - Pre-computed signals (not strategy-based)
-        - Single signal (multiple signals need different rankings)
         - No strategy object (Momentum/LTreversal compute signal from returns)
+
+        Multiple signals are supported - we loop over them in the fast path.
         """
         if not self.use_fast_path:
             return False
         if self.strategy is not None:
             return False
-        if len(self.signals) != 1 or self.signals[0] is None:
+        if self.signals[0] is None:
             return False
         return True
 
@@ -1085,20 +1132,85 @@ class DataUncertaintyAnalysis:
 
         return filtered_returns, filter_names
 
-    def _fit_fast(self) -> DataUncertaintyResults:
+    def _fit_fast_all_signals(self) -> DataUncertaintyResults:
         """
-        BLAZING FAST path: process all filters and dates in parallel.
+        BLAZING FAST path wrapper: loop over signals and ratings.
 
-        For each filter:
-        1. Observations with NaN filtered returns at FORMATION date are excluded from ranking
-        2. EA uses original ret for ranked observations
-        3. EP uses filtered ret for ranked observations (NaN excluded from mean)
+        Combines results from all (signal × rating) combinations into
+        a single DataUncertaintyResults object.
+        """
+        t0 = time.time()
 
-        This is MUCH faster than slow path due to:
-        - Single data extraction pass
-        - Vectorized filter application
-        - ALL (date × filter) combinations processed in parallel via numba prange
-        - Filter-specific ranking computed in parallel
+        n_filters = len(self._filter_configs)
+        n_signals = len(self.signals)
+        n_ratings = len(self.ratings)
+        n_hps = len(self.holding_periods)
+
+        if self.verbose:
+            print(f"DataUncertaintyAnalysis FAST PATH: {n_signals} signals × {n_ratings} ratings × {n_filters} filters × {n_hps} HPs")
+            print(f"  Signals: {self.signals}")
+            print(f"  Ratings: {self.ratings}")
+            print(f"  Holding periods: {self.holding_periods}")
+
+        # Accumulate results from all (signal × rating) combinations
+        all_ew_ea = {}
+        all_vw_ea = {}
+        all_ew_ep = {}
+        all_vw_ep = {}
+        all_config_rows = []
+
+        for signal_col in self.signals:
+            for rating_cat in self.ratings:
+                result = self._fit_fast_single(signal_col, rating_cat)
+
+                # Merge results
+                all_ew_ea.update(result['ew_ea'])
+                all_vw_ea.update(result['vw_ea'])
+                all_ew_ep.update(result['ew_ep'])
+                all_vw_ep.update(result['vw_ep'])
+                all_config_rows.extend(result['configs'])
+
+        # Create DataFrames
+        dates = self.data['date'].unique()
+        dates = np.sort(dates)
+
+        ew_ea = pd.DataFrame(all_ew_ea, index=dates)
+        vw_ea = pd.DataFrame(all_vw_ea, index=dates)
+        ew_ep = pd.DataFrame(all_ew_ep, index=dates)
+        vw_ep = pd.DataFrame(all_vw_ep, index=dates)
+        configs = pd.DataFrame(all_config_rows)
+
+        elapsed = time.time() - t0
+        if self.verbose:
+            print(f"BLAZING FAST PATH completed in {elapsed:.1f}s")
+
+        return DataUncertaintyResults(
+            ew_ea=ew_ea,
+            vw_ea=vw_ea,
+            ew_ep=ew_ep,
+            vw_ep=vw_ep,
+            configs=configs
+        )
+
+    def _fit_fast_single(
+        self,
+        signal_col: str,
+        rating_cat: Optional[str]
+    ) -> Dict[str, Any]:
+        """
+        BLAZING FAST path for a single signal and rating category.
+
+        Parameters
+        ----------
+        signal_col : str
+            Signal column name
+        rating_cat : str or None
+            Rating category: 'IG', 'NIG', or None (all bonds)
+
+        Returns
+        -------
+        Dict with keys: 'ew_ea', 'vw_ea', 'ew_ep', 'vw_ep', 'configs'
+            Each value is a dict mapping column_name to Series/list
         """
         from .numba_core import (
             compute_ranks_all_filters,
@@ -1107,15 +1219,10 @@ class DataUncertaintyAnalysis:
             compute_ls_returns_all_filters_staggered
         )
 
-        t0 = time.time()
-
-        signal_col = self.signals[0]
         n_filters = len(self._filter_configs)
 
-        if self.verbose:
-            print(f"DataUncertaintyAnalysis FAST PATH: {n_filters} filters × {len(self.holding_periods)} HPs")
-            print(f"  Signal: {signal_col}")
-            print(f"  Holding periods: {self.holding_periods}")
+        # Rating suffix for column names
+        rating_suffix = f"_{rating_cat}" if rating_cat is not None else ""
 
         # =====================================================================
         # Step 1: Extract numpy arrays from DataFrame (ONCE)
@@ -1138,6 +1245,9 @@ class DataUncertaintyAnalysis:
         signal = data[signal_col].values.astype(np.float64)
         ret = data['ret'].values.astype(np.float64)
         vw = data['VW'].values.astype(np.float64)
+
+        # Rating array for rating mask
+        rating_num = data['RATING_NUM'].values.astype(np.float64)
 
         # Optional arrays for filters
         price = data['PRICE'].values.astype(np.float64) if 'PRICE' in data.columns else None
@@ -1163,10 +1273,24 @@ class DataUncertaintyAnalysis:
         t_filter = time.time()
         filtered_returns, filter_names = self._apply_filters_vectorized(ret, price, ret_lag)
         if self.verbose:
-            print(f"  Filters applied in {time.time() - t_filter:.2f}s")
+            print(f"    Filters applied in {time.time() - t_filter:.2f}s")
 
         # =====================================================================
-        # Step 3: Build filter masks for ALL filters
+        # Step 3: Build rating mask (formation-date eligibility)
+        # =====================================================================
+        # Rating mask determines which bonds are eligible for portfolio formation
+        # at each observation's date. This is AND-ed with filter masks.
+        # IG: RATING_NUM 1-10, NIG: RATING_NUM 11-22
+        if rating_cat == 'IG':
+            rating_mask = (rating_num >= 1) & (rating_num <= 10)
+        elif rating_cat == 'NIG':
+            rating_mask = (rating_num >= 11) & (rating_num <= 22)
+        else:
+            # None = all bonds
+            rating_mask = np.ones(len(ret), dtype=np.bool_)
+
+        # =====================================================================
+        # Step 4: Build filter masks for ALL filters (combined with rating mask)
         # =====================================================================
         # filter_masks[i, f] = True if observation i should be included in ranking for filter f
         filter_masks = np.zeros((len(ret), n_filters), dtype=np.bool_)
@@ -1174,17 +1298,17 @@ class DataUncertaintyAnalysis:
 
         for f_idx, fc in enumerate(self._filter_configs):
             if fc.filter_type in ('baseline', 'wins'):
-                # Baseline and wins: include all observations with valid signal
-                filter_masks[:, f_idx] = ~np.isnan(signal)
+                # Baseline and wins: include all observations with valid signal AND valid rating
+                filter_masks[:, f_idx] = ~np.isnan(signal) & rating_mask
             else:
-                # Trim/price/bounce: exclude observations with NaN filtered returns
-                filter_masks[:, f_idx] = ~np.isnan(filtered_returns[:, f_idx])
+                # Trim/price/bounce: exclude observations with NaN filtered returns AND apply rating
+                filter_masks[:, f_idx] = ~np.isnan(filtered_returns[:, f_idx]) & rating_mask
 
             if fc.filter_type == 'wins':
                 wins_filter_indices.append(f_idx)
 
         # =====================================================================
-        # Step 4: Compute ranks for ALL filters at once (PARALLEL)
+        # Step 5: Compute ranks for ALL filters at once (PARALLEL)
         # =====================================================================
         t_ranks = time.time()
         nport = self.num_portfolios
@@ -1192,20 +1316,20 @@ class DataUncertaintyAnalysis:
             date_idx, signal, filter_masks, n_dates, nport, n_filters
         )
         if self.verbose:
-            print(f"  Ranks computed in {time.time() - t_ranks:.2f}s")
+            print(f"    Ranks computed in {time.time() - t_ranks:.2f}s")
 
         # =====================================================================
-        # Step 5: Build rank lookup tables for ALL filters
+        # Step 6: Build rank lookup tables for ALL filters
         # =====================================================================
         t_lookup = time.time()
         rank_lookups = build_rank_lookups_all_filters(
             date_idx, id_idx, ranks_all, n_dates, n_ids, n_filters
         )
         if self.verbose:
-            print(f"  Rank lookups built in {time.time() - t_lookup:.2f}s")
+            print(f"    Rank lookups built in {time.time() - t_lookup:.2f}s")
 
         # =====================================================================
-        # Step 6: Build VW lookup table (for HP > 1 and VW from d-1)
+        # Step 7: Build VW lookup table (for HP > 1 and VW from d-1)
         # =====================================================================
         vw_lookup = np.full(n_dates * n_ids, np.nan, dtype=np.float64)
         for i in range(len(date_idx)):
@@ -1225,14 +1349,13 @@ class DataUncertaintyAnalysis:
                     vw_d_minus_1[i] = vw_lookup[lookup_idx]
 
         # =====================================================================
-        # Step 7: Compute returns for ALL (HP, filter) combinations (PARALLEL)
+        # Step 8: Compute returns for ALL (HP, filter) combinations (PARALLEL)
         # =====================================================================
         ew_ea_dict = {}
         vw_ea_dict = {}
         ew_ep_dict = {}
         vw_ep_dict = {}
         config_rows = []
-        signal_name = signal_col
 
         for hp in self.holding_periods:
             t_hp = time.time()
@@ -1252,47 +1375,39 @@ class DataUncertaintyAnalysis:
 
             # Extract results for each filter
             for f_idx, fc in enumerate(self._filter_configs):
-                col_name = f"{signal_name}_hp{hp}_{fc.get_column_suffix()}"
+                # Column name includes signal, hp, filter, and rating suffix
+                col_name = f"{signal_col}_hp{hp}_{fc.get_column_suffix()}{rating_suffix}"
                 is_wins = fc.filter_type == 'wins'
 
-                ew_ea_dict[col_name] = pd.Series(ew_ea_ls[:, f_idx], index=dates)
-                vw_ea_dict[col_name] = pd.Series(vw_ea_ls[:, f_idx], index=dates)
+                ew_ea_dict[col_name] = ew_ea_ls[:, f_idx]
+                vw_ea_dict[col_name] = vw_ea_ls[:, f_idx]
 
                 # For wins filter, EP is not available (slow path returns NaN)
                 if is_wins:
-                    ew_ep_dict[col_name] = pd.Series(np.full(n_dates, np.nan), index=dates)
-                    vw_ep_dict[col_name] = pd.Series(np.full(n_dates, np.nan), index=dates)
+                    ew_ep_dict[col_name] = np.full(n_dates, np.nan)
+                    vw_ep_dict[col_name] = np.full(n_dates, np.nan)
                 else:
-                    ew_ep_dict[col_name] = pd.Series(ew_ep_ls[:, f_idx], index=dates)
-                    vw_ep_dict[col_name] = pd.Series(vw_ep_ls[:, f_idx], index=dates)
+                    ew_ep_dict[col_name] = ew_ep_ls[:, f_idx]
+                    vw_ep_dict[col_name] = vw_ep_ls[:, f_idx]
 
                 config_rows.append({
                     'column_name': col_name,
-                    'signal': signal_name,
+                    'signal': signal_col,
                     'hp': hp,
+                    'rating': rating_cat,
                     'filter_type': fc.filter_type,
                     'level': fc.level,
                     'location': fc.location
                 })
 
             if self.verbose:
-                print(f"  HP={hp}: Processed {n_filters} filters in {time.time() - t_hp:.2f}s")
+                print(f"    HP={hp}: Processed {n_filters} filters in {time.time() - t_hp:.2f}s")
 
-        # Create DataFrames
-        ew_ea = pd.DataFrame(ew_ea_dict)
-        vw_ea = pd.DataFrame(vw_ea_dict)
-        ew_ep = pd.DataFrame(ew_ep_dict)
-        vw_ep = pd.DataFrame(vw_ep_dict)
-        configs = pd.DataFrame(config_rows)
-
-        elapsed = time.time() - t0
-        if self.verbose:
-            print(f"BLAZING FAST PATH completed in {elapsed:.1f}s")
-
-        return DataUncertaintyResults(
-            ew_ea=ew_ea,
-            vw_ea=vw_ea,
-            ew_ep=ew_ep,
-            vw_ep=vw_ep,
-            configs=configs
-        )
+        # Return dict of results (will be combined in _fit_fast_all_signals)
+        return {
+            'ew_ea': ew_ea_dict,
+            'vw_ea': vw_ea_dict,
+            'ew_ep': ew_ep_dict,
+            'vw_ep': vw_ep_dict,
+            'configs': config_rows
+        }
