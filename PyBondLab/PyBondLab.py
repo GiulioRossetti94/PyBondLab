@@ -644,6 +644,17 @@ class StrategyFormation:
             categories=uniques
         ).codes.astype(np.int64) + 1
 
+        # Also factorize IDs in data_winsorized_ex_post if it exists (wins filter)
+        # This is needed because the Filter creates data_winsorized_ex_post before
+        # ID factorization, so the IDs would be mismatched otherwise
+        if hasattr(self, 'filter_obj') and self.filter_obj is not None:
+            if hasattr(self.filter_obj, 'data_winsorized_ex_post') and self.filter_obj.data_winsorized_ex_post is not None:
+                wdf = self.filter_obj.data_winsorized_ex_post
+                wdf[ColumnNames.ID] = pd.Categorical(
+                    wdf[ColumnNames.ID],
+                    categories=uniques
+                ).codes.astype(np.int64) + 1
+
         # Normalize dates
         if not pd.api.types.is_datetime64_any_dtype(self.data[ColumnNames.DATE]):
             self.data[ColumnNames.DATE] = pd.to_datetime(self.data[ColumnNames.DATE])
