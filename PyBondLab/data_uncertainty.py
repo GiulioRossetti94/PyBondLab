@@ -1087,21 +1087,24 @@ class DataUncertaintyAnalysis:
 
     def _fit_fast(self) -> DataUncertaintyResults:
         """
-        Fast path: process all filters with proper exclusion behavior.
+        BLAZING FAST path: process all filters and dates in parallel.
 
         For each filter:
         1. Observations with NaN filtered returns at FORMATION date are excluded from ranking
         2. EA uses original ret for ranked observations
         3. EP uses filtered ret for ranked observations (NaN excluded from mean)
 
-        This is faster than slow path due to:
+        This is MUCH faster than slow path due to:
         - Single data extraction pass
         - Vectorized filter application
-        - Optimized numba kernels
+        - ALL (date × filter) combinations processed in parallel via numba prange
+        - Filter-specific ranking computed in parallel
         """
         from .numba_core import (
-            compute_ranks_with_filter_mask,
-            compute_portfolio_returns_single
+            compute_ranks_all_filters,
+            build_rank_lookups_all_filters,
+            compute_ls_returns_all_filters_hp1,
+            compute_ls_returns_all_filters_staggered
         )
 
         t0 = time.time()
@@ -1163,7 +1166,46 @@ class DataUncertaintyAnalysis:
             print(f"  Filters applied in {time.time() - t_filter:.2f}s")
 
         # =====================================================================
-        # Step 3: Build VW lookup table (for HP > 1)
+        # Step 3: Build filter masks for ALL filters
+        # =====================================================================
+        # filter_masks[i, f] = True if observation i should be included in ranking for filter f
+        filter_masks = np.zeros((len(ret), n_filters), dtype=np.bool_)
+        wins_filter_indices = []
+
+        for f_idx, fc in enumerate(self._filter_configs):
+            if fc.filter_type in ('baseline', 'wins'):
+                # Baseline and wins: include all observations with valid signal
+                filter_masks[:, f_idx] = ~np.isnan(signal)
+            else:
+                # Trim/price/bounce: exclude observations with NaN filtered returns
+                filter_masks[:, f_idx] = ~np.isnan(filtered_returns[:, f_idx])
+
+            if fc.filter_type == 'wins':
+                wins_filter_indices.append(f_idx)
+
+        # =====================================================================
+        # Step 4: Compute ranks for ALL filters at once (PARALLEL)
+        # =====================================================================
+        t_ranks = time.time()
+        nport = self.num_portfolios
+        ranks_all = compute_ranks_all_filters(
+            date_idx, signal, filter_masks, n_dates, nport, n_filters
+        )
+        if self.verbose:
+            print(f"  Ranks computed in {time.time() - t_ranks:.2f}s")
+
+        # =====================================================================
+        # Step 5: Build rank lookup tables for ALL filters
+        # =====================================================================
+        t_lookup = time.time()
+        rank_lookups = build_rank_lookups_all_filters(
+            date_idx, id_idx, ranks_all, n_dates, n_ids, n_filters
+        )
+        if self.verbose:
+            print(f"  Rank lookups built in {time.time() - t_lookup:.2f}s")
+
+        # =====================================================================
+        # Step 6: Build VW lookup table (for HP > 1 and VW from d-1)
         # =====================================================================
         vw_lookup = np.full(n_dates * n_ids, np.nan, dtype=np.float64)
         for i in range(len(date_idx)):
@@ -1183,219 +1225,46 @@ class DataUncertaintyAnalysis:
                     vw_d_minus_1[i] = vw_lookup[lookup_idx]
 
         # =====================================================================
-        # Step 4: Process each (HP, filter) combination
+        # Step 7: Compute returns for ALL (HP, filter) combinations (PARALLEL)
         # =====================================================================
-        # Each filter needs its own ranking because filtered observations are
-        # excluded from portfolio formation
         ew_ea_dict = {}
         vw_ea_dict = {}
         ew_ep_dict = {}
         vw_ep_dict = {}
         config_rows = []
-
         signal_name = signal_col
-        nport = self.num_portfolios
 
         for hp in self.holding_periods:
             t_hp = time.time()
 
-            for f_idx, fc in enumerate(self._filter_configs):
-                col_name = f"{signal_name}_hp{hp}_{fc.get_column_suffix()}"
-
-                # Create filter mask: True = include in ranking
-                # For baseline/wins: rank based on valid signal only
-                # For trim/price/bounce: exclude observations with NaN filtered returns
-                is_wins = fc.filter_type == 'wins'
-                if fc.filter_type in ('baseline', 'wins'):
-                    # Baseline and winsorization: rank all observations with valid signal
-                    # Wins clips values, doesn't exclude them
-                    filter_mask = ~np.isnan(signal)
-                else:
-                    # Trim/price/bounce: exclude observations with NaN filtered returns
-                    filter_mask = ~np.isnan(filtered_returns[:, f_idx])
-
-                # Compute ranks for this filter
-                ranks = compute_ranks_with_filter_mask(
-                    date_idx, signal, filter_mask, n_dates, nport
+            if hp == 1:
+                # HP=1: Use optimized kernel for HP=1
+                ew_ea_ls, vw_ea_ls, ew_ep_ls, vw_ep_ls = compute_ls_returns_all_filters_hp1(
+                    date_idx, id_idx, ret, filtered_returns, vw_d_minus_1,
+                    rank_lookups, n_dates, n_ids, nport, n_filters
+                )
+            else:
+                # HP>1: Use staggered rebalancing kernel
+                ew_ea_ls, vw_ea_ls, ew_ep_ls, vw_ep_ls = compute_ls_returns_all_filters_staggered(
+                    date_idx, id_idx, ret, filtered_returns, vw_lookup,
+                    rank_lookups, n_dates, n_ids, nport, n_filters, hp, self.dynamic_weights
                 )
 
-                # Build rank lookup table
-                rank_lookup = np.full(n_dates * n_ids, np.nan, dtype=np.float64)
-                for i in range(len(date_idx)):
-                    d = date_idx[i]
-                    bond_id = id_idx[i]
-                    if d >= 0 and d < n_dates and bond_id >= 0 and bond_id < n_ids:
-                        rank_lookup[d * n_ids + bond_id] = ranks[i]
+            # Extract results for each filter
+            for f_idx, fc in enumerate(self._filter_configs):
+                col_name = f"{signal_name}_hp{hp}_{fc.get_column_suffix()}"
+                is_wins = fc.filter_type == 'wins'
 
-                # Compute portfolio returns for this filter
-                # For HP=1: formation at d, return at d+1
-                # For HP>1: staggered cohorts
+                ew_ea_dict[col_name] = pd.Series(ew_ea_ls[:, f_idx], index=dates)
+                vw_ea_dict[col_name] = pd.Series(vw_ea_ls[:, f_idx], index=dates)
 
-                ew_ea_arr = np.full(n_dates, np.nan, dtype=np.float64)
-                vw_ea_arr = np.full(n_dates, np.nan, dtype=np.float64)
-                ew_ep_arr = np.full(n_dates, np.nan, dtype=np.float64)
-                vw_ep_arr = np.full(n_dates, np.nan, dtype=np.float64)
-
-                if hp == 1:
-                    # HP=1: Simple case, formation at d-1, return at d
-                    for d in range(1, n_dates):
-                        form_d = d - 1
-
-                        # Gather observations for this return date
-                        ret_mask = date_idx == d
-                        ret_indices = np.where(ret_mask)[0]
-
-                        if len(ret_indices) == 0:
-                            continue
-
-                        # Get ranks from formation date and returns from return date
-                        # IMPORTANT: Only include bonds at formation, return, AND VW dates
-                        # This matches slow path's intersect_id behavior
-                        obs_ranks = np.full(len(ret_indices), np.nan)
-                        obs_ret_ea = np.full(len(ret_indices), np.nan)
-                        obs_ret_ep = np.full(len(ret_indices), np.nan)
-                        obs_vw = np.full(len(ret_indices), np.nan)
-
-                        for j, idx in enumerate(ret_indices):
-                            bond_id = id_idx[idx]
-
-                            # Check VW at d-1 (required for intersection)
-                            vw_val = vw_d_minus_1[idx]
-                            if np.isnan(vw_val):
-                                continue  # Bond not at VW date, skip
-
-                            # Check rank at formation date
-                            lookup_idx = form_d * n_ids + bond_id
-                            if lookup_idx >= 0 and lookup_idx < len(rank_lookup):
-                                rank_val = rank_lookup[lookup_idx]
-                                if np.isnan(rank_val):
-                                    continue  # Bond not ranked at formation, skip
-                                obs_ranks[j] = rank_val
-                            else:
-                                continue
-
-                            obs_ret_ea[j] = ret[idx]
-                            obs_ret_ep[j] = filtered_returns[idx, f_idx]
-                            obs_vw[j] = vw_val
-
-                        # Compute portfolio returns
-                        ew_ea_ptf, vw_ea_ptf = compute_portfolio_returns_single(
-                            obs_ranks, obs_ret_ea, obs_vw, nport
-                        )
-                        ew_ep_ptf, vw_ep_ptf = compute_portfolio_returns_single(
-                            obs_ranks, obs_ret_ep, obs_vw, nport
-                        )
-
-                        # Long-short
-                        if not np.isnan(ew_ea_ptf[-1]) and not np.isnan(ew_ea_ptf[0]):
-                            ew_ea_arr[d] = ew_ea_ptf[-1] - ew_ea_ptf[0]
-                        if not np.isnan(vw_ea_ptf[-1]) and not np.isnan(vw_ea_ptf[0]):
-                            vw_ea_arr[d] = vw_ea_ptf[-1] - vw_ea_ptf[0]
-                        if not np.isnan(ew_ep_ptf[-1]) and not np.isnan(ew_ep_ptf[0]):
-                            ew_ep_arr[d] = ew_ep_ptf[-1] - ew_ep_ptf[0]
-                        if not np.isnan(vw_ep_ptf[-1]) and not np.isnan(vw_ep_ptf[0]):
-                            vw_ep_arr[d] = vw_ep_ptf[-1] - vw_ep_ptf[0]
-
-                else:
-                    # HP > 1: Staggered rebalancing with cohort averaging
-                    for d in range(1, n_dates):
-                        cohort_ew_ea = []
-                        cohort_vw_ea = []
-                        cohort_ew_ep = []
-                        cohort_vw_ep = []
-
-                        for cohort in range(hp):
-                            if d < cohort + 1:
-                                continue
-
-                            offset = (d - 1 - cohort) % hp
-                            form_d = d - 1 - offset
-
-                            if form_d < 0 or form_d >= n_dates:
-                                continue
-
-                            # Gather observations
-                            ret_mask = date_idx == d
-                            ret_indices = np.where(ret_mask)[0]
-
-                            if len(ret_indices) == 0:
-                                continue
-
-                            obs_ranks = np.full(len(ret_indices), np.nan)
-                            obs_ret_ea = np.full(len(ret_indices), np.nan)
-                            obs_ret_ep = np.full(len(ret_indices), np.nan)
-                            obs_vw = np.full(len(ret_indices), np.nan)
-
-                            for j, idx in enumerate(ret_indices):
-                                bond_id = id_idx[idx]
-
-                                # VW based on dynamic_weights setting
-                                if self.dynamic_weights:
-                                    vw_date = d - 1
-                                else:
-                                    vw_date = form_d
-
-                                # Check VW at VW date (required for intersection)
-                                vw_lookup_idx = vw_date * n_ids + bond_id
-                                if vw_lookup_idx >= 0 and vw_lookup_idx < len(vw_lookup):
-                                    vw_val = vw_lookup[vw_lookup_idx]
-                                    if np.isnan(vw_val):
-                                        continue  # Bond not at VW date, skip
-                                else:
-                                    continue
-
-                                # Check rank at formation date
-                                lookup_idx = form_d * n_ids + bond_id
-                                if lookup_idx >= 0 and lookup_idx < len(rank_lookup):
-                                    rank_val = rank_lookup[lookup_idx]
-                                    if np.isnan(rank_val):
-                                        continue  # Bond not ranked at formation, skip
-                                    obs_ranks[j] = rank_val
-                                else:
-                                    continue
-
-                                obs_ret_ea[j] = ret[idx]
-                                obs_ret_ep[j] = filtered_returns[idx, f_idx]
-                                obs_vw[j] = vw_val
-
-                            # Compute cohort returns
-                            ew_ea_ptf, vw_ea_ptf = compute_portfolio_returns_single(
-                                obs_ranks, obs_ret_ea, obs_vw, nport
-                            )
-                            ew_ep_ptf, vw_ep_ptf = compute_portfolio_returns_single(
-                                obs_ranks, obs_ret_ep, obs_vw, nport
-                            )
-
-                            # Long-short for this cohort
-                            if not np.isnan(ew_ea_ptf[-1]) and not np.isnan(ew_ea_ptf[0]):
-                                cohort_ew_ea.append(ew_ea_ptf[-1] - ew_ea_ptf[0])
-                            if not np.isnan(vw_ea_ptf[-1]) and not np.isnan(vw_ea_ptf[0]):
-                                cohort_vw_ea.append(vw_ea_ptf[-1] - vw_ea_ptf[0])
-                            if not np.isnan(ew_ep_ptf[-1]) and not np.isnan(ew_ep_ptf[0]):
-                                cohort_ew_ep.append(ew_ep_ptf[-1] - ew_ep_ptf[0])
-                            if not np.isnan(vw_ep_ptf[-1]) and not np.isnan(vw_ep_ptf[0]):
-                                cohort_vw_ep.append(vw_ep_ptf[-1] - vw_ep_ptf[0])
-
-                        # Average across cohorts
-                        if cohort_ew_ea:
-                            ew_ea_arr[d] = np.mean(cohort_ew_ea)
-                        if cohort_vw_ea:
-                            vw_ea_arr[d] = np.mean(cohort_vw_ea)
-                        if cohort_ew_ep:
-                            ew_ep_arr[d] = np.mean(cohort_ew_ep)
-                        if cohort_vw_ep:
-                            vw_ep_arr[d] = np.mean(cohort_vw_ep)
-
-                # Store results
-                ew_ea_dict[col_name] = pd.Series(ew_ea_arr, index=dates)
-                vw_ea_dict[col_name] = pd.Series(vw_ea_arr, index=dates)
                 # For wins filter, EP is not available (slow path returns NaN)
                 if is_wins:
                     ew_ep_dict[col_name] = pd.Series(np.full(n_dates, np.nan), index=dates)
                     vw_ep_dict[col_name] = pd.Series(np.full(n_dates, np.nan), index=dates)
                 else:
-                    ew_ep_dict[col_name] = pd.Series(ew_ep_arr, index=dates)
-                    vw_ep_dict[col_name] = pd.Series(vw_ep_arr, index=dates)
+                    ew_ep_dict[col_name] = pd.Series(ew_ep_ls[:, f_idx], index=dates)
+                    vw_ep_dict[col_name] = pd.Series(vw_ep_ls[:, f_idx], index=dates)
 
                 config_rows.append({
                     'column_name': col_name,
@@ -1418,7 +1287,7 @@ class DataUncertaintyAnalysis:
 
         elapsed = time.time() - t0
         if self.verbose:
-            print(f"FAST PATH completed in {elapsed:.1f}s")
+            print(f"BLAZING FAST PATH completed in {elapsed:.1f}s")
 
         return DataUncertaintyResults(
             ew_ea=ew_ea,

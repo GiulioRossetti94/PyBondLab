@@ -2405,3 +2405,440 @@ def compute_returns_multi_filter_staggered(
                     vw_ep[d, p, f] = vw_sum / vw_cnt
 
     return ew_ea, vw_ea, ew_ep, vw_ep
+
+
+# =============================================================================
+# BLAZING FAST: Filter-Specific Ranking Kernels for Data Uncertainty
+# =============================================================================
+
+@njit(cache=True, parallel=True)
+def compute_ranks_all_filters(
+    date_idx: np.ndarray,          # (n,) date index for each row
+    signal: np.ndarray,            # (n,) signal values to rank
+    filter_masks: np.ndarray,      # (n, n_filters) boolean masks - True = include
+    n_dates: int,
+    nport: int,
+    n_filters: int
+) -> np.ndarray:
+    """
+    Compute portfolio ranks for ALL filters at once in parallel.
+
+    Each filter has its own ranking based on its filter mask.
+
+    Parameters
+    ----------
+    date_idx : np.ndarray
+        Date index (0-indexed) for each observation
+    signal : np.ndarray
+        Signal values to rank
+    filter_masks : np.ndarray
+        Boolean masks (n_obs, n_filters) - True means include in ranking
+    n_dates : int
+        Total number of dates
+    nport : int
+        Number of portfolios
+    n_filters : int
+        Number of filters
+
+    Returns
+    -------
+    np.ndarray
+        Shape (n_obs, n_filters) - portfolio rank per observation per filter
+    """
+    n = len(date_idx)
+    ranks = np.full((n, n_filters), np.nan, dtype=np.float64)
+
+    # Process each (date, filter) combination in parallel
+    # Flatten to single loop for better parallelization
+    n_combos = n_dates * n_filters
+
+    for combo in prange(n_combos):
+        d = combo // n_filters
+        f = combo % n_filters
+
+        # Count valid observations for this (date, filter)
+        count = 0
+        for i in range(n):
+            if date_idx[i] == d and filter_masks[i, f] and not np.isnan(signal[i]):
+                count += 1
+
+        if count == 0:
+            continue
+
+        # Gather valid observations
+        valid_indices = np.empty(count, dtype=np.int64)
+        valid_signals = np.empty(count, dtype=np.float64)
+        pos = 0
+        for i in range(n):
+            if date_idx[i] == d and filter_masks[i, f] and not np.isnan(signal[i]):
+                valid_indices[pos] = i
+                valid_signals[pos] = signal[i]
+                pos += 1
+
+        # Sort by signal
+        order = np.argsort(valid_signals)
+
+        # Compute percentile thresholds
+        thresholds = np.empty(nport + 1, dtype=np.float64)
+        thresholds[0] = -np.inf
+
+        for p in range(1, nport + 1):
+            pct = (p * 100.0 / nport)
+            pos_f = (pct / 100.0) * (count - 1)
+            idx_low = int(pos_f)
+            idx_high = idx_low + 1
+            frac = pos_f - idx_low
+
+            if idx_high >= count:
+                thresholds[p] = valid_signals[order[count - 1]]
+            else:
+                val_low = valid_signals[order[idx_low]]
+                val_high = valid_signals[order[idx_high]]
+                thresholds[p] = val_low + frac * (val_high - val_low)
+
+        # Assign bins
+        for i in range(count):
+            orig_idx = valid_indices[i]
+            val = valid_signals[i]
+
+            for p in range(nport):
+                if val > thresholds[p] and val <= thresholds[p + 1]:
+                    ranks[orig_idx, f] = p + 1
+                    break
+
+    return ranks
+
+
+@njit(cache=True, parallel=True)
+def build_rank_lookups_all_filters(
+    date_idx: np.ndarray,      # (n,) date index
+    id_idx: np.ndarray,        # (n,) bond ID index
+    ranks: np.ndarray,         # (n, n_filters) ranks per filter
+    n_dates: int,
+    n_ids: int,
+    n_filters: int
+) -> np.ndarray:
+    """
+    Build rank lookup tables for ALL filters at once.
+
+    Returns
+    -------
+    np.ndarray
+        Shape (n_dates * n_ids, n_filters) - rank lookup per filter
+    """
+    n = len(date_idx)
+    rank_lookups = np.full((n_dates * n_ids, n_filters), np.nan, dtype=np.float64)
+
+    # Parallel over observations (each writes to unique location)
+    for i in prange(n):
+        d = date_idx[i]
+        bond_id = id_idx[i]
+        if d >= 0 and d < n_dates and bond_id >= 0 and bond_id < n_ids:
+            lookup_idx = d * n_ids + bond_id
+            for f in range(n_filters):
+                rank_lookups[lookup_idx, f] = ranks[i, f]
+
+    return rank_lookups
+
+
+@njit(cache=True, parallel=True)
+def compute_ls_returns_all_filters_hp1(
+    ret_date_idx: np.ndarray,      # (n,) date index for return observations
+    ret_id_idx: np.ndarray,        # (n,) bond ID index
+    returns_ea: np.ndarray,        # (n,) EA returns (original ret)
+    returns_ep: np.ndarray,        # (n, n_filters) EP returns per filter
+    weights: np.ndarray,           # (n,) VW weights from d-1
+    rank_lookups: np.ndarray,      # (n_dates * n_ids, n_filters) rank lookups
+    n_dates: int,
+    n_ids: int,
+    nport: int,
+    n_filters: int
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Compute long-short returns for ALL dates and ALL filters (HP=1).
+
+    Each filter uses its own ranking for both EA and EP returns.
+
+    Returns
+    -------
+    Tuple of 4 arrays:
+        ew_ea_ls: (n_dates, n_filters) - EW EA long-short per filter
+        vw_ea_ls: (n_dates, n_filters) - VW EA long-short per filter
+        ew_ep_ls: (n_dates, n_filters) - EW EP long-short per filter
+        vw_ep_ls: (n_dates, n_filters) - VW EP long-short per filter
+    """
+    n_ret = len(ret_date_idx)
+
+    # Output: long-short returns per date per filter
+    ew_ea_ls = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
+    vw_ea_ls = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
+    ew_ep_ls = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
+    vw_ep_ls = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
+
+    # Process in parallel over (date, filter) combinations
+    n_combos = n_dates * n_filters
+
+    for combo in prange(n_combos):
+        d = combo // n_filters
+        f = combo % n_filters
+
+        if d == 0:
+            continue
+
+        form_d = d - 1
+
+        # Accumulators for this (date, filter)
+        ea_sum_ret = np.zeros(nport, dtype=np.float64)
+        ea_sum_wret = np.zeros(nport, dtype=np.float64)
+        ea_sum_weight = np.zeros(nport, dtype=np.float64)
+        ea_count = np.zeros(nport, dtype=np.int64)
+
+        ep_sum_ret = np.zeros(nport, dtype=np.float64)
+        ep_sum_wret = np.zeros(nport, dtype=np.float64)
+        ep_sum_weight = np.zeros(nport, dtype=np.float64)
+        ep_count = np.zeros(nport, dtype=np.int64)
+
+        # Process all return observations for this date
+        for i in range(n_ret):
+            if ret_date_idx[i] != d:
+                continue
+
+            bond_id = ret_id_idx[i]
+            weight = weights[i]
+
+            # Skip bonds without VW at d-1
+            if np.isnan(weight):
+                continue
+
+            # Look up rank from formation date for THIS filter
+            lookup_idx = form_d * n_ids + bond_id
+            if lookup_idx < 0 or lookup_idx >= n_dates * n_ids:
+                continue
+
+            rank = rank_lookups[lookup_idx, f]
+            if np.isnan(rank):
+                continue
+
+            p = int(rank) - 1
+            if p < 0 or p >= nport:
+                continue
+
+            # EA aggregation
+            ret_ea = returns_ea[i]
+            if not np.isnan(ret_ea):
+                ea_sum_ret[p] += ret_ea
+                ea_count[p] += 1
+                if weight > 0:
+                    ea_sum_wret[p] += ret_ea * weight
+                    ea_sum_weight[p] += weight
+
+            # EP aggregation
+            ret_ep = returns_ep[i, f]
+            if not np.isnan(ret_ep):
+                ep_sum_ret[p] += ret_ep
+                ep_count[p] += 1
+                if weight > 0:
+                    ep_sum_wret[p] += ret_ep * weight
+                    ep_sum_weight[p] += weight
+
+        # Compute portfolio returns
+        ew_ea_ptf = np.full(nport, np.nan, dtype=np.float64)
+        vw_ea_ptf = np.full(nport, np.nan, dtype=np.float64)
+        ew_ep_ptf = np.full(nport, np.nan, dtype=np.float64)
+        vw_ep_ptf = np.full(nport, np.nan, dtype=np.float64)
+
+        for p in range(nport):
+            if ea_count[p] > 0:
+                ew_ea_ptf[p] = ea_sum_ret[p] / ea_count[p]
+            if ea_sum_weight[p] > 0:
+                vw_ea_ptf[p] = ea_sum_wret[p] / ea_sum_weight[p]
+            if ep_count[p] > 0:
+                ew_ep_ptf[p] = ep_sum_ret[p] / ep_count[p]
+            if ep_sum_weight[p] > 0:
+                vw_ep_ptf[p] = ep_sum_wret[p] / ep_sum_weight[p]
+
+        # Long-short (high - low)
+        if not np.isnan(ew_ea_ptf[nport-1]) and not np.isnan(ew_ea_ptf[0]):
+            ew_ea_ls[d, f] = ew_ea_ptf[nport-1] - ew_ea_ptf[0]
+        if not np.isnan(vw_ea_ptf[nport-1]) and not np.isnan(vw_ea_ptf[0]):
+            vw_ea_ls[d, f] = vw_ea_ptf[nport-1] - vw_ea_ptf[0]
+        if not np.isnan(ew_ep_ptf[nport-1]) and not np.isnan(ew_ep_ptf[0]):
+            ew_ep_ls[d, f] = ew_ep_ptf[nport-1] - ew_ep_ptf[0]
+        if not np.isnan(vw_ep_ptf[nport-1]) and not np.isnan(vw_ep_ptf[0]):
+            vw_ep_ls[d, f] = vw_ep_ptf[nport-1] - vw_ep_ptf[0]
+
+    return ew_ea_ls, vw_ea_ls, ew_ep_ls, vw_ep_ls
+
+
+@njit(cache=True, parallel=True)
+def compute_ls_returns_all_filters_staggered(
+    ret_date_idx: np.ndarray,      # (n,) date index
+    ret_id_idx: np.ndarray,        # (n,) bond ID index
+    returns_ea: np.ndarray,        # (n,) EA returns
+    returns_ep: np.ndarray,        # (n, n_filters) EP returns per filter
+    vw_lookup: np.ndarray,         # (n_dates * n_ids,) VW lookup table
+    rank_lookups: np.ndarray,      # (n_dates * n_ids, n_filters) rank lookups
+    n_dates: int,
+    n_ids: int,
+    nport: int,
+    n_filters: int,
+    hp: int,
+    use_dynamic_weights: bool
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Compute long-short returns for ALL dates and ALL filters with staggered rebalancing (HP>1).
+
+    Each filter uses its own ranking for both EA and EP returns.
+    """
+    n_ret = len(ret_date_idx)
+
+    ew_ea_ls = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
+    vw_ea_ls = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
+    ew_ep_ls = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
+    vw_ep_ls = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
+
+    # Process in parallel over (date, filter) combinations
+    n_combos = n_dates * n_filters
+
+    for combo in prange(n_combos):
+        d = combo // n_filters
+        f = combo % n_filters
+
+        if d == 0:
+            continue
+
+        # Cohort accumulators
+        cohort_ew_ea = np.full((hp, nport), np.nan, dtype=np.float64)
+        cohort_vw_ea = np.full((hp, nport), np.nan, dtype=np.float64)
+        cohort_ew_ep = np.full((hp, nport), np.nan, dtype=np.float64)
+        cohort_vw_ep = np.full((hp, nport), np.nan, dtype=np.float64)
+
+        for cohort in range(hp):
+            if d < cohort + 1:
+                continue
+
+            offset = (d - 1 - cohort) % hp
+            form_d = d - 1 - offset
+
+            if form_d < 0 or form_d >= n_dates:
+                continue
+
+            # VW date depends on dynamic_weights
+            if use_dynamic_weights:
+                vw_d = d - 1
+            else:
+                vw_d = form_d
+
+            # Accumulators for this cohort
+            ea_sum_ret = np.zeros(nport, dtype=np.float64)
+            ea_sum_wret = np.zeros(nport, dtype=np.float64)
+            ea_sum_weight = np.zeros(nport, dtype=np.float64)
+            ea_count = np.zeros(nport, dtype=np.int64)
+
+            ep_sum_ret = np.zeros(nport, dtype=np.float64)
+            ep_sum_wret = np.zeros(nport, dtype=np.float64)
+            ep_sum_weight = np.zeros(nport, dtype=np.float64)
+            ep_count = np.zeros(nport, dtype=np.int64)
+
+            # Process return observations
+            for i in range(n_ret):
+                if ret_date_idx[i] != d:
+                    continue
+
+                bond_id = ret_id_idx[i]
+
+                # Get VW from appropriate date
+                vw_lookup_idx = vw_d * n_ids + bond_id
+                if vw_lookup_idx < 0 or vw_lookup_idx >= len(vw_lookup):
+                    continue
+                weight = vw_lookup[vw_lookup_idx]
+                if np.isnan(weight):
+                    continue
+
+                # Look up rank from formation date
+                rank_lookup_idx = form_d * n_ids + bond_id
+                if rank_lookup_idx < 0 or rank_lookup_idx >= n_dates * n_ids:
+                    continue
+                rank = rank_lookups[rank_lookup_idx, f]
+                if np.isnan(rank):
+                    continue
+
+                p = int(rank) - 1
+                if p < 0 or p >= nport:
+                    continue
+
+                # EA aggregation
+                ret_ea = returns_ea[i]
+                if not np.isnan(ret_ea):
+                    ea_sum_ret[p] += ret_ea
+                    ea_count[p] += 1
+                    if weight > 0:
+                        ea_sum_wret[p] += ret_ea * weight
+                        ea_sum_weight[p] += weight
+
+                # EP aggregation
+                ret_ep = returns_ep[i, f]
+                if not np.isnan(ret_ep):
+                    ep_sum_ret[p] += ret_ep
+                    ep_count[p] += 1
+                    if weight > 0:
+                        ep_sum_wret[p] += ret_ep * weight
+                        ep_sum_weight[p] += weight
+
+            # Compute cohort averages
+            for p in range(nport):
+                if ea_count[p] > 0:
+                    cohort_ew_ea[cohort, p] = ea_sum_ret[p] / ea_count[p]
+                if ea_sum_weight[p] > 0:
+                    cohort_vw_ea[cohort, p] = ea_sum_wret[p] / ea_sum_weight[p]
+                if ep_count[p] > 0:
+                    cohort_ew_ep[cohort, p] = ep_sum_ret[p] / ep_count[p]
+                if ep_sum_weight[p] > 0:
+                    cohort_vw_ep[cohort, p] = ep_sum_wret[p] / ep_sum_weight[p]
+
+        # Average across cohorts
+        ew_ea_ptf = np.full(nport, np.nan, dtype=np.float64)
+        vw_ea_ptf = np.full(nport, np.nan, dtype=np.float64)
+        ew_ep_ptf = np.full(nport, np.nan, dtype=np.float64)
+        vw_ep_ptf = np.full(nport, np.nan, dtype=np.float64)
+
+        for p in range(nport):
+            ew_ea_sum, vw_ea_sum = 0.0, 0.0
+            ew_ep_sum, vw_ep_sum = 0.0, 0.0
+            ew_ea_cnt, vw_ea_cnt = 0, 0
+            ew_ep_cnt, vw_ep_cnt = 0, 0
+
+            for cohort in range(hp):
+                if not np.isnan(cohort_ew_ea[cohort, p]):
+                    ew_ea_sum += cohort_ew_ea[cohort, p]
+                    ew_ea_cnt += 1
+                if not np.isnan(cohort_vw_ea[cohort, p]):
+                    vw_ea_sum += cohort_vw_ea[cohort, p]
+                    vw_ea_cnt += 1
+                if not np.isnan(cohort_ew_ep[cohort, p]):
+                    ew_ep_sum += cohort_ew_ep[cohort, p]
+                    ew_ep_cnt += 1
+                if not np.isnan(cohort_vw_ep[cohort, p]):
+                    vw_ep_sum += cohort_vw_ep[cohort, p]
+                    vw_ep_cnt += 1
+
+            if ew_ea_cnt > 0:
+                ew_ea_ptf[p] = ew_ea_sum / ew_ea_cnt
+            if vw_ea_cnt > 0:
+                vw_ea_ptf[p] = vw_ea_sum / vw_ea_cnt
+            if ew_ep_cnt > 0:
+                ew_ep_ptf[p] = ew_ep_sum / ew_ep_cnt
+            if vw_ep_cnt > 0:
+                vw_ep_ptf[p] = vw_ep_sum / vw_ep_cnt
+
+        # Long-short
+        if not np.isnan(ew_ea_ptf[nport-1]) and not np.isnan(ew_ea_ptf[0]):
+            ew_ea_ls[d, f] = ew_ea_ptf[nport-1] - ew_ea_ptf[0]
+        if not np.isnan(vw_ea_ptf[nport-1]) and not np.isnan(vw_ea_ptf[0]):
+            vw_ea_ls[d, f] = vw_ea_ptf[nport-1] - vw_ea_ptf[0]
+        if not np.isnan(ew_ep_ptf[nport-1]) and not np.isnan(ew_ep_ptf[0]):
+            ew_ep_ls[d, f] = ew_ep_ptf[nport-1] - ew_ep_ptf[0]
+        if not np.isnan(vw_ep_ptf[nport-1]) and not np.isnan(vw_ep_ptf[0]):
+            vw_ep_ls[d, f] = vw_ep_ptf[nport-1] - vw_ep_ptf[0]
+
+    return ew_ea_ls, vw_ea_ls, ew_ep_ls, vw_ep_ls
