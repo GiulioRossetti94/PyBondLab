@@ -101,7 +101,7 @@ class Filter:
 
     def _bounce(self, w):
         adj = 'bounce'
-        self.data['ret_LAG'] = self.data.groupby("ID")['ret'].shift(1)   
+        self.data['ret_LAG'] = self.data.groupby("ID", observed=False)['ret'].shift(1)   
         self.data['bounce'] = self.data['ret_LAG'] * self.data['ret']
         if isinstance(w, list) and len(w) == 2:
             lower_bound, upper_bound = w

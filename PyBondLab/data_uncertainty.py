@@ -449,17 +449,31 @@ def _run_single_config(
             )
 
         # Run strategy formation using legacy params (properly handles filters)
-        sf = StrategyFormation(
-            data=data,
-            strategy=strategy,
-            filters=filter_dict,
-            rating=rating,
-            turnover=False,
-            chars=None,
-            verbose=False,
-            dynamic_weights=dynamic_weights
-        )
-        result = sf.fit()
+        # Catch RuntimeWarning about "Mean of empty slice" - indicates filter has no effect
+        filter_warning = None
+        with warnings.catch_warnings(record=True) as caught_warnings:
+            warnings.simplefilter("always", RuntimeWarning)
+            sf = StrategyFormation(
+                data=data,
+                strategy=strategy,
+                filters=filter_dict,
+                rating=rating,
+                turnover=False,
+                chars=None,
+                verbose=False,
+                dynamic_weights=dynamic_weights
+            )
+            result = sf.fit()
+
+            # Check if any RuntimeWarnings about empty slices were caught
+            for w in caught_warnings:
+                if issubclass(w.category, RuntimeWarning):
+                    if 'empty slice' in str(w.message).lower() or 'mean of empty' in str(w.message).lower():
+                        filter_warning = (
+                            f"Filter has no effect - no observations meet the filter criteria. "
+                            f"Filter: {filter_dict}"
+                        )
+                        break
 
         # Extract long-short returns
         ew_ea, vw_ea = result.get_long_short()
@@ -478,7 +492,8 @@ def _run_single_config(
             'ew_ep': ew_ep,
             'vw_ep': vw_ep,
             'success': True,
-            'error': None
+            'error': None,
+            'warning': filter_warning
         }
 
     except Exception as e:
@@ -489,7 +504,8 @@ def _run_single_config(
             'ew_ep': None,
             'vw_ep': None,
             'success': False,
-            'error': str(e)
+            'error': str(e),
+            'warning': None
         }
 
 
@@ -794,7 +810,10 @@ class DataUncertaintyAnalysis:
 
                 if self.verbose:
                     if result['success']:
-                        print("OK")
+                        if result.get('warning'):
+                            print(f"OK (WARNING: {result['warning']})")
+                        else:
+                            print("OK")
                     else:
                         print(f"FAILED: {result['error']}")
 
@@ -837,7 +856,13 @@ class DataUncertaintyAnalysis:
                     results_list.append(result)
 
                     if self.verbose:
-                        status = "OK" if result['success'] else f"FAILED: {result['error']}"
+                        if result['success']:
+                            if result.get('warning'):
+                                status = f"OK (WARNING: {result['warning']})"
+                            else:
+                                status = "OK"
+                        else:
+                            status = f"FAILED: {result['error']}"
                         print(f"  [{completed}/{n_configs}] {col_name}... {status}")
 
         # Build output DataFrames
