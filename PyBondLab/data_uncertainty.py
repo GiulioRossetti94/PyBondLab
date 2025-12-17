@@ -640,9 +640,48 @@ class DataUncertaintyAnalysis:
                 warnings.warn(f"Unknown filter type: {filter_type}")
                 continue
 
-            for level in levels:
-                if filter_type == 'wins':
-                    # Wins: tuple of (percentile, location)
+            if filter_type == 'price':
+                # Price filter: requires nested format [[left_levels], [right_levels]]
+                # e.g., [[1,2,5,10], [125,150,200]]
+                if not (isinstance(levels, (list, tuple)) and len(levels) == 2 and
+                        isinstance(levels[0], (list, tuple)) and isinstance(levels[1], (list, tuple))):
+                    raise ValueError(
+                        f"Price filter requires nested format: [[left_levels], [right_levels]]\n"
+                        f"Example: 'price': [[1, 5, 10], [125, 150, 200]]\n"
+                        f"Got: {levels}"
+                    )
+
+                left_levels = levels[0]   # Exclude price < threshold
+                right_levels = levels[1]  # Exclude price > threshold
+
+                # Left tail configs
+                for lvl in left_levels:
+                    configs.append(FilterConfig(
+                        filter_type='price',
+                        level=lvl,
+                        location='left'
+                    ))
+
+                # Right tail configs
+                for lvl in right_levels:
+                    configs.append(FilterConfig(
+                        filter_type='price',
+                        level=lvl,
+                        location='right'
+                    ))
+
+                # Both configs (all combinations)
+                for left_lvl in left_levels:
+                    for right_lvl in right_levels:
+                        configs.append(FilterConfig(
+                            filter_type='price',
+                            level=[left_lvl, right_lvl],
+                            location='both'
+                        ))
+
+            elif filter_type == 'wins':
+                # Wins: tuple of (percentile, location)
+                for level in levels:
                     if isinstance(level, (list, tuple)) and len(level) == 2:
                         configs.append(FilterConfig(
                             filter_type='wins',
@@ -651,8 +690,9 @@ class DataUncertaintyAnalysis:
                         ))
                     else:
                         warnings.warn(f"Invalid wins config: {level}")
-                else:
-                    # Trim, price, bounce: infer location from level
+            else:
+                # Trim, bounce: infer location from level sign
+                for level in levels:
                     if isinstance(level, (list, tuple)):
                         location = 'both'
                     elif isinstance(level, (int, float)):
@@ -988,17 +1028,23 @@ class DataUncertaintyAnalysis:
 
             elif fc.filter_type == 'price':
                 # Price: set to NaN where price exceeds threshold
+                # location='left': exclude price < level (low prices)
+                # location='right': exclude price > level (high prices)
+                # location='both': exclude price < lower OR price > upper
                 if price is None:
                     filtered_returns[:, f_idx] = ret  # No price column, use original
                 else:
                     level = fc.level
-                    if isinstance(level, (list, tuple)):
+                    location = fc.location
+                    if location == 'both' and isinstance(level, (list, tuple)):
                         lower, upper = level
-                        mask = (price > upper) | (price < lower)
-                    elif level >= 0:
+                        mask = (price < lower) | (price > upper)
+                    elif location == 'left':
+                        mask = price < level
+                    elif location == 'right':
                         mask = price > level
                     else:
-                        mask = price < level
+                        mask = np.zeros(len(price), dtype=bool)
                     filtered_returns[:, f_idx] = np.where(mask, np.nan, ret)
 
             elif fc.filter_type == 'bounce':
