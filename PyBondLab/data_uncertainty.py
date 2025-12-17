@@ -774,6 +774,11 @@ class DataUncertaintyAnalysis:
         DataUncertaintyResults
             Results container with factor returns and summary statistics
         """
+        # Check if fast path can be used
+        if self._can_use_fast_path():
+            return self._fit_fast()
+
+        # Fall back to slow path
         t0 = time.time()
 
         # Generate all configurations
@@ -781,7 +786,7 @@ class DataUncertaintyAnalysis:
         n_configs = len(analysis_configs)
 
         if self.verbose:
-            print(f"DataUncertaintyAnalysis: Running {n_configs} configurations")
+            print(f"DataUncertaintyAnalysis SLOW PATH: Running {n_configs} configurations")
             print(f"  Signals: {self.signals if self.signals[0] else ['strategy']}")
             print(f"  Holding periods: {self.holding_periods}")
             print(f"  Filter types: {list(self.filters.keys()) + (['baseline'] if self.include_baseline else [])}")
@@ -907,6 +912,355 @@ class DataUncertaintyAnalysis:
         elapsed = time.time() - t0
         if self.verbose:
             print(f"Completed in {elapsed:.1f}s")
+
+        return DataUncertaintyResults(
+            ew_ea=ew_ea,
+            vw_ea=vw_ea,
+            ew_ep=ew_ep,
+            vw_ep=vw_ep,
+            configs=configs
+        )
+
+    # =========================================================================
+    # FAST PATH - Level 1 Optimization
+    # =========================================================================
+
+    def _can_use_fast_path(self) -> bool:
+        """
+        Check if fast path can be used.
+
+        Fast path requires:
+        - Pre-computed signals (not strategy-based)
+        - Single signal (multiple signals need different rankings)
+        - No strategy object (Momentum/LTreversal compute signal from returns)
+        """
+        if self.strategy is not None:
+            return False
+        if len(self.signals) != 1 or self.signals[0] is None:
+            return False
+        return True
+
+    def _apply_filters_vectorized(
+        self,
+        ret: np.ndarray,
+        price: Optional[np.ndarray],
+        ret_lag: Optional[np.ndarray]
+    ) -> Tuple[np.ndarray, List[str]]:
+        """
+        Apply all filters to returns in one vectorized pass.
+
+        Returns
+        -------
+        Tuple[np.ndarray, List[str]]
+            (filtered_returns, filter_names)
+            filtered_returns shape: (n_obs, n_filters)
+        """
+        n_obs = len(ret)
+        n_filters = len(self._filter_configs)
+
+        # Pre-allocate output
+        filtered_returns = np.empty((n_obs, n_filters), dtype=np.float64)
+        filter_names = []
+
+        for f_idx, fc in enumerate(self._filter_configs):
+            filter_names.append(fc.get_column_suffix())
+
+            if fc.filter_type == 'baseline':
+                # Baseline: use original returns
+                filtered_returns[:, f_idx] = ret
+
+            elif fc.filter_type == 'trim':
+                # Trim: set to NaN where ret exceeds threshold
+                level = fc.level
+                if isinstance(level, (list, tuple)):
+                    lower, upper = level
+                    mask = (ret > upper) | (ret < lower)
+                elif level >= 0:
+                    mask = ret > level
+                else:
+                    mask = ret < level
+                filtered_returns[:, f_idx] = np.where(mask, np.nan, ret)
+
+            elif fc.filter_type == 'price':
+                # Price: set to NaN where price exceeds threshold
+                if price is None:
+                    filtered_returns[:, f_idx] = ret  # No price column, use original
+                else:
+                    level = fc.level
+                    if isinstance(level, (list, tuple)):
+                        lower, upper = level
+                        mask = (price > upper) | (price < lower)
+                    elif level >= 0:
+                        mask = price > level
+                    else:
+                        mask = price < level
+                    filtered_returns[:, f_idx] = np.where(mask, np.nan, ret)
+
+            elif fc.filter_type == 'bounce':
+                # Bounce: set to NaN where ret * ret_lag exceeds threshold
+                if ret_lag is None:
+                    filtered_returns[:, f_idx] = ret  # No lag, use original
+                else:
+                    bounce = ret * ret_lag
+                    level = fc.level
+                    if isinstance(level, (list, tuple)):
+                        lower, upper = level
+                        mask = (bounce > upper) | (bounce < lower)
+                    elif level >= 0:
+                        mask = bounce > level
+                    else:
+                        mask = bounce < level
+                    filtered_returns[:, f_idx] = np.where(mask, np.nan, ret)
+
+            elif fc.filter_type == 'wins':
+                # Winsorize: clip returns to percentile bounds (ex-post)
+                level = fc.level  # percentile (e.g., 99)
+                location = fc.location
+                lb = np.nanpercentile(ret, 100 - level)
+                ub = np.nanpercentile(ret, level)
+
+                if location == 'both':
+                    filtered_returns[:, f_idx] = np.clip(ret, lb, ub)
+                elif location == 'right':
+                    filtered_returns[:, f_idx] = np.where(ret > ub, ub, ret)
+                elif location == 'left':
+                    filtered_returns[:, f_idx] = np.where(ret < lb, lb, ret)
+                else:
+                    filtered_returns[:, f_idx] = ret
+
+            else:
+                # Unknown filter, use original
+                filtered_returns[:, f_idx] = ret
+
+        return filtered_returns, filter_names
+
+    def _fit_fast(self) -> DataUncertaintyResults:
+        """
+        Fast path: compute ranks once per (signal, hp), then batch process filters.
+
+        This is ~10-50x faster than the slow path for many filters.
+        """
+        from .numba_core import (
+            compute_ranks_all_dates_fast,
+            compute_returns_multi_filter_hp1,
+            compute_returns_multi_filter_staggered
+        )
+
+        t0 = time.time()
+
+        signal_col = self.signals[0]
+        n_filters = len(self._filter_configs)
+
+        if self.verbose:
+            print(f"DataUncertaintyAnalysis FAST PATH: {n_filters} filters × {len(self.holding_periods)} HPs")
+            print(f"  Signal: {signal_col}")
+            print(f"  Holding periods: {self.holding_periods}")
+
+        # =====================================================================
+        # Step 1: Extract numpy arrays from DataFrame (ONCE)
+        # =====================================================================
+        data = self.data
+
+        # Build date and ID mappings
+        dates = data['date'].unique()
+        dates = np.sort(dates)
+        date_to_idx = {d: i for i, d in enumerate(dates)}
+        n_dates = len(dates)
+
+        ids = data['ID'].unique()
+        id_to_idx = {bond_id: i for i, bond_id in enumerate(ids)}
+        n_ids = len(ids)
+
+        # Extract arrays
+        date_idx = data['date'].map(date_to_idx).values.astype(np.int64)
+        id_idx = data['ID'].map(id_to_idx).values.astype(np.int64)
+        signal = data[signal_col].values.astype(np.float64)
+        ret = data['ret'].values.astype(np.float64)
+        vw = data['VW'].values.astype(np.float64)
+
+        # Optional arrays for filters
+        price = data['PRICE'].values.astype(np.float64) if 'PRICE' in data.columns else None
+
+        # Compute ret_lag for bounce filters
+        has_bounce = any(fc.filter_type == 'bounce' for fc in self._filter_configs)
+        if has_bounce:
+            # Compute lagged returns per bond
+            ret_lag = np.full(len(ret), np.nan, dtype=np.float64)
+            # Sort by (ID, date) to compute lag correctly
+            sort_idx = np.lexsort((date_idx, id_idx))
+            for i in range(1, len(sort_idx)):
+                curr = sort_idx[i]
+                prev = sort_idx[i - 1]
+                if id_idx[curr] == id_idx[prev]:
+                    ret_lag[curr] = ret[prev]
+        else:
+            ret_lag = None
+
+        # =====================================================================
+        # Step 2: Apply all filters to returns (vectorized)
+        # =====================================================================
+        t_filter = time.time()
+        filtered_returns, filter_names = self._apply_filters_vectorized(ret, price, ret_lag)
+        if self.verbose:
+            print(f"  Filters applied in {time.time() - t_filter:.2f}s")
+
+        # =====================================================================
+        # Step 3: Build VW lookup table (for HP > 1)
+        # =====================================================================
+        vw_lookup = np.full(n_dates * n_ids, np.nan, dtype=np.float64)
+        for i in range(len(date_idx)):
+            d = date_idx[i]
+            bond_id = id_idx[i]
+            if d >= 0 and d < n_dates and bond_id >= 0 and bond_id < n_ids:
+                vw_lookup[d * n_ids + bond_id] = vw[i]
+
+        # Build VW from d-1 for HP=1 case
+        vw_d_minus_1 = np.full(len(ret), np.nan, dtype=np.float64)
+        for i in range(len(date_idx)):
+            d = date_idx[i]
+            bond_id = id_idx[i]
+            if d > 0:
+                lookup_idx = (d - 1) * n_ids + bond_id
+                if lookup_idx >= 0 and lookup_idx < len(vw_lookup):
+                    vw_d_minus_1[i] = vw_lookup[lookup_idx]
+
+        # =====================================================================
+        # Step 4: Process each HP
+        # =====================================================================
+        all_results = {}
+
+        for hp in self.holding_periods:
+            t_hp = time.time()
+
+            # -----------------------------------------------------------------
+            # Compute ranks for this HP (ONCE per HP)
+            # -----------------------------------------------------------------
+            # For formation at date d, we rank at d and get returns at d+1
+            # The rank is based on signal at formation date
+            t_rank = time.time()
+            ranks = compute_ranks_all_dates_fast(
+                date_idx, signal, n_dates, self.num_portfolios
+            )
+            if self.verbose:
+                print(f"  HP={hp}: Ranks computed in {time.time() - t_rank:.2f}s")
+
+            # Build rank lookup table
+            rank_lookup = np.full(n_dates * n_ids, np.nan, dtype=np.float64)
+            for i in range(len(date_idx)):
+                d = date_idx[i]
+                bond_id = id_idx[i]
+                if d >= 0 and d < n_dates and bond_id >= 0 and bond_id < n_ids:
+                    rank_lookup[d * n_ids + bond_id] = ranks[i]
+
+            # -----------------------------------------------------------------
+            # Compute returns for all filters
+            # -----------------------------------------------------------------
+            t_ret = time.time()
+            if hp == 1:
+                ew_ea, vw_ea, ew_ep, vw_ep = compute_returns_multi_filter_hp1(
+                    ret_date_idx=date_idx,
+                    ret_id_idx=id_idx,
+                    returns_ea=ret,
+                    returns_ep=filtered_returns,
+                    weights=vw_d_minus_1,
+                    rank_lookup=rank_lookup,
+                    n_dates=n_dates,
+                    n_ids=n_ids,
+                    nport=self.num_portfolios,
+                    n_filters=n_filters
+                )
+            else:
+                ew_ea, vw_ea, ew_ep, vw_ep = compute_returns_multi_filter_staggered(
+                    ret_date_idx=date_idx,
+                    ret_id_idx=id_idx,
+                    returns_ea=ret,
+                    returns_ep=filtered_returns,
+                    vw_lookup=vw_lookup,
+                    rank_lookup=rank_lookup,
+                    n_dates=n_dates,
+                    n_ids=n_ids,
+                    nport=self.num_portfolios,
+                    n_filters=n_filters,
+                    hor=hp,
+                    use_dynamic_weights=self.dynamic_weights
+                )
+
+            if self.verbose:
+                print(f"  HP={hp}: Returns computed in {time.time() - t_ret:.2f}s")
+
+            # -----------------------------------------------------------------
+            # Extract long-short returns and store
+            # -----------------------------------------------------------------
+            # Long-short = Top portfolio - Bottom portfolio (last - first)
+            ew_ls_ea = ew_ea[:, -1] - ew_ea[:, 0]
+            vw_ls_ea = vw_ea[:, -1] - vw_ea[:, 0]
+            ew_ls_ep = ew_ep[:, -1, :] - ew_ep[:, 0, :]  # (n_dates, n_filters)
+            vw_ls_ep = vw_ep[:, -1, :] - vw_ep[:, 0, :]
+
+            all_results[hp] = {
+                'ew_ls_ea': ew_ls_ea,
+                'vw_ls_ea': vw_ls_ea,
+                'ew_ls_ep': ew_ls_ep,
+                'vw_ls_ep': vw_ls_ep,
+                'dates': dates
+            }
+
+            if self.verbose:
+                print(f"  HP={hp}: Total {time.time() - t_hp:.2f}s")
+
+        # =====================================================================
+        # Step 5: Build output DataFrames
+        # =====================================================================
+        ew_ea_dict = {}
+        vw_ea_dict = {}
+        ew_ep_dict = {}
+        vw_ep_dict = {}
+        config_rows = []
+
+        signal_name = signal_col
+
+        for hp in self.holding_periods:
+            hp_results = all_results[hp]
+            dates_arr = hp_results['dates']
+
+            for f_idx, fc in enumerate(self._filter_configs):
+                col_name = f"{signal_name}_hp{hp}_{fc.get_column_suffix()}"
+
+                # EA returns are the same for all filters (use from baseline/first filter)
+                ew_ea_dict[col_name] = pd.Series(
+                    hp_results['ew_ls_ea'], index=dates_arr
+                )
+                vw_ea_dict[col_name] = pd.Series(
+                    hp_results['vw_ls_ea'], index=dates_arr
+                )
+
+                # EP returns differ per filter
+                ew_ep_dict[col_name] = pd.Series(
+                    hp_results['ew_ls_ep'][:, f_idx], index=dates_arr
+                )
+                vw_ep_dict[col_name] = pd.Series(
+                    hp_results['vw_ls_ep'][:, f_idx], index=dates_arr
+                )
+
+                config_rows.append({
+                    'column_name': col_name,
+                    'signal': signal_name,
+                    'hp': hp,
+                    'filter_type': fc.filter_type,
+                    'level': fc.level,
+                    'location': fc.location
+                })
+
+        # Create DataFrames
+        ew_ea = pd.DataFrame(ew_ea_dict)
+        vw_ea = pd.DataFrame(vw_ea_dict)
+        ew_ep = pd.DataFrame(ew_ep_dict)
+        vw_ep = pd.DataFrame(vw_ep_dict)
+        configs = pd.DataFrame(config_rows)
+
+        elapsed = time.time() - t0
+        if self.verbose:
+            print(f"FAST PATH completed in {elapsed:.1f}s")
 
         return DataUncertaintyResults(
             ew_ea=ew_ea,
