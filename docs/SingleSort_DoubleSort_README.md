@@ -17,6 +17,7 @@
    - [DoubleSort Parameters](#doublesort-parameters)
 4. [StrategyFormation Execution](#strategyformation-execution)
    - [Rating Filtering](#rating-filtering)
+   - [Subset Filter (Characteristic-Based)](#subset-filter-characteristic-based)
    - [Turnover and Banding](#turnover-and-banding)
    - [Characteristics Tracking](#characteristics-tracking)
 5. [Execution Paths: Slow, Fast, and Ultra-Fast](#execution-paths-slow-fast-and-ultra-fast)
@@ -30,6 +31,7 @@
    - [DoubleSort Unconditional](#doublesort-unconditional)
    - [DoubleSort Conditional](#doublesort-conditional)
    - [Rating Filtering Examples](#rating-filtering-examples)
+   - [Subset Filter Examples](#subset-filter-examples)
    - [Complete Workflow Example](#complete-workflow-example)
 7. [Accessing Results](#accessing-results)
 8. [Advanced Options](#advanced-options)
@@ -396,6 +398,138 @@ sf = pbl.StrategyFormation(
 | 20 | CC | NIG |
 | 21 | C | NIG |
 | 22 | D | NIG |
+
+### Subset Filter (Characteristic-Based)
+
+Filter the bond universe based on any characteristic column. This is useful for:
+- Restricting to bonds with specific maturity ranges
+- Filtering by duration, size, or other continuous variables
+- Creating custom subsets without modifying your data
+
+#### Basic Usage
+
+```python
+from PyBondLab.config import StrategyFormationConfig, DataConfig
+
+# Filter to bonds with maturity 1-5 years
+config = StrategyFormationConfig(
+    data=DataConfig(
+        subset_filter={'MATURITY': (1, 5)},
+    ),
+)
+
+sf = pbl.StrategyFormation(
+    data=data,
+    strategy=strategy,
+    config=config,
+)
+result = sf.fit()
+```
+
+#### Multiple Filters (AND Logic)
+
+```python
+# Filter: maturity 1-5 years AND duration 2-8 years
+config = StrategyFormationConfig(
+    data=DataConfig(
+        subset_filter={
+            'MATURITY': (1, 5),
+            'DURATION': (2, 8),
+        },
+    ),
+)
+
+sf = pbl.StrategyFormation(
+    data=data,
+    strategy=strategy,
+    config=config,
+)
+result = sf.fit()
+```
+
+#### Combining with Rating Filter
+
+```python
+# IG bonds with maturity 1-5 years
+config = StrategyFormationConfig(
+    data=DataConfig(
+        rating='IG',
+        subset_filter={'MATURITY': (1, 5)},
+    ),
+)
+
+sf = pbl.StrategyFormation(
+    data=data,
+    strategy=strategy,
+    config=config,
+)
+result = sf.fit()
+
+# BBB bonds (rating 7-10) with short duration
+config = StrategyFormationConfig(
+    data=DataConfig(
+        rating=(7, 10),
+        subset_filter={'DURATION': (0, 5)},
+    ),
+)
+
+sf = pbl.StrategyFormation(
+    data=data,
+    strategy=strategy,
+    config=config,
+)
+result = sf.fit()
+```
+
+#### Examples by Use Case
+
+```python
+# 1. Short-maturity bonds only
+config = StrategyFormationConfig(
+    data=DataConfig(subset_filter={'MATURITY': (0, 3)}),
+)
+
+# 2. Large bonds only (by market cap / VW)
+config = StrategyFormationConfig(
+    data=DataConfig(subset_filter={'VW': (1e8, 1e12)}),  # $100M+
+)
+
+# 3. Intermediate duration bonds
+config = StrategyFormationConfig(
+    data=DataConfig(subset_filter={'DURATION': (3, 7)}),
+)
+
+# 4. Multiple constraints: IG, short maturity, intermediate duration
+config = StrategyFormationConfig(
+    data=DataConfig(
+        rating='IG',
+        subset_filter={
+            'MATURITY': (1, 5),
+            'DURATION': (2, 6),
+        },
+    ),
+)
+
+# 5. Custom characteristic filter
+config = StrategyFormationConfig(
+    data=DataConfig(
+        subset_filter={
+            'spread': (50, 500),      # Spread 50-500 bps
+            'coupon': (2.0, 8.0),     # Coupon 2-8%
+        },
+    ),
+)
+```
+
+**Key Behaviors:**
+- Filters are applied at **formation date only** (no look-ahead bias)
+- Bonds excluded from ranking can still contribute returns if they were ranked in prior periods (for staggered holding periods)
+- Multiple filters are combined with AND logic
+- Filter bounds are inclusive: `(min, max)` means `min <= value <= max`
+
+**Required Columns:**
+- The column names in `subset_filter` must exist in your data
+- Values must be numeric for comparison
 
 ### Turnover and Banding
 
@@ -920,6 +1054,113 @@ sf_distressed = pbl.StrategyFormation(
 result_distressed = sf_distressed.fit()
 ```
 
+### Subset Filter Examples
+
+Filter by bond characteristics using `subset_filter`:
+
+```python
+from PyBondLab.config import StrategyFormationConfig, DataConfig
+
+# Define a momentum strategy
+strategy = pbl.SingleSort(
+    holding_period=1,
+    sort_var='momentum_3m',
+    num_portfolios=5,
+)
+
+# Example 1: Short-maturity bonds (1-5 years)
+config = StrategyFormationConfig(
+    data=DataConfig(subset_filter={'MATURITY': (1, 5)}),
+)
+sf = pbl.StrategyFormation(data=data, strategy=strategy, config=config)
+result_short = sf.fit()
+ew_short, _ = result_short.get_long_short()
+
+# Example 2: Long-maturity bonds (10+ years)
+config = StrategyFormationConfig(
+    data=DataConfig(subset_filter={'MATURITY': (10, 30)}),
+)
+sf = pbl.StrategyFormation(data=data, strategy=strategy, config=config)
+result_long = sf.fit()
+ew_long, _ = result_long.get_long_short()
+
+# Compare short vs long maturity
+print(f"Short maturity mean: {ew_short.mean() * 12:.2%}")
+print(f"Long maturity mean:  {ew_long.mean() * 12:.2%}")
+```
+
+```python
+# Example 3: Intermediate duration, IG bonds
+config = StrategyFormationConfig(
+    data=DataConfig(
+        rating='IG',
+        subset_filter={'DURATION': (3, 7)},
+    ),
+)
+sf = pbl.StrategyFormation(data=data, strategy=strategy, config=config)
+result = sf.fit()
+```
+
+```python
+# Example 4: Multiple characteristic filters
+# Large bonds ($100M+) with intermediate duration
+config = StrategyFormationConfig(
+    data=DataConfig(
+        subset_filter={
+            'VW': (1e8, 1e12),        # Market cap $100M+
+            'DURATION': (2, 8),       # Duration 2-8 years
+        },
+    ),
+)
+sf = pbl.StrategyFormation(data=data, strategy=strategy, config=config)
+result = sf.fit()
+```
+
+```python
+# Example 5: BBB bonds with short maturity
+# Combines rating tuple with subset_filter
+config = StrategyFormationConfig(
+    data=DataConfig(
+        rating=(7, 10),              # BBB only
+        subset_filter={
+            'MATURITY': (1, 5),      # Short maturity
+        },
+    ),
+)
+sf = pbl.StrategyFormation(data=data, strategy=strategy, config=config)
+result = sf.fit()
+```
+
+```python
+# Example 6: Compare maturity buckets across rating categories
+import pandas as pd
+
+results = {}
+for rating_name, rating in [('IG', 'IG'), ('NIG', 'NIG')]:
+    for mat_name, mat_range in [('Short', (0, 5)), ('Int', (5, 10)), ('Long', (10, 30))]:
+        key = f"{rating_name}_{mat_name}"
+
+        config = StrategyFormationConfig(
+            data=DataConfig(
+                rating=rating,
+                subset_filter={'MATURITY': mat_range},
+            ),
+        )
+        sf = pbl.StrategyFormation(
+            data=data, strategy=strategy, config=config, verbose=False
+        )
+        result = sf.fit()
+        ew_ls, _ = result.get_long_short()
+
+        results[key] = {
+            'mean': ew_ls.mean() * 12,
+            'sharpe': ew_ls.mean() / ew_ls.std() * 12**0.5,
+        }
+
+summary = pd.DataFrame(results).T
+print(summary)
+```
+
 ### Complete Workflow Example
 
 ```python
@@ -1198,6 +1439,7 @@ print(f"NaN values: {returns.isna().sum().sum()}")
 | Portfolios | `num_portfolios` | `num_portfolios × num_portfolios2` |
 | Sort method | N/A | 'unconditional' or 'conditional' |
 | Rating filter | Via StrategyFormation | Via StrategyFormation |
+| Subset filter | Via config | Via config |
 | Custom breakpoints | Yes | Yes (both sorts) |
 | Breakpoint universe | Yes | Yes (both sorts) |
 
@@ -1206,5 +1448,10 @@ print(f"NaN values: {returns.isna().sum().sum()}")
 - `'NIG'`: Non-Investment Grade (11-22)
 - `(min, max)`: Custom numeric range
 - `None`: All bonds
+
+**Subset filter options:**
+- `{'MATURITY': (1, 5)}`: Single characteristic
+- `{'MATURITY': (1, 5), 'DURATION': (2, 8)}`: Multiple characteristics (AND logic)
+- Combined with rating: `rating='IG', subset_filter={'MATURITY': (1, 5)}`
 
 Start with `SingleSort` for simple factor analysis, use `DoubleSort` when you need to control for another variable or study interactions.
