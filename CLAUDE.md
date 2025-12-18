@@ -59,7 +59,7 @@ Dramatically speed up portfolio formation in PyBondLab using numba/prange, while
 | **Phase 3** | Parallelize main loop with prange | ⏳ Pending | Complex due to turnover state dependencies |
 | **Phase 15a** | Non-staggered rebalancing fast path | ✅ Complete | **100x speedup** achieved! |
 | **Phase 15** | Non-staggered integration | ✅ Complete | BatchStrategyFormation (~340x), DataUncertaintyAnalysis integrated |
-| **Phase 15b** | Non-staggered with turnover/chars/banding | ⏳ Pending | Full feature optimization |
+| **Phase 15b** | Non-staggered with turnover/chars/banding | 🟡 Partial | Banding: 77x speedup; Turnover/chars need validation |
 
 ---
 
@@ -104,13 +104,34 @@ Key numba kernels in `numba_core.py`:
 - `build_vw_lookup_table()` - Build VW lookup table
 - `compute_nonstaggered_ls_returns()` - Compute long-short returns
 
-#### Phase 15b: Full Path (With Turnover/Chars/Banding) - PENDING
+#### Phase 15b: Full Path (With Turnover/Chars/Banding) - PARTIAL
 
-Optimize full feature set:
-- Batch portfolio formation for ALL rebalancing dates
-- Parallel weight computation
-- Batch turnover computation
-- Batch characteristics aggregation
+**Status: Banding COMPLETE, Turnover/Chars need validation**
+
+New numba kernels added to `numba_core.py`:
+- `compute_nonstaggered_weights_at_rebal()` - Compute weights at rebalancing date
+- `scale_weights_by_returns()` - Scale weights by cumulative returns
+- `compute_turnover_single_rebal()` - Compute turnover between rebalancings
+- `compute_nonstaggered_chars_single()` - Aggregate characteristics
+- `apply_banding_single_rebal()` - Apply banding logic
+- `build_ret_lookup()` - Build returns lookup table
+- `compute_nonstaggered_full_fast()` - Main entry point (combines all features)
+
+**Validation Results:**
+| Feature | Status | Speedup | Notes |
+|---------|--------|---------|-------|
+| Returns only | ✅ PASS | 20x | Validates against slow path |
+| Banding | ✅ PASS | **77x** | Validates against slow path |
+| Turnover | ❌ FAIL | ~110x | Numerical differences with slow path |
+| Characteristics | ❌ ERROR | - | Test setup issue, kernel implemented |
+
+**What works:**
+- Banding threshold correctly prevents unnecessary portfolio changes
+- Returns computation matches slow path exactly
+
+**What needs work:**
+- Turnover: Cumulative return scaling differs from slow path
+- Characteristics: Test harness needs fixing (kernel code exists)
 
 ### Timeline Behavior
 
@@ -149,6 +170,7 @@ Legend:
 | `examples/validate_nonstaggered_fast_path.py` | StrategyFormation fast vs slow | 7/7 PASS, ~100x speedup |
 | `examples/validate_batch_nonstaggered.py` | BatchStrategyFormation fast vs slow | 4/4 PASS, ~340x speedup |
 | `examples/validate_dua_nonstaggered.py` | DataUncertaintyAnalysis slow path | 3/3 PASS |
+| `examples/validate_phase15b.py` | Phase 15b full features | 2/6 PASS (banding works, turnover/chars WIP) |
 
 Documentation: `docs/NonStaggeredRebalancing_README.md`
 
