@@ -1082,6 +1082,8 @@ class DataUncertaintyAnalysis:
         For each date t, thresholds are computed from all returns BEFORE date t.
         This matches the slow path behavior in FilterClass._winsorizing().
 
+        OPTIMIZED: Uses numba kernels for parallel processing.
+
         Parameters
         ----------
         ret : np.ndarray
@@ -1100,39 +1102,14 @@ class DataUncertaintyAnalysis:
         np.ndarray
             Ex-ante winsorized returns
         """
-        wins_ret = ret.copy()
+        from .numba_core import compute_ex_ante_thresholds_fast, apply_winsorization_fast
 
-        # Compute thresholds for each date using only historical data
-        for d in range(n_dates):
-            # Get returns from all dates BEFORE current date
-            hist_mask = date_idx < d
-            if not np.any(hist_mask):
-                # No historical data for first date(s), keep original
-                continue
+        # Step 1: Compute thresholds for all dates (efficient - sorted once)
+        thresholds = compute_ex_ante_thresholds_fast(ret, date_idx, n_dates, level)
 
-            hist_ret = ret[hist_mask]
-            hist_ret = hist_ret[~np.isnan(hist_ret)]
-
-            if len(hist_ret) == 0:
-                continue
-
-            lb = np.nanpercentile(hist_ret, 100 - level)
-            ub = np.nanpercentile(hist_ret, level)
-
-            # Apply to current date
-            curr_mask = date_idx == d
-
-            if location == 'both':
-                curr_ret = wins_ret[curr_mask]
-                curr_ret = np.where(curr_ret > ub, ub, curr_ret)
-                curr_ret = np.where(curr_ret < lb, lb, curr_ret)
-                wins_ret[curr_mask] = curr_ret
-            elif location == 'right':
-                curr_ret = wins_ret[curr_mask]
-                wins_ret[curr_mask] = np.where(curr_ret > ub, ub, curr_ret)
-            elif location == 'left':
-                curr_ret = wins_ret[curr_mask]
-                wins_ret[curr_mask] = np.where(curr_ret < lb, lb, curr_ret)
+        # Step 2: Apply thresholds in parallel using numba
+        loc_code = 0 if location == 'both' else (1 if location == 'right' else 2)
+        wins_ret = apply_winsorization_fast(ret, date_idx, thresholds, loc_code)
 
         return wins_ret
 
@@ -1594,29 +1571,42 @@ class DataUncertaintyAnalysis:
         # =====================================================================
         # Step 1: Extract numpy arrays from DataFrame (ONCE)
         # =====================================================================
+        t_extract = time.time()
         data = self.data
 
-        # Build date and ID mappings
-        dates = data['date'].unique()
-        dates = np.sort(dates)
-        date_to_idx = {d: i for i, d in enumerate(dates)}
+        # Build date and ID mappings - use categorical codes if available for speed
+        if hasattr(data['date'].dtype, 'categories'):
+            # Fast path for categorical dates
+            dates = data['date'].cat.categories.values
+            date_idx = data['date'].cat.codes.values.astype(np.int64)
+            date_to_idx = {d: i for i, d in enumerate(dates)}
+        else:
+            dates = data['date'].unique()
+            dates = np.sort(dates)
+            date_to_idx = {d: i for i, d in enumerate(dates)}
+            date_idx = data['date'].map(date_to_idx).values.astype(np.int64)
         n_dates = len(dates)
 
-        ids = data['ID'].unique()
-        id_to_idx = {bond_id: i for i, bond_id in enumerate(ids)}
+        if hasattr(data['ID'].dtype, 'categories'):
+            # Fast path for categorical IDs
+            ids = data['ID'].cat.categories.values
+            id_idx = data['ID'].cat.codes.values.astype(np.int64)
+            id_to_idx = {bond_id: i for i, bond_id in enumerate(ids)}
+        else:
+            ids = data['ID'].unique()
+            id_to_idx = {bond_id: i for i, bond_id in enumerate(ids)}
+            id_idx = data['ID'].map(id_to_idx).values.astype(np.int64)
         n_ids = len(ids)
 
-        # Extract arrays
-        date_idx = data['date'].map(date_to_idx).values.astype(np.int64)
-        id_idx = data['ID'].map(id_to_idx).values.astype(np.int64)
-        ret = data['ret'].values.astype(np.float64)
-        vw = data['VW'].values.astype(np.float64)
+        # Extract arrays - use .to_numpy() for potential speedup
+        ret = data['ret'].to_numpy().astype(np.float64)
+        vw = data['VW'].to_numpy().astype(np.float64)
 
         # Rating array for rating mask
-        rating_num = data['RATING_NUM'].values.astype(np.float64)
+        rating_num = data['RATING_NUM'].to_numpy().astype(np.float64)
 
         # Optional arrays for filters
-        price = data['PRICE'].values.astype(np.float64) if 'PRICE' in data.columns else None
+        price = data['PRICE'].to_numpy().astype(np.float64) if 'PRICE' in data.columns else None
 
         # Compute ret_lag for bounce filters
         has_bounce = any(fc.filter_type == 'bounce' for fc in self._filter_configs)
@@ -1630,6 +1620,9 @@ class DataUncertaintyAnalysis:
                     ret_lag[curr] = ret[prev]
         else:
             ret_lag = None
+
+        if self.verbose:
+            print(f"    Data extracted in {time.time() - t_extract:.2f}s")
 
         # =====================================================================
         # Step 2: Apply all filters to returns (vectorized) - for EP returns
@@ -1645,6 +1638,7 @@ class DataUncertaintyAnalysis:
         # =====================================================================
         # For wins filters, signal computation needs ex-ante (historical) thresholds,
         # not global thresholds. This matches the slow path behavior.
+        t_wins_ea = time.time()
         wins_ea_returns = {}  # f_idx -> ex-ante winsorized returns
         for f_idx, fc in enumerate(self._filter_configs):
             if fc.filter_type == 'wins':
@@ -1655,6 +1649,8 @@ class DataUncertaintyAnalysis:
                     ret, date_idx, n_dates, level, location
                 )
                 wins_ea_returns[f_idx] = wins_ea_ret
+        if self.verbose and wins_ea_returns:
+            print(f"    Ex-ante wins computed in {time.time() - t_wins_ea:.2f}s")
 
         # =====================================================================
         # Step 3: Compute signals - different behavior for different filter types

@@ -3038,3 +3038,131 @@ def get_bond_boundaries(id_values: np.ndarray) -> np.ndarray:
     ])
 
     return bond_starts
+
+
+# =============================================================================
+# Ex-Ante Winsorization (Fast Path)
+# =============================================================================
+
+@njit(cache=True, parallel=True)
+def apply_winsorization_fast(
+    ret: np.ndarray,
+    date_idx: np.ndarray,
+    thresholds: np.ndarray,
+    loc_code: int
+) -> np.ndarray:
+    """
+    Apply pre-computed thresholds to winsorize returns in parallel.
+
+    Parameters
+    ----------
+    ret : np.ndarray
+        Original returns
+    date_idx : np.ndarray
+        Date index for each observation
+    thresholds : np.ndarray
+        Shape (n_dates, 2) with [lb, ub] for each date
+    loc_code : int
+        0 = both, 1 = right only, 2 = left only
+
+    Returns
+    -------
+    np.ndarray
+        Winsorized returns
+    """
+    n = len(ret)
+    wins_ret = ret.copy()
+
+    for i in prange(n):
+        d = date_idx[i]
+        lb = thresholds[d, 0]
+        ub = thresholds[d, 1]
+
+        if np.isnan(lb) or np.isnan(ub):
+            continue
+
+        val = wins_ret[i]
+        if np.isnan(val):
+            continue
+
+        if loc_code == 0:  # both
+            if val > ub:
+                wins_ret[i] = ub
+            elif val < lb:
+                wins_ret[i] = lb
+        elif loc_code == 1:  # right
+            if val > ub:
+                wins_ret[i] = ub
+        else:  # left
+            if val < lb:
+                wins_ret[i] = lb
+
+    return wins_ret
+
+
+def compute_ex_ante_thresholds_fast(
+    ret: np.ndarray,
+    date_idx: np.ndarray,
+    n_dates: int,
+    level: float
+) -> np.ndarray:
+    """
+    Compute ex-ante percentile thresholds for all dates efficiently.
+
+    For each date d, thresholds are computed from all returns with date < d.
+    Uses sorting to enable efficient cumulative processing.
+
+    Parameters
+    ----------
+    ret : np.ndarray
+        Original returns
+    date_idx : np.ndarray
+        Date index for each observation
+    n_dates : int
+        Number of unique dates
+    level : float
+        Percentile level (e.g., 99 for 99th percentile)
+
+    Returns
+    -------
+    np.ndarray
+        Shape (n_dates, 2) with [lb, ub] for each date
+        lb = percentile(100 - level), ub = percentile(level)
+    """
+    # Sort by date
+    sort_idx = np.argsort(date_idx)
+    date_sorted = date_idx[sort_idx]
+    ret_sorted = ret[sort_idx]
+
+    # Find cumulative count up to each date
+    # date_ends[d] = number of observations with date < d
+    date_ends = np.zeros(n_dates + 1, dtype=np.int64)
+    current_count = 0
+    current_date = 0
+
+    for i in range(len(date_sorted)):
+        while current_date < date_sorted[i]:
+            date_ends[current_date + 1] = current_count
+            current_date += 1
+        current_count += 1
+
+    # Fill remaining dates
+    while current_date < n_dates:
+        date_ends[current_date + 1] = current_count
+        current_date += 1
+
+    # Compute thresholds for each date
+    thresholds = np.full((n_dates, 2), np.nan, dtype=np.float64)
+
+    for d in range(1, n_dates):
+        end_idx = date_ends[d]
+        if end_idx > 0:
+            hist_ret = ret_sorted[:end_idx]
+            # Remove NaNs efficiently
+            valid_mask = ~np.isnan(hist_ret)
+            hist_valid = hist_ret[valid_mask]
+            if len(hist_valid) > 0:
+                thresholds[d, 0] = np.percentile(hist_valid, 100 - level)
+                thresholds[d, 1] = np.percentile(hist_valid, level)
+
+    return thresholds
