@@ -442,7 +442,9 @@ def _run_single_config(
     dynamic_weights: bool,
     rating: Optional[str],
     strategy_obj: Any,
-    column_name: str
+    column_name: str,
+    rebalance_frequency: Union[str, int] = 'monthly',
+    rebalance_month: Union[int, List[int]] = 6,
 ) -> Dict:
     """
     Run a single configuration and return results.
@@ -459,6 +461,8 @@ def _run_single_config(
                     lookback_period=strategy_obj.lookback_period,
                     skip=strategy_obj.skip,
                     num_portfolios=num_portfolios,
+                    rebalance_frequency=rebalance_frequency,
+                    rebalance_month=rebalance_month,
                     verbose=False
                 )
             elif isinstance(strategy_obj, LTreversal):
@@ -467,6 +471,8 @@ def _run_single_config(
                     lookback_period=strategy_obj.lookback_period,
                     skip=strategy_obj.skip,
                     num_portfolios=num_portfolios,
+                    rebalance_frequency=rebalance_frequency,
+                    rebalance_month=rebalance_month,
                     verbose=False
                 )
             else:
@@ -478,6 +484,8 @@ def _run_single_config(
                 holding_period=hp,
                 sort_var=signal,
                 num_portfolios=num_portfolios,
+                rebalance_frequency=rebalance_frequency,
+                rebalance_month=rebalance_month,
                 verbose=False
             )
 
@@ -573,6 +581,14 @@ class DataUncertaintyAnalysis:
         Always include no-filter baseline (default: True)
     rating : str, optional
         Rating filter: 'IG', 'NIG', or None
+    rebalance_frequency : str or int, default='monthly'
+        Rebalancing frequency:
+        - 'monthly': Rebalance every month (staggered portfolios)
+        - 'quarterly' or 3: Rebalance every 3 months
+        - 'semi-annual' or 6: Rebalance every 6 months
+        - 'annual' or 12: Rebalance every 12 months
+    rebalance_month : int or list of int, default=6
+        Month(s) when rebalancing occurs (1=Jan, 6=Jun, 12=Dec)
     columns : dict, optional
         Column name mapping from PyBondLab expected names to your data's names.
         Keys are PyBondLab names: 'date', 'ID', 'ret', 'VW', 'RATING_NUM', 'PRICE'
@@ -622,6 +638,8 @@ class DataUncertaintyAnalysis:
         rating: Optional[Union[str, Tuple[int, int]]] = None,
         ratings: Optional[List[Optional[Union[str, Tuple[int, int]]]]] = None,
         subset_filter: Optional[SubsetFilter] = None,
+        rebalance_frequency: Union[str, int] = 'monthly',
+        rebalance_month: Union[int, List[int]] = 6,
         columns: Optional[Dict[str, str]] = None,
         n_jobs: int = 1,
         verbose: bool = True,
@@ -664,9 +682,14 @@ class DataUncertaintyAnalysis:
         self.include_baseline = include_baseline
         self.rating = rating  # Keep for backward compatibility (slow path)
         self.subset_filter = subset_filter
+        self.rebalance_frequency = rebalance_frequency
+        self.rebalance_month = rebalance_month
         self.n_jobs = n_jobs
         self.verbose = verbose
         self.use_fast_path = use_fast_path
+
+        # Determine if this is non-staggered rebalancing
+        self._is_nonstaggered = self._check_nonstaggered()
 
         # Build column mapping (merge defaults with user-provided)
         self.columns = DEFAULT_COLUMNS.copy()
@@ -678,6 +701,15 @@ class DataUncertaintyAnalysis:
 
         # Prepare data (rename columns, subset to required columns only)
         self.data = self._prepare_data()
+
+    def _check_nonstaggered(self) -> bool:
+        """Check if this is non-staggered (non-monthly) rebalancing."""
+        freq = self.rebalance_frequency
+        if isinstance(freq, str):
+            return freq != 'monthly'
+        elif isinstance(freq, int):
+            return freq > 1
+        return False
 
     def _parse_filters(self) -> List[FilterConfig]:
         """Parse filter dict into FilterConfig objects."""
@@ -918,7 +950,9 @@ class DataUncertaintyAnalysis:
                     dynamic_weights=self.dynamic_weights,
                     rating=self.rating,
                     strategy_obj=self.strategy,
-                    column_name=ac.column_name
+                    column_name=ac.column_name,
+                    rebalance_frequency=self.rebalance_frequency,
+                    rebalance_month=self.rebalance_month,
                 )
 
                 if self.verbose:
@@ -949,7 +983,9 @@ class DataUncertaintyAnalysis:
                     self.dynamic_weights,
                     self.rating,
                     self.strategy,
-                    ac.column_name
+                    ac.column_name,
+                    self.rebalance_frequency,
+                    self.rebalance_month,
                 ))
 
             import multiprocessing as mp
@@ -1041,10 +1077,17 @@ class DataUncertaintyAnalysis:
         - use_fast_path=True (default)
         - Pre-computed signals (not strategy-based)
         - No strategy object (Momentum/LTreversal compute signal from returns)
+        - Monthly rebalancing (non-staggered not yet supported in fast path)
 
         Multiple signals are supported - we loop over them in the fast path.
         """
         if not self.use_fast_path:
+            return False
+        # Non-staggered rebalancing not yet supported in fast path
+        # (TODO: Phase 15b - Add fast non-staggered path for DataUncertaintyAnalysis)
+        if self._is_nonstaggered:
+            if self.verbose:
+                print("Fast path disabled: non-staggered rebalancing (using slow path)")
             return False
         if self.strategy is not None:
             # Check if strategy can use fast path

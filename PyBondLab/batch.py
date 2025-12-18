@@ -110,7 +110,8 @@ def _process_single_signal(args: Tuple) -> Tuple[str, Any, float, Optional[str]]
     ----------
     args : tuple
         (signal, data, holding_period, num_portfolios, turnover,
-         chars, rating, subset_filter, banding_threshold)
+         chars, rating, subset_filter, banding_threshold,
+         rebalance_frequency, rebalance_month)
 
         NOTE: shared_precomp is NOT passed to avoid pickle overhead.
         Each worker computes its own precompute data.
@@ -121,7 +122,8 @@ def _process_single_signal(args: Tuple) -> Tuple[str, Any, float, Optional[str]]
         (signal_name, result_or_none, elapsed_time, error_or_none)
     """
     (signal, data, holding_period, num_portfolios, turnover,
-     chars, rating, subset_filter, banding_threshold) = args
+     chars, rating, subset_filter, banding_threshold,
+     rebalance_frequency, rebalance_month) = args
 
     t_start = time.time()
 
@@ -135,6 +137,8 @@ def _process_single_signal(args: Tuple) -> Tuple[str, Any, float, Optional[str]]
                 holding_period=holding_period,
                 sort_var=signal,
                 num_portfolios=num_portfolios,
+                rebalance_frequency=rebalance_frequency,
+                rebalance_month=rebalance_month,
                 verbose=False
             )
 
@@ -179,7 +183,8 @@ def _process_signal_batch(args: Tuple) -> List[Tuple[str, Any, float, Optional[s
     ----------
     args : tuple
         (signals_list, data, holding_period, num_portfolios, turnover,
-         chars, rating, subset_filter, banding_threshold)
+         chars, rating, subset_filter, banding_threshold,
+         rebalance_frequency, rebalance_month)
 
     Returns
     -------
@@ -187,7 +192,8 @@ def _process_signal_batch(args: Tuple) -> List[Tuple[str, Any, float, Optional[s
         [(signal_name, result_or_none, elapsed_time, error_or_none), ...]
     """
     (signals_list, data, holding_period, num_portfolios, turnover,
-     chars, rating, subset_filter, banding_threshold) = args
+     chars, rating, subset_filter, banding_threshold,
+     rebalance_frequency, rebalance_month) = args
 
     results = []
     for signal in signals_list:
@@ -200,6 +206,8 @@ def _process_signal_batch(args: Tuple) -> List[Tuple[str, Any, float, Optional[s
                     holding_period=holding_period,
                     sort_var=signal,
                     num_portfolios=num_portfolios,
+                    rebalance_frequency=rebalance_frequency,
+                    rebalance_month=rebalance_month,
                     verbose=False
                 )
 
@@ -460,6 +468,14 @@ class BatchStrategyFormation:
         Filters are applied at formation date only (no look-ahead bias).
     banding : int, optional
         Banding parameter
+    rebalance_frequency : str or int, default='monthly'
+        Rebalancing frequency:
+        - 'monthly': Rebalance every month (staggered portfolios)
+        - 'quarterly' or 3: Rebalance every 3 months
+        - 'semi-annual' or 6: Rebalance every 6 months
+        - 'annual' or 12: Rebalance every 12 months
+    rebalance_month : int or list of int, default=6
+        Month(s) when rebalancing occurs (1=Jan, 6=Jun, 12=Dec)
     columns : dict, optional
         Column name mapping from PyBondLab names to your data's column names.
         Default mapping: {'date': 'date', 'ID': 'ID', 'ret': 'ret', 'VW': 'VW', 'RATING_NUM': 'RATING_NUM'}
@@ -495,6 +511,17 @@ class BatchStrategyFormation:
     ...     turnover=False,
     ... )
     >>> results = batch.fit()
+    >>>
+    >>> # With non-staggered rebalancing (quarterly, June start)
+    >>> batch = BatchStrategyFormation(
+    ...     data=data,
+    ...     signals=['signal1', 'signal2'],
+    ...     holding_period=3,
+    ...     rebalance_frequency='quarterly',  # or 3
+    ...     rebalance_month=6,  # June, September, December, March
+    ...     turnover=False,
+    ... )
+    >>> results = batch.fit()
     """
 
     def __init__(
@@ -508,6 +535,8 @@ class BatchStrategyFormation:
         rating: Optional[Union[str, tuple]] = None,
         subset_filter: Optional[SubsetFilter] = None,
         banding: Optional[int] = None,
+        rebalance_frequency: Union[str, int] = 'monthly',
+        rebalance_month: Union[int, List[int]] = 6,
         columns: Optional[Dict[str, str]] = None,
         n_jobs: int = 1,
         signals_per_worker: int = 1,
@@ -536,6 +565,8 @@ class BatchStrategyFormation:
         self.rating = rating
         self.subset_filter = subset_filter
         self.banding = banding
+        self.rebalance_frequency = rebalance_frequency
+        self.rebalance_month = rebalance_month
         self.n_jobs = n_jobs
         self.signals_per_worker = max(1, signals_per_worker)
         self.chunk_size = chunk_size
@@ -543,6 +574,9 @@ class BatchStrategyFormation:
         self.banding_threshold = None
         if banding is not None:
             self.banding_threshold = banding / num_portfolios
+
+        # Determine if this is non-staggered (non-monthly) rebalancing
+        self._is_nonstaggered = self._check_nonstaggered()
 
         self.config = {
             'holding_period': holding_period,
@@ -552,6 +586,8 @@ class BatchStrategyFormation:
             'rating': rating,
             'subset_filter': subset_filter,
             'banding': banding,
+            'rebalance_frequency': rebalance_frequency,
+            'rebalance_month': rebalance_month,
             'n_jobs': n_jobs,
             'signals_per_worker': signals_per_worker,
             'chunk_size': chunk_size,
@@ -618,6 +654,15 @@ class BatchStrategyFormation:
         if missing_signals:
             raise ValueError(f"Signal columns not found in data: {missing_signals}")
 
+    def _check_nonstaggered(self) -> bool:
+        """Check if this is non-staggered (non-monthly) rebalancing."""
+        freq = self.rebalance_frequency
+        if isinstance(freq, str):
+            return freq != 'monthly'
+        elif isinstance(freq, int):
+            return freq > 1
+        return False
+
     def _get_n_workers(self) -> int:
         """Determine number of worker processes."""
         if self.n_jobs == 1:
@@ -637,10 +682,14 @@ class BatchStrategyFormation:
         - turnover=False
         - chars=None
         - banding=None (no banding threshold)
+        - Monthly rebalancing (staggered) OR non-staggered rebalancing
 
         Fast path NOW SUPPORTS (Phase 14):
         - rating filter (applied at formation date only, no look-ahead bias)
         - subset_filter (applied at formation date only, no look-ahead bias)
+
+        Fast path NOW SUPPORTS (Phase 15):
+        - Non-staggered rebalancing (quarterly, semi-annual, annual)
         """
         if self.turnover:
             return False
@@ -649,6 +698,7 @@ class BatchStrategyFormation:
         if self.banding_threshold is not None:
             return False
         # rating and subset_filter are now supported in fast path
+        # Non-staggered rebalancing is now supported in fast path
         return True
 
     def _fit_fast_batch(self) -> BatchResults:
@@ -662,7 +712,15 @@ class BatchStrategyFormation:
         (no look-ahead bias). Filters set signal to NaN for excluded observations,
         so they won't be ranked. Returns are collected from ALL bonds that were
         assigned to portfolios, regardless of their filter status at return date.
+
+        Supports non-staggered rebalancing (Phase 15):
+        - quarterly, semi-annual, annual rebalancing frequencies
+        - Uses specialized numba kernels for non-staggered return computation
         """
+        # Route to non-staggered fast path if applicable
+        if self._is_nonstaggered:
+            return self._fit_fast_batch_nonstaggered()
+
         import numpy as np
         from .numba_core import (
             compute_ranks_all_signals,
@@ -842,6 +900,187 @@ class BatchStrategyFormation:
 
         return results
 
+    def _fit_fast_batch_nonstaggered(self) -> BatchResults:
+        """
+        Ultra-fast batch processing for non-staggered rebalancing using numba kernels.
+
+        For quarterly, semi-annual, or annual rebalancing:
+        - Computes ranks only at rebalancing dates
+        - Computes returns for all holding period months
+        - Much simpler than staggered (no cohort averaging needed)
+        """
+        import numpy as np
+        from .numba_core import (
+            compute_ranks_at_rebal_dates,
+            build_rank_lookup_nonstaggered,
+            compute_nonstaggered_returns_fast,
+            build_vw_lookup_table,
+            compute_nonstaggered_ls_returns,
+        )
+        from .utils_optimized import _get_rebalancing_dates
+        from .constants import RatingBounds
+
+        results = BatchResults(
+            signals=self.signals.copy(),
+            config=self.config.copy(),
+        )
+
+        t_start = time.time()
+
+        # Build frequency description
+        freq = self.rebalance_frequency
+        if isinstance(freq, str):
+            freq_str = freq
+            freq_months = {'quarterly': 3, 'semi-annual': 6, 'annual': 12}.get(freq, 1)
+        else:
+            freq_months = freq
+            freq_str = {3: 'quarterly', 6: 'semi-annual', 12: 'annual'}.get(freq, f'{freq}m')
+
+        filter_desc = []
+        if self.rating is not None:
+            filter_desc.append(f"rating={self.rating}")
+        if self.subset_filter is not None:
+            filter_desc.append(f"subset_filter={list(self.subset_filter.keys())}")
+        filter_str = f" with filters: {', '.join(filter_desc)}" if filter_desc else ""
+
+        if self.verbose:
+            print(f"FAST BATCH PATH (non-staggered {freq_str}): Processing {len(self.signals)} signals{filter_str}...")
+
+        # =====================================================================
+        # Step 1: Extract numpy arrays from DataFrame (ONCE)
+        # =====================================================================
+        t_extract = time.time()
+        data = self.data
+
+        # Build date and ID mappings
+        dates = data['date'].unique()
+        dates = np.sort(dates)
+        date_to_idx = {d: i for i, d in enumerate(dates)}
+        n_dates = len(dates)
+
+        ids = data['ID'].unique()
+        id_to_idx = {bond_id: i for i, bond_id in enumerate(ids)}
+        n_ids = len(ids)
+
+        # Get rebalancing dates
+        datelist = [pd.Timestamp(d) for d in dates]
+        rebal_date_indices = _get_rebalancing_dates(datelist, freq_str, self.rebalance_month)
+        rebal_date_indices = np.array(rebal_date_indices, dtype=np.int64)
+        n_rebal = len(rebal_date_indices)
+
+        if self.verbose:
+            print(f"    Rebalancing dates: {n_rebal} (frequency={freq_str}, month={self.rebalance_month})")
+
+        # Extract arrays
+        date_idx = data['date'].map(date_to_idx).values.astype(np.int64)
+        id_idx = data['ID'].map(id_to_idx).values.astype(np.int64)
+        ret = data['ret'].values.astype(np.float64)
+        vw = data['VW'].values.astype(np.float64)
+
+        # =====================================================================
+        # Step 1b: Build filter mask
+        # =====================================================================
+        filter_mask = np.ones(len(data), dtype=np.bool_)
+
+        if self.rating is not None:
+            rating_vals = data['RATING_NUM'].values
+            if self.rating == 'IG':
+                filter_mask &= (rating_vals <= RatingBounds.IG_MAX)
+            elif self.rating == 'NIG':
+                filter_mask &= (rating_vals > RatingBounds.IG_MAX)
+            elif isinstance(self.rating, (tuple, list)):
+                min_r, max_r = self.rating
+                filter_mask &= (rating_vals >= min_r) & (rating_vals <= max_r)
+
+        if self.subset_filter is not None:
+            for col, (min_val, max_val) in self.subset_filter.items():
+                if col not in data.columns:
+                    raise ValueError(f"subset_filter column '{col}' not found in data")
+                col_vals = data[col].values
+                filter_mask &= (col_vals >= min_val) & (col_vals <= max_val)
+
+        n_filtered = (~filter_mask).sum()
+        if self.verbose and n_filtered > 0:
+            pct_filtered = 100 * n_filtered / len(data)
+            print(f"    Filter excludes {n_filtered:,} observations ({pct_filtered:.1f}%) from ranking")
+
+        # Build signal matrix with filter applied
+        n_signals = len(self.signals)
+        signals_matrix = np.empty((len(data), n_signals), dtype=np.float64)
+        for s_idx, signal in enumerate(self.signals):
+            sig_vals = data[signal].values.astype(np.float64)
+            sig_vals[~filter_mask] = np.nan
+            signals_matrix[:, s_idx] = sig_vals
+
+        if self.verbose:
+            print(f"    Data extracted in {time.time() - t_extract:.2f}s")
+
+        # =====================================================================
+        # Step 2: Build VW lookup table
+        # =====================================================================
+        t_vw = time.time()
+        vw_lookup = build_vw_lookup_table(date_idx, id_idx, vw, n_dates, n_ids)
+        if self.verbose:
+            print(f"    VW lookup built in {time.time() - t_vw:.2f}s")
+
+        # =====================================================================
+        # Step 3-5: Process each signal
+        # =====================================================================
+        t_signals = time.time()
+        date_index = pd.DatetimeIndex(dates)
+
+        for s_idx, signal in enumerate(self.signals):
+            try:
+                sig_vals = signals_matrix[:, s_idx]
+
+                # Step 3: Compute ranks at rebalancing dates
+                ranks = compute_ranks_at_rebal_dates(
+                    date_idx, sig_vals, rebal_date_indices, n_dates, self.num_portfolios
+                )
+
+                # Step 4: Build rank lookup
+                rank_lookup = build_rank_lookup_nonstaggered(
+                    date_idx, id_idx, ranks, rebal_date_indices, n_dates, n_ids
+                )
+
+                # Step 5: Compute returns
+                ew_ptf, vw_ptf = compute_nonstaggered_returns_fast(
+                    date_idx, id_idx, ret, vw, rebal_date_indices,
+                    self.holding_period, rank_lookup, n_dates, n_ids,
+                    self.num_portfolios, True, vw_lookup
+                )
+
+                # Compute long-short returns
+                ew_ls, vw_ls = compute_nonstaggered_ls_returns(
+                    ew_ptf, vw_ptf, self.num_portfolios
+                )
+
+                # Create result
+                ew_series = pd.Series(ew_ls, index=date_index, name='ew_ls').dropna()
+                vw_series = pd.Series(vw_ls, index=date_index, name='vw_ls').dropna()
+
+                result = _FastBatchResult(
+                    ew_ls=ew_series,
+                    vw_ls=vw_series,
+                    signal=signal
+                )
+
+                results.results[signal] = result
+                results.timings[signal] = 0.0
+
+            except Exception as e:
+                results.errors[signal] = str(e)
+
+        if self.verbose:
+            print(f"    All signals processed in {time.time() - t_signals:.2f}s")
+
+        results.timings['total'] = time.time() - t_start
+
+        if self.verbose:
+            print(f"FAST BATCH PATH (non-staggered) completed in {results.timings['total']:.2f}s")
+
+        return results
+
     def fit(self) -> BatchResults:
         """Run batch portfolio formation for all signals."""
         # Check if fast batch path can be used
@@ -892,6 +1131,8 @@ class BatchStrategyFormation:
                     holding_period=self.holding_period,
                     sort_var=signal,
                     num_portfolios=self.num_portfolios,
+                    rebalance_frequency=self.rebalance_frequency,
+                    rebalance_month=self.rebalance_month,
                     verbose=False
                 )
 
@@ -1023,6 +1264,8 @@ class BatchStrategyFormation:
                 holding_period=self.holding_period,
                 sort_var=first_signal,
                 num_portfolios=self.num_portfolios,
+                rebalance_frequency=self.rebalance_frequency,
+                rebalance_month=self.rebalance_month,
                 verbose=False
             )
             sf_config = StrategyFormationConfig(
@@ -1105,7 +1348,7 @@ class BatchStrategyFormation:
                 worker_args.append((
                     batch, batch_data, self.holding_period, self.num_portfolios,
                     self.turnover, self.chars, self.rating, self.subset_filter,
-                    self.banding_threshold
+                    self.banding_threshold, self.rebalance_frequency, self.rebalance_month
                 ))
 
             if self.verbose and offset == 0:
@@ -1154,7 +1397,7 @@ class BatchStrategyFormation:
                 worker_args.append((
                     signal, minimal_data, self.holding_period, self.num_portfolios,
                     self.turnover, self.chars, self.rating, self.subset_filter,
-                    self.banding_threshold
+                    self.banding_threshold, self.rebalance_frequency, self.rebalance_month
                 ))
 
             if self.verbose and offset == 0:
