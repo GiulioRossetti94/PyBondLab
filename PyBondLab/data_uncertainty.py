@@ -1379,14 +1379,18 @@ class DataUncertaintyAnalysis:
                 col_name = f"{signal_col}_hp{hp}_{fc.get_column_suffix()}{rating_suffix}"
                 is_wins = fc.filter_type == 'wins'
 
-                ew_ea_dict[col_name] = ew_ea_ls[:, f_idx]
-                vw_ea_dict[col_name] = vw_ea_ls[:, f_idx]
-
-                # For wins filter, EP is not available (slow path returns NaN)
                 if is_wins:
-                    ew_ep_dict[col_name] = np.full(n_dates, np.nan)
-                    vw_ep_dict[col_name] = np.full(n_dates, np.nan)
+                    # For wins filter:
+                    # - EA is NaN (ranking unchanged from baseline, would be identical)
+                    # - EP uses winsorized returns (returns ARE affected by winsorization)
+                    ew_ea_dict[col_name] = np.full(n_dates, np.nan)
+                    vw_ea_dict[col_name] = np.full(n_dates, np.nan)
+                    ew_ep_dict[col_name] = ew_ep_ls[:, f_idx]
+                    vw_ep_dict[col_name] = vw_ep_ls[:, f_idx]
                 else:
+                    # For other filters: both EA and EP have computed values
+                    ew_ea_dict[col_name] = ew_ea_ls[:, f_idx]
+                    vw_ea_dict[col_name] = vw_ea_ls[:, f_idx]
                     ew_ep_dict[col_name] = ew_ep_ls[:, f_idx]
                     vw_ep_dict[col_name] = vw_ep_ls[:, f_idx]
 
