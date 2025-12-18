@@ -57,6 +57,90 @@ Dramatically speed up portfolio formation in PyBondLab using numba/prange, while
 | Phase | Description | Status | Notes |
 |-------|-------------|--------|-------|
 | **Phase 3** | Parallelize main loop with prange | ⏳ Pending | Complex due to turnover state dependencies |
+| **Phase 15** | Non-staggered rebalancing optimization | 🚧 In Progress | See [Phase 15 section](#phase-15-non-staggered-rebalancing-optimization) |
+
+---
+
+## Phase 15: Non-Staggered Rebalancing Optimization
+
+### Overview
+
+Optimize `rebalance_frequency > 1` (quarterly, semi-annual, annual) for blazing fast performance.
+Non-staggered rebalancing is **much simpler** than monthly (staggered) because:
+- Single portfolio per rebalancing period (no cohort averaging)
+- Direct returns (no cohort overlap)
+- Simple turnover (compare successive rebalancing dates)
+
+### Target Performance
+
+| Configuration | Current | Target | Speedup |
+|---------------|---------|--------|---------|
+| Annual, no turnover | 0.69s | 0.10s | **7x** |
+| Annual, with turnover | 1.80s | 0.30s | **6x** |
+| Quarterly, turnover+chars | 1.82s | 0.35s | **5x** |
+
+### Implementation Plan
+
+#### Phase 15a: Fast Path (No Turnover/Chars/Banding)
+
+When `turnover=False`, `chars=None`, `banding=None`:
+
+```python
+def _fit_nonstaggered_fast(self):
+    """Ultra-fast non-staggered rebalancing using numba."""
+    # 1. Convert DataFrame to numpy arrays ONCE
+    # 2. Compute ranks for ALL rebalancing dates in parallel
+    # 3. Compute returns for ALL (rebal_date, return_date) pairs in parallel
+```
+
+Key numba kernels:
+- `compute_ranks_at_rebal_dates()` - Parallel rank computation
+- `compute_nonstaggered_returns()` - Parallel return computation
+
+#### Phase 15b: Full Path (With Turnover/Chars/Banding)
+
+Optimize full feature set:
+- Batch portfolio formation for ALL rebalancing dates
+- Parallel weight computation
+- Batch turnover computation
+- Batch characteristics aggregation
+
+### Timeline Behavior
+
+```
+Annual Rebalancing (June, HP=12):
+================================
+Year 1:
+  Jan  Feb  Mar  Apr  May  Jun  Jul  Aug  Sep  Oct  Nov  Dec
+  ───  ───  ───  ───  ───  [F1] ─R1─ ─R2─ ─R3─ ─R4─ ─R5─ ─R6─
+
+Year 2:
+  Jan  Feb  Mar  Apr  May  Jun  ...
+  ─R7─ ─R8─ ─R9─ R10─ R11─ R12─ [F2]
+
+Legend:
+  [Fn] = Formation date (portfolio created)
+  ─Rn─ = Return collected for month n
+```
+
+### Integration Points
+
+1. **BatchStrategyFormation**: Add `rebalance_frequency` parameter
+2. **DataUncertaintyAnalysis**: Add `rebalance_frequency` parameter
+3. **Fast batch path**: Enable for non-monthly rebalancing
+
+### Validation
+
+Test matrix:
+- `rebalance_frequency`: 3, 6, 12
+- `rebalance_month`: 1, 6, 12
+- `turnover`: True/False
+- `chars`: None/['char1']
+- `banding`: None/1
+
+Script: `examples/validate_nonstaggered_rebalancing.py`
+
+Documentation: `docs/NonStaggeredRebalancing_README.md`
 
 ---
 
