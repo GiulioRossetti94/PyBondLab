@@ -293,11 +293,16 @@ def test_momentum_comprehensive():
     for slow_idx, slow_row in slow_summary.iterrows():
         filter_type = slow_row['filter_type']
         hp = slow_row['hp']
+        level = slow_row['level']
 
         fast_match = fast_summary[
             (fast_summary['filter_type'] == filter_type) &
             (fast_summary['hp'] == hp)
         ]
+
+        # For wins filter, also match on level (to differentiate 95 from 99)
+        if filter_type == 'wins':
+            fast_match = fast_match[fast_match['level'] == level]
 
         if len(fast_match) > 0:
             fast_row = fast_match.iloc[0]
@@ -318,10 +323,9 @@ def test_momentum_comprehensive():
                     failures.append(f"{filter_type}_hp{hp}_{metric}: one is NaN")
                 else:
                     diff = abs(slow_val - fast_val)
-                    # Wins EP may have small differences due to winsorization implementation
-                    if filter_type == 'wins' and diff < 0.02:  # 2% tolerance for wins EP
+                    # Wins filter now uses ex-ante thresholds and matches exactly
+                    if filter_type == 'wins':
                         wins_notes.append(f"{filter_type}_hp{hp}_{metric}: diff={diff:.2e} (acceptable)")
-                        continue
                     if diff > tolerance:
                         all_match = False
                         failures.append(f"{filter_type}_hp{hp}_{metric}: diff={diff:.2e}")

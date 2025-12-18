@@ -1068,6 +1068,74 @@ class DataUncertaintyAnalysis:
 
         return True
 
+    def _compute_ex_ante_wins(
+        self,
+        ret: np.ndarray,
+        date_idx: np.ndarray,
+        n_dates: int,
+        level: float,
+        location: str
+    ) -> np.ndarray:
+        """
+        Compute ex-ante winsorized returns using historical thresholds.
+
+        For each date t, thresholds are computed from all returns BEFORE date t.
+        This matches the slow path behavior in FilterClass._winsorizing().
+
+        Parameters
+        ----------
+        ret : np.ndarray
+            Original returns
+        date_idx : np.ndarray
+            Date index for each observation
+        n_dates : int
+            Number of unique dates
+        level : float
+            Percentile level (e.g., 99 for 99th percentile)
+        location : str
+            'both', 'left', or 'right'
+
+        Returns
+        -------
+        np.ndarray
+            Ex-ante winsorized returns
+        """
+        wins_ret = ret.copy()
+
+        # Compute thresholds for each date using only historical data
+        for d in range(n_dates):
+            # Get returns from all dates BEFORE current date
+            hist_mask = date_idx < d
+            if not np.any(hist_mask):
+                # No historical data for first date(s), keep original
+                continue
+
+            hist_ret = ret[hist_mask]
+            hist_ret = hist_ret[~np.isnan(hist_ret)]
+
+            if len(hist_ret) == 0:
+                continue
+
+            lb = np.nanpercentile(hist_ret, 100 - level)
+            ub = np.nanpercentile(hist_ret, level)
+
+            # Apply to current date
+            curr_mask = date_idx == d
+
+            if location == 'both':
+                curr_ret = wins_ret[curr_mask]
+                curr_ret = np.where(curr_ret > ub, ub, curr_ret)
+                curr_ret = np.where(curr_ret < lb, lb, curr_ret)
+                wins_ret[curr_mask] = curr_ret
+            elif location == 'right':
+                curr_ret = wins_ret[curr_mask]
+                wins_ret[curr_mask] = np.where(curr_ret > ub, ub, curr_ret)
+            elif location == 'left':
+                curr_ret = wins_ret[curr_mask]
+                wins_ret[curr_mask] = np.where(curr_ret < lb, lb, curr_ret)
+
+        return wins_ret
+
     def _apply_filters_vectorized(
         self,
         ret: np.ndarray,
@@ -1564,12 +1632,29 @@ class DataUncertaintyAnalysis:
             ret_lag = None
 
         # =====================================================================
-        # Step 2: Apply all filters to returns (vectorized)
+        # Step 2: Apply all filters to returns (vectorized) - for EP returns
         # =====================================================================
+        # Note: This uses GLOBAL thresholds for wins, which is correct for EP
         t_filter = time.time()
         filtered_returns, filter_names = self._apply_filters_vectorized(ret, price, ret_lag)
         if self.verbose:
             print(f"    Filters applied in {time.time() - t_filter:.2f}s")
+
+        # =====================================================================
+        # Step 2b: Compute EX-ANTE winsorized returns for wins signal computation
+        # =====================================================================
+        # For wins filters, signal computation needs ex-ante (historical) thresholds,
+        # not global thresholds. This matches the slow path behavior.
+        wins_ea_returns = {}  # f_idx -> ex-ante winsorized returns
+        for f_idx, fc in enumerate(self._filter_configs):
+            if fc.filter_type == 'wins':
+                level = fc.level
+                location = fc.location
+                # Compute ex-ante winsorized returns using historical thresholds
+                wins_ea_ret = self._compute_ex_ante_wins(
+                    ret, date_idx, n_dates, level, location
+                )
+                wins_ea_returns[f_idx] = wins_ea_ret
 
         # =====================================================================
         # Step 3: Compute signals - different behavior for different filter types
@@ -1577,7 +1662,7 @@ class DataUncertaintyAnalysis:
         # IMPORTANT: For Momentum/LTreversal with filters:
         # - Baseline: Signal from original returns
         # - Trim/price/bounce: Signal from ORIGINAL returns (filter just excludes bonds)
-        # - Wins: Signal from WINSORIZED returns (filter changes return values)
+        # - Wins: Signal from EX-ANTE WINSORIZED returns (historical thresholds)
         t_signal = time.time()
 
         # Sort data by (ID, date) for bond-wise processing
@@ -1605,15 +1690,17 @@ class DataUncertaintyAnalysis:
         baseline_signal = baseline_signal_sorted[unsort_idx]
 
         # Build signals_all: (n_obs, n_filters)
-        # Most filters use baseline signal, wins filters get their own signal
+        # Most filters use baseline signal, wins filters get their own signal from EA winsorized returns
         signals_all = np.empty((len(ret), n_filters), dtype=np.float64)
         wins_filter_indices = []
 
         for f_idx, fc in enumerate(self._filter_configs):
             if fc.filter_type == 'wins':
                 wins_filter_indices.append(f_idx)
-                # Wins: compute signal from winsorized returns
-                logret_wins = np.log(filtered_sorted[:, f_idx] + 1.0).reshape(-1, 1)
+                # Wins: compute signal from EX-ANTE winsorized returns (historical thresholds)
+                wins_ea_ret = wins_ea_returns[f_idx]
+                wins_ea_ret_sorted = wins_ea_ret[sort_idx]
+                logret_wins = np.log(wins_ea_ret_sorted + 1.0).reshape(-1, 1)
                 if is_momentum:
                     wins_signal_sorted = compute_momentum_signals_panel(
                         logret_wins, bond_starts, lookback, skip
