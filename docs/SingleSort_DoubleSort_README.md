@@ -19,7 +19,11 @@
    - [Rating Filtering](#rating-filtering)
    - [Turnover and Banding](#turnover-and-banding)
    - [Characteristics Tracking](#characteristics-tracking)
-5. [Examples](#examples)
+5. [Execution Paths: Slow, Fast, and Ultra-Fast](#execution-paths-slow-fast-and-ultra-fast)
+   - [Path Selection Logic](#path-selection-logic)
+   - [Performance Comparison](#performance-comparison)
+   - [How to Ensure Fast Path](#how-to-ensure-fast-path)
+6. [Examples](#examples)
    - [Basic SingleSort](#basic-singlesort)
    - [SingleSort with Custom Breakpoints](#singlesort-with-custom-breakpoints)
    - [SingleSort with Different Rebalancing](#singlesort-with-different-rebalancing)
@@ -27,9 +31,9 @@
    - [DoubleSort Conditional](#doublesort-conditional)
    - [Rating Filtering Examples](#rating-filtering-examples)
    - [Complete Workflow Example](#complete-workflow-example)
-6. [Accessing Results](#accessing-results)
-7. [Advanced Options](#advanced-options)
-8. [Troubleshooting](#troubleshooting)
+7. [Accessing Results](#accessing-results)
+8. [Advanced Options](#advanced-options)
+9. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -436,6 +440,295 @@ result = sf.fit()
 ew_chars, vw_chars = result.get_characteristics()
 print(ew_chars['duration'])  # Duration by portfolio and date
 ```
+
+---
+
+## Execution Paths: Slow, Fast, and Ultra-Fast
+
+PyBondLab automatically selects the optimal execution path based on your configuration. Understanding these paths helps you maximize performance.
+
+### Overview of Execution Paths
+
+| Path | Speed | When Used | Limitations |
+|------|-------|-----------|-------------|
+| **Slow Path** | Baseline | Default, supports all features | Full functionality |
+| **Fast Path** | ~2x faster | Returns-only mode | No turnover/chars/banding |
+| **Ultra-Fast Path** | ~5x faster | Large panels, returns-only | No turnover/chars/banding, SingleSort only |
+
+### Path Selection Logic
+
+#### StrategyFormation (Single Signal)
+
+```
+                    ┌─────────────────────────────────┐
+                    │     StrategyFormation.fit()     │
+                    └─────────────────────────────────┘
+                                    │
+                    ┌───────────────┴───────────────┐
+                    │  Can use Ultra-Fast Path?     │
+                    │  ALL conditions must be TRUE: │
+                    │  • turnover = False           │
+                    │  • chars = None               │
+                    │  • banding_threshold = None   │
+                    │  • Strategy is SingleSort     │
+                    │  • rebalance = 'monthly'      │
+                    └───────────────┬───────────────┘
+                           │                │
+                          YES              NO
+                           │                │
+                           ▼                ▼
+                    ┌─────────────┐  ┌─────────────┐
+                    │ ULTRA-FAST  │  │    SLOW     │
+                    │   PATH      │  │    PATH     │
+                    │  (numba)    │  │  (pandas)   │
+                    └─────────────┘  └─────────────┘
+```
+
+**Ultra-Fast Path Requirements (ALL must be true):**
+
+| Condition | Required Value | Why |
+|-----------|---------------|-----|
+| `turnover` | `False` | Turnover requires tracking state across periods |
+| `chars` | `None` | Characteristics need per-portfolio aggregation |
+| `banding_threshold` | `None` | Banding requires lag rank tracking |
+| Strategy type | `SingleSort` | DoubleSort has complex interactions |
+| `rebalance_frequency` | `'monthly'` | Non-monthly requires special handling |
+| `filters` | `None` | Filters require additional data processing |
+
+**What happens when Ultra-Fast Path is used:**
+- Bypasses pandas DataFrame operations entirely
+- Converts data to numpy arrays once
+- Computes ranks for ALL dates in parallel using numba
+- Computes returns for ALL dates in parallel using numba
+- ~5x speedup for large panels (1M+ rows)
+
+#### BatchStrategyFormation (Multiple Signals)
+
+```
+                    ┌─────────────────────────────────┐
+                    │  BatchStrategyFormation.fit()   │
+                    └─────────────────────────────────┘
+                                    │
+                    ┌───────────────┴───────────────┐
+                    │  Can use Fast Batch Path?     │
+                    │  ALL conditions must be TRUE: │
+                    │  • turnover = False           │
+                    │  • chars = None               │
+                    │  • banding = None             │
+                    │  • rating = None              │
+                    └───────────────┬───────────────┘
+                           │                │
+                          YES              NO
+                           │                │
+                           ▼                ▼
+                    ┌─────────────┐  ┌─────────────┐
+                    │ FAST BATCH  │  │    SLOW     │
+                    │   PATH      │  │    PATH     │
+                    │  (numba)    │  │(multiproc)  │
+                    └─────────────┘  └─────────────┘
+```
+
+**Fast Batch Path Requirements:**
+
+| Condition | Required Value | Why |
+|-----------|---------------|-----|
+| `turnover` | `False` | No turnover tracking |
+| `chars` | `None` | No characteristics |
+| `banding` | `None` | No banding |
+| `rating` | `None` | No rating filter |
+
+**What happens when Fast Batch Path is used:**
+- Processes ALL signals simultaneously using numba kernels
+- Computes ranks for all (date × signal) combinations in parallel
+- ~2.7-3x speedup compared to multiprocessing slow path
+- Avoids Python multiprocessing overhead
+
+### Performance Comparison
+
+#### StrategyFormation (Single Signal)
+
+| Dataset | Slow Path | Ultra-Fast Path | Speedup |
+|---------|-----------|-----------------|---------|
+| 25K rows (test) | 0.41s | 0.24s | **1.7x** |
+| 500K rows | 2.1s | 0.8s | **2.6x** |
+| 3M rows | 5.7s | 1.2s | **4.9x** |
+
+#### BatchStrategyFormation (10 Signals)
+
+| Dataset | Slow Path (n_jobs=4) | Fast Batch Path | Speedup |
+|---------|---------------------|-----------------|---------|
+| 25K rows, HP=1 | 10.4s | 3.8s | **2.7x** |
+| 25K rows, HP=3 | 4.3s | 1.5s | **2.9x** |
+
+### How to Ensure Fast Path
+
+#### For StrategyFormation (Single Signal)
+
+```python
+# ✅ ULTRA-FAST PATH - All conditions met
+sf = pbl.StrategyFormation(
+    data=data,
+    strategy=pbl.SingleSort(  # ✅ SingleSort
+        holding_period=1,
+        sort_var='momentum',
+        num_portfolios=5,
+        rebalance_frequency='monthly',  # ✅ Monthly (default)
+    ),
+    turnover=False,           # ✅ No turnover
+    # chars not specified     # ✅ No characteristics
+    # banding not specified   # ✅ No banding
+)
+result = sf.fit()  # Uses Ultra-Fast Path
+```
+
+```python
+# ❌ SLOW PATH - turnover=True disables fast path
+sf = pbl.StrategyFormation(
+    data=data,
+    strategy=pbl.SingleSort(
+        holding_period=1,
+        sort_var='momentum',
+        num_portfolios=5,
+    ),
+    turnover=True,  # ❌ Forces slow path
+)
+```
+
+```python
+# ❌ SLOW PATH - DoubleSort disables fast path
+sf = pbl.StrategyFormation(
+    data=data,
+    strategy=pbl.DoubleSort(  # ❌ Not SingleSort
+        holding_period=1,
+        sort_var='size',
+        sort_var2='value',
+        num_portfolios=5,
+        num_portfolios2=5,
+    ),
+    turnover=False,
+)
+```
+
+```python
+# ❌ SLOW PATH - Annual rebalancing disables fast path
+sf = pbl.StrategyFormation(
+    data=data,
+    strategy=pbl.SingleSort(
+        holding_period=12,
+        sort_var='value',
+        num_portfolios=5,
+        rebalance_frequency='annual',  # ❌ Not monthly
+    ),
+    turnover=False,
+)
+```
+
+#### For BatchStrategyFormation (Multiple Signals)
+
+```python
+# ✅ FAST BATCH PATH - All conditions met
+batch = pbl.BatchStrategyFormation(
+    data=data,
+    signals=['sig1', 'sig2', 'sig3', ...],
+    holding_period=1,
+    num_portfolios=5,
+    turnover=False,   # ✅ Required
+    chars=None,       # ✅ Required (default)
+    banding=None,     # ✅ Required (default)
+    rating=None,      # ✅ Required (default)
+)
+results = batch.fit()
+# Prints: "FAST BATCH PATH: Processing N signals with numba..."
+```
+
+```python
+# ❌ SLOW PATH - turnover=True
+batch = pbl.BatchStrategyFormation(
+    data=data,
+    signals=['sig1', 'sig2', 'sig3'],
+    holding_period=1,
+    num_portfolios=5,
+    turnover=True,    # ❌ Forces slow path
+    n_jobs=4,         # Uses multiprocessing
+)
+```
+
+```python
+# ❌ SLOW PATH - rating filter applied
+batch = pbl.BatchStrategyFormation(
+    data=data,
+    signals=['sig1', 'sig2', 'sig3'],
+    holding_period=1,
+    num_portfolios=5,
+    turnover=False,
+    rating='IG',      # ❌ Forces slow path
+    n_jobs=4,
+)
+```
+
+### Checking Which Path is Used
+
+```python
+# Enable verbose output to see path selection
+sf = pbl.StrategyFormation(
+    data=data,
+    strategy=strategy,
+    turnover=False,
+    verbose=True,     # Shows path info
+)
+result = sf.fit()
+# If ultra-fast: prints "Using ULTRA-FAST returns-only path..."
+# If slow: prints standard progress info
+
+# For BatchStrategyFormation
+batch = pbl.BatchStrategyFormation(
+    data=data,
+    signals=signals,
+    turnover=False,
+    verbose=True,
+)
+results = batch.fit()
+# If fast batch: prints "FAST BATCH PATH: Processing N signals with numba..."
+# If slow: prints "Processing N signals with M worker(s)..."
+```
+
+### Decision Guide
+
+| Your Use Case | Recommended Configuration | Expected Path |
+|---------------|--------------------------|---------------|
+| Quick factor screening | `turnover=False`, `SingleSort` | Ultra-Fast |
+| Batch signal testing | `BatchStrategyFormation`, `turnover=False` | Fast Batch |
+| Full analysis with turnover | `turnover=True` | Slow |
+| Characteristics tracking | `chars=[...]` | Slow |
+| DoubleSort analysis | `DoubleSort` | Slow |
+| Rating-filtered analysis | `rating='IG'` or `(min,max)` | Slow |
+| Banding for lower turnover | `banding=1` | Slow |
+
+### Best Practices
+
+1. **Two-stage workflow**: Use fast path for screening, slow path for detailed analysis
+   ```python
+   # Stage 1: Fast screening of 100 signals
+   batch = pbl.BatchStrategyFormation(
+       data=data, signals=all_signals, turnover=False, ...
+   )
+   results = batch.fit()  # Fast batch path
+   top_signals = get_top_performers(results)
+
+   # Stage 2: Detailed analysis of top 5
+   for signal in top_signals:
+       sf = pbl.StrategyFormation(
+           data=data,
+           strategy=pbl.SingleSort(sort_var=signal, ...),
+           turnover=True,
+           chars=['duration', 'spread'],
+       )
+       detailed_result = sf.fit()  # Slow path, full analysis
+   ```
+
+2. **Pre-compute signals** before running DataUncertaintyAnalysis for 75x speedup
+
+3. **Use `verbose=True`** to confirm which path is being used
 
 ---
 
