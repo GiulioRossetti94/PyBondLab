@@ -3643,4 +3643,376 @@ def compute_ls_returns_all_signals_staggered(
         if not np.isnan(avg_vw[nport - 1]) and not np.isnan(avg_vw[0]):
             vw_ls[d, s] = avg_vw[nport - 1] - avg_vw[0]
 
+
+# =============================================================================
+# Non-Staggered Rebalancing Optimization (Phase 15)
+# =============================================================================
+
+@njit(cache=True, parallel=True)
+def compute_ranks_at_rebal_dates(
+    date_idx: np.ndarray,
+    signal: np.ndarray,
+    rebal_date_indices: np.ndarray,
+    n_dates: int,
+    nport: int,
+) -> np.ndarray:
+    """
+    Compute portfolio ranks at specific rebalancing dates only.
+
+    This is much faster than computing ranks for all dates when only a subset
+    of dates are rebalancing dates (e.g., annual = 10 dates vs monthly = 120).
+
+    Parameters
+    ----------
+    date_idx : np.ndarray
+        Date index for each observation (0 to n_dates-1)
+    signal : np.ndarray
+        Signal values for ranking
+    rebal_date_indices : np.ndarray
+        Indices of rebalancing dates (e.g., [5, 17, 29, ...] for June dates)
+    n_dates : int
+        Total number of unique dates
+    nport : int
+        Number of portfolios
+
+    Returns
+    -------
+    np.ndarray
+        Portfolio ranks, shape (n_obs,). NaN for observations not at rebal dates.
+    """
+    n_obs = len(date_idx)
+    n_rebal = len(rebal_date_indices)
+
+    # Output: ranks for each observation (NaN for non-rebal dates)
+    ranks = np.full(n_obs, np.nan, dtype=np.float64)
+
+    # Create a set-like lookup for rebal dates
+    is_rebal_date = np.zeros(n_dates, dtype=np.bool_)
+    for i in range(n_rebal):
+        is_rebal_date[rebal_date_indices[i]] = True
+
+    # Process each rebalancing date in parallel
+    for rebal_i in prange(n_rebal):
+        rebal_d = rebal_date_indices[rebal_i]
+
+        # Count valid signals at this date
+        count = 0
+        for i in range(n_obs):
+            if date_idx[i] == rebal_d and not np.isnan(signal[i]):
+                count += 1
+
+        if count == 0:
+            continue
+
+        # Collect (signal, obs_idx) pairs for this date
+        signals_at_date = np.empty(count, dtype=np.float64)
+        indices_at_date = np.empty(count, dtype=np.int64)
+        k = 0
+        for i in range(n_obs):
+            if date_idx[i] == rebal_d and not np.isnan(signal[i]):
+                signals_at_date[k] = signal[i]
+                indices_at_date[k] = i
+                k += 1
+
+        # Compute percentile thresholds
+        thresholds = np.empty(nport - 1, dtype=np.float64)
+        for p in range(nport - 1):
+            pct = 100.0 * (p + 1) / nport
+            thresholds[p] = np.nanpercentile(signals_at_date, pct)
+
+        # Assign ranks based on thresholds
+        for k in range(count):
+            sig_val = signals_at_date[k]
+            obs_idx = indices_at_date[k]
+
+            # Find rank
+            rank = 1
+            for p in range(nport - 1):
+                if sig_val > thresholds[p]:
+                    rank = p + 2
+
+            ranks[obs_idx] = rank
+
+    return ranks
+
+
+@njit(cache=True)
+def build_rank_lookup_nonstaggered(
+    date_idx: np.ndarray,
+    id_idx: np.ndarray,
+    ranks: np.ndarray,
+    rebal_date_indices: np.ndarray,
+    n_dates: int,
+    n_ids: int,
+) -> np.ndarray:
+    """
+    Build a lookup table: rank_lookups[rebal_idx, bond_idx] = portfolio rank.
+
+    For non-staggered rebalancing, we only need ranks at rebalancing dates.
+
+    Parameters
+    ----------
+    date_idx : np.ndarray
+        Date index for each observation
+    id_idx : np.ndarray
+        Bond ID index for each observation
+    ranks : np.ndarray
+        Portfolio ranks for each observation (NaN for non-rebal dates)
+    rebal_date_indices : np.ndarray
+        Indices of rebalancing dates
+    n_dates : int
+        Total number of dates
+    n_ids : int
+        Total number of unique bonds
+
+    Returns
+    -------
+    np.ndarray
+        Shape (n_rebal_dates, n_ids), contains portfolio rank or NaN
+    """
+    n_rebal = len(rebal_date_indices)
+    n_obs = len(date_idx)
+
+    # Create mapping from date index to rebal index
+    date_to_rebal_idx = np.full(n_dates, -1, dtype=np.int64)
+    for i in range(n_rebal):
+        date_to_rebal_idx[rebal_date_indices[i]] = i
+
+    # Output: rank lookup table
+    rank_lookups = np.full((n_rebal, n_ids), np.nan, dtype=np.float64)
+
+    for i in range(n_obs):
+        d = date_idx[i]
+        rebal_i = date_to_rebal_idx[d]
+        if rebal_i < 0:
+            continue  # Not a rebalancing date
+
+        bond = id_idx[i]
+        rank = ranks[i]
+        if not np.isnan(rank):
+            rank_lookups[rebal_i, bond] = rank
+
+    return rank_lookups
+
+
+@njit(cache=True, parallel=True)
+def compute_nonstaggered_returns_fast(
+    date_idx: np.ndarray,
+    id_idx: np.ndarray,
+    ret: np.ndarray,
+    vw: np.ndarray,
+    rebal_date_indices: np.ndarray,
+    holding_period: int,
+    rank_lookups: np.ndarray,
+    n_dates: int,
+    n_ids: int,
+    nport: int,
+    dynamic_weights: bool,
+    vw_lookup: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Compute portfolio returns for non-staggered rebalancing.
+
+    For each (rebal_date, return_date) pair where return_date is within
+    holding_period of rebal_date, compute portfolio returns.
+
+    Parameters
+    ----------
+    date_idx : np.ndarray
+        Date index for each observation
+    id_idx : np.ndarray
+        Bond ID index for each observation
+    ret : np.ndarray
+        Returns for each observation
+    vw : np.ndarray
+        Value weights for each observation
+    rebal_date_indices : np.ndarray
+        Indices of rebalancing dates
+    holding_period : int
+        Holding period in months
+    rank_lookups : np.ndarray
+        Shape (n_rebal, n_ids), portfolio rank for each bond at each rebal date
+    n_dates : int
+        Total number of dates
+    n_ids : int
+        Total number of bonds
+    nport : int
+        Number of portfolios
+    dynamic_weights : bool
+        If True, use VW from day before return date; if False, use VW from formation
+    vw_lookup : np.ndarray
+        Shape (n_dates, n_ids), VW for each bond at each date
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray]
+        (ew_ret, vw_ret) - Shape (n_dates, nport)
+    """
+    n_obs = len(date_idx)
+    n_rebal = len(rebal_date_indices)
+
+    # Output: portfolio returns at each return date
+    ew_ret_all = np.full((n_dates, nport), np.nan, dtype=np.float64)
+    vw_ret_all = np.full((n_dates, nport), np.nan, dtype=np.float64)
+
+    # Create mapping from date index to rebal index
+    date_to_rebal_idx = np.full(n_dates, -1, dtype=np.int64)
+    for i in range(n_rebal):
+        date_to_rebal_idx[rebal_date_indices[i]] = i
+
+    # For each return date, find which rebal date it belongs to
+    # return_date belongs to rebal_date if: rebal_date < return_date <= rebal_date + hp
+    return_date_to_rebal = np.full(n_dates, -1, dtype=np.int64)
+    for rebal_i in range(n_rebal):
+        rebal_d = rebal_date_indices[rebal_i]
+        for h in range(holding_period):
+            ret_d = rebal_d + h + 1
+            if ret_d < n_dates:
+                return_date_to_rebal[ret_d] = rebal_i
+
+    # Process each return date in parallel
+    for ret_d in prange(n_dates):
+        rebal_i = return_date_to_rebal[ret_d]
+        if rebal_i < 0:
+            continue  # This date is not a return date for any portfolio
+
+        rebal_d = rebal_date_indices[rebal_i]
+
+        # Accumulators
+        sum_ret = np.zeros(nport, dtype=np.float64)
+        sum_wret = np.zeros(nport, dtype=np.float64)
+        sum_weight = np.zeros(nport, dtype=np.float64)
+        count = np.zeros(nport, dtype=np.int64)
+
+        # Loop through all observations at return date
+        for i in range(n_obs):
+            if date_idx[i] != ret_d:
+                continue
+
+            bond = id_idx[i]
+            ret_val = ret[i]
+
+            if np.isnan(ret_val):
+                continue
+
+            # Get rank from formation date
+            rank = rank_lookups[rebal_i, bond]
+            if np.isnan(rank):
+                continue
+
+            p = int(rank) - 1
+            if p < 0 or p >= nport:
+                continue
+
+            # Get weight
+            if dynamic_weights:
+                # VW from day before return date
+                vw_date = ret_d - 1
+                if vw_date >= 0:
+                    weight = vw_lookup[vw_date, bond]
+                else:
+                    weight = np.nan
+            else:
+                # VW from formation date
+                weight = vw_lookup[rebal_d, bond]
+
+            if np.isnan(weight):
+                continue
+
+            sum_ret[p] += ret_val
+            count[p] += 1
+            sum_wret[p] += ret_val * weight
+            sum_weight[p] += weight
+
+        # Compute portfolio returns
+        for p in range(nport):
+            if count[p] > 0:
+                ew_ret_all[ret_d, p] = sum_ret[p] / count[p]
+            if sum_weight[p] > 0:
+                vw_ret_all[ret_d, p] = sum_wret[p] / sum_weight[p]
+
+    return ew_ret_all, vw_ret_all
+
+
+@njit(cache=True)
+def build_vw_lookup_table(
+    date_idx: np.ndarray,
+    id_idx: np.ndarray,
+    vw: np.ndarray,
+    n_dates: int,
+    n_ids: int,
+) -> np.ndarray:
+    """
+    Build a lookup table: vw_lookup[date, bond] = value weight.
+
+    Parameters
+    ----------
+    date_idx : np.ndarray
+        Date index for each observation
+    id_idx : np.ndarray
+        Bond ID index for each observation
+    vw : np.ndarray
+        Value weights for each observation
+    n_dates : int
+        Total number of dates
+    n_ids : int
+        Total number of bonds
+
+    Returns
+    -------
+    np.ndarray
+        Shape (n_dates, n_ids), VW for each bond at each date
+    """
+    n_obs = len(date_idx)
+    vw_lookup = np.full((n_dates, n_ids), np.nan, dtype=np.float64)
+
+    for i in range(n_obs):
+        d = date_idx[i]
+        bond = id_idx[i]
+        w = vw[i]
+        if not np.isnan(w):
+            vw_lookup[d, bond] = w
+
+    return vw_lookup
+
+
+@njit(cache=True, parallel=True)
+def compute_nonstaggered_ls_returns(
+    ew_ret: np.ndarray,
+    vw_ret: np.ndarray,
+    nport: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Compute long-short returns from portfolio returns.
+
+    Parameters
+    ----------
+    ew_ret : np.ndarray
+        EW portfolio returns, shape (n_dates, nport)
+    vw_ret : np.ndarray
+        VW portfolio returns, shape (n_dates, nport)
+    nport : int
+        Number of portfolios
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray]
+        (ew_ls, vw_ls) - Long-short returns, shape (n_dates,)
+    """
+    n_dates = ew_ret.shape[0]
+
+    ew_ls = np.full(n_dates, np.nan, dtype=np.float64)
+    vw_ls = np.full(n_dates, np.nan, dtype=np.float64)
+
+    for d in prange(n_dates):
+        ew_long = ew_ret[d, nport - 1]
+        ew_short = ew_ret[d, 0]
+        vw_long = vw_ret[d, nport - 1]
+        vw_short = vw_ret[d, 0]
+
+        if not np.isnan(ew_long) and not np.isnan(ew_short):
+            ew_ls[d] = ew_long - ew_short
+        if not np.isnan(vw_long) and not np.isnan(vw_short):
+            vw_ls[d] = vw_long - vw_short
+
     return ew_ls, vw_ls

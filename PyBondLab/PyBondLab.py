@@ -968,10 +968,13 @@ class StrategyFormation:
 
         # Check if fast returns-only path can be used
         use_fast_path = self._can_use_fast_path()
+        use_nonstaggered_fast_path = self._can_use_nonstaggered_fast_path()
 
         # Form portfolios (EA results)
         if use_fast_path:
             ea_results = self._fit_fast_returns_only()
+        elif use_nonstaggered_fast_path:
+            ea_results = self._fit_nonstaggered_fast()
         elif is_staggered:
             ea_results = self._fit_staggered()
         else:
@@ -986,6 +989,8 @@ class StrategyFormation:
             # Re-run portfolio formation. # uses It2
             if use_fast_path:
                 ep_results = self._fit_fast_returns_only()
+            elif use_nonstaggered_fast_path:
+                ep_results = self._fit_nonstaggered_fast()
             elif is_staggered:
                 ep_results = self._fit_staggered()
             else:
@@ -1170,6 +1175,173 @@ class StrategyFormation:
         )
 
         return results
+
+    def _can_use_nonstaggered_fast_path(self) -> bool:
+        """Check if fast non-staggered returns-only path can be used."""
+        # Must be non-staggered rebalancing
+        if self.rebalance_frequency == 'monthly':
+            return False
+        # Fast path requires: no turnover, no chars, no banding
+        if self.turnover:
+            return False
+        if self.chars:
+            return False
+        if self.banding_threshold is not None:
+            return False
+        # Only SingleSort supported (no DoubleSort)
+        is_double = getattr(self.strategy, "double_sort", 0) or getattr(self.strategy, "DoubleSort", 0)
+        if is_double:
+            return False
+        # Disable fast path for filters - need to validate filter handling first
+        if self.config.has_filters:
+            return False
+        return True
+
+    def _fit_nonstaggered_fast(self):
+        """
+        Ultra-fast non-staggered portfolio formation using numba.
+
+        This is significantly faster than the standard path because:
+        1. Computes ranks only at rebalancing dates (not all dates)
+        2. Uses parallel numba kernels for return computation
+        3. Bypasses pandas precomputation entirely
+
+        Requirements:
+        - Non-staggered rebalancing (quarterly, semi-annual, annual)
+        - turnover=False
+        - chars=None
+        - banding=None
+        - SingleSort only
+        """
+        from .numba_core import (
+            compute_ranks_at_rebal_dates,
+            build_rank_lookup_nonstaggered,
+            compute_nonstaggered_returns_fast,
+            build_vw_lookup_table,
+            compute_nonstaggered_ls_returns,
+        )
+        from .utils_optimized import _get_rebalancing_dates
+
+        if self.verbose:
+            print(f"Using ULTRA-FAST non-staggered path ({self.rebalance_frequency})...")
+
+        TM = len(self.datelist)
+        tot_nport = self._get_total_portfolios()
+        sort_var_main, _ = self._get_sort_vars()
+
+        # Get rebalancing dates
+        rebal_dates_idx = _get_rebalancing_dates(
+            self.datelist,
+            self.rebalance_frequency,
+            self.rebalance_month
+        )
+        rebal_dates_idx = np.array(rebal_dates_idx, dtype=np.int64)
+
+        if self.verbose:
+            print(f"  Rebalancing at {len(rebal_dates_idx)} dates")
+
+        # Get filtered data
+        tab = self.data
+
+        # Create date-to-index mapping
+        date_to_idx = {d: i for i, d in enumerate(self.datelist)}
+
+        # Only keep rows with valid dates in our datelist
+        valid_mask = tab[ColumnNames.DATE].isin(self.datelist)
+        data = tab[valid_mask].copy()
+
+        if data.empty:
+            return self._create_empty_results()
+
+        # Determine which return column to use
+        if self._computing_ep and self.adj:
+            ret_col = f'ret_{self.adj}'
+        else:
+            ret_col = ColumnNames.RETURN
+
+        # Create ID mapping
+        all_ids = data[ColumnNames.ID].unique()
+        id_to_idx = {id_val: idx for idx, id_val in enumerate(all_ids)}
+        n_ids = len(all_ids)
+
+        # Convert data to numpy arrays
+        date_idx = data[ColumnNames.DATE].map(date_to_idx).values.astype(np.int64)
+        id_idx = data[ColumnNames.ID].map(id_to_idx).values.astype(np.int64)
+        signal = data[sort_var_main].values.astype(np.float64)
+        ret = data[ret_col].values.astype(np.float64)
+        vw = data[ColumnNames.VALUE_WEIGHT].values.astype(np.float64)
+
+        # Step 1: Compute ranks at rebalancing dates only
+        ranks = compute_ranks_at_rebal_dates(
+            date_idx, signal, rebal_dates_idx, TM, tot_nport
+        )
+
+        # Step 2: Build rank lookup table
+        rank_lookups = build_rank_lookup_nonstaggered(
+            date_idx, id_idx, ranks, rebal_dates_idx, TM, n_ids
+        )
+
+        # Step 3: Build VW lookup table
+        vw_lookup = build_vw_lookup_table(date_idx, id_idx, vw, TM, n_ids)
+
+        # Step 4: Compute returns for all (rebal, return) pairs
+        ew_ret_arr, vw_ret_arr = compute_nonstaggered_returns_fast(
+            date_idx, id_idx, ret, vw,
+            rebal_dates_idx, self.hor,
+            rank_lookups, TM, n_ids, tot_nport,
+            self.dynamic_weights, vw_lookup
+        )
+
+        # Step 5: Compute long-short returns
+        ew_ls, vw_ls = compute_nonstaggered_ls_returns(ew_ret_arr, vw_ret_arr, tot_nport)
+
+        # Build results structure
+        sort_var_main, sort_var2 = self._get_sort_vars()
+        is_double = getattr(self.strategy, "double_sort", 0) or getattr(self.strategy, "DoubleSort", 0)
+
+        if is_double:
+            nport2 = getattr(self.strategy, "num_portfolios2", None) or getattr(self.strategy, "nport2", None)
+            ptf_labels = get_signal_based_labels(sort_var_main, self.nport, sort_var2, nport2)
+        else:
+            ptf_labels = get_signal_based_labels(sort_var_main, self.nport)
+
+        # Create DataFrames
+        ew_df = pd.DataFrame(ew_ret_arr, index=self.datelist, columns=ptf_labels)
+        vw_df = pd.DataFrame(vw_ret_arr, index=self.datelist, columns=ptf_labels)
+
+        # Create long-short DataFrames
+        prefix = 'EWEP' if self._computing_ep else 'EWEA'
+        vw_prefix = 'VWEP' if self._computing_ep else 'VWEA'
+
+        ewls_df = pd.DataFrame(ew_ls, index=self.datelist, columns=[f'{prefix}_{self.name}'])
+        vwls_df = pd.DataFrame(vw_ls, index=self.datelist, columns=[f'{vw_prefix}_{self.name}'])
+
+        # Long and short portfolios
+        ew_long = ew_ret_arr[:, -1]
+        vw_long = vw_ret_arr[:, -1]
+        ew_short = ew_ret_arr[:, 0]
+        vw_short = vw_ret_arr[:, 0]
+
+        ew_long_df = pd.DataFrame(ew_long, index=self.datelist, columns=[f'LONG_{prefix}_{self.name}'])
+        vw_long_df = pd.DataFrame(vw_long, index=self.datelist, columns=[f'LONG_{vw_prefix}_{self.name}'])
+        ew_short_df = pd.DataFrame(ew_short, index=self.datelist, columns=[f'SHORT_{prefix}_{self.name}'])
+        vw_short_df = pd.DataFrame(vw_short, index=self.datelist, columns=[f'SHORT_{vw_prefix}_{self.name}'])
+
+        # Build and return StrategyResults (same format as slow path)
+        return build_strategy_results(
+            ewport_df=ew_df,
+            vwport_df=vw_df,
+            ewls_df=ewls_df,
+            vwls_df=vwls_df,
+            ewls_long_df=ew_long_df,
+            vwls_long_df=vw_long_df,
+            ewls_short_df=ew_short_df,
+            vwls_short_df=vw_short_df,
+            turnover_ew_df=None,
+            turnover_vw_df=None,
+            chars_ew=None,
+            chars_vw=None,
+        )
 
     def _can_use_fast_path(self) -> bool:
         """Check if fast returns-only path can be used."""
