@@ -1572,46 +1572,66 @@ class DataUncertaintyAnalysis:
             print(f"    Filters applied in {time.time() - t_filter:.2f}s")
 
         # =====================================================================
-        # Step 3: Compute signal from ORIGINAL returns (not filtered!)
+        # Step 3: Compute signals - different behavior for different filter types
         # =====================================================================
-        # IMPORTANT: For Momentum/LTreversal, the signal is computed from
-        # ORIGINAL returns, not filtered returns. The filter only affects:
-        # - Which bonds are included in ranking (bonds with NaN filtered returns excluded)
-        # - Which returns are used for EP (filtered returns)
+        # IMPORTANT: For Momentum/LTreversal with filters:
+        # - Baseline: Signal from original returns
+        # - Trim/price/bounce: Signal from ORIGINAL returns (filter just excludes bonds)
+        # - Wins: Signal from WINSORIZED returns (filter changes return values)
         t_signal = time.time()
 
         # Sort data by (ID, date) for bond-wise processing
         sort_idx = np.lexsort((date_idx, id_idx))
         id_sorted = id_idx[sort_idx]
         ret_sorted = ret[sort_idx]
-
-        # Compute log returns from ORIGINAL returns (single signal for all filters)
-        logret_sorted = np.log(ret_sorted + 1.0).reshape(-1, 1)
+        filtered_sorted = filtered_returns[sort_idx, :]
 
         # Get bond boundaries
         bond_starts = get_bond_boundaries(id_sorted)
 
-        # =====================================================================
-        # Step 4: Compute signal using numba kernel (single signal for all)
-        # =====================================================================
+        # Compute baseline signal from ORIGINAL returns (used for most filters)
+        logret_baseline = np.log(ret_sorted + 1.0).reshape(-1, 1)
         if is_momentum:
-            signal_sorted = compute_momentum_signals_panel(
-                logret_sorted, bond_starts, lookback, skip
-            )[:, 0]  # Shape (n_obs,)
+            baseline_signal_sorted = compute_momentum_signals_panel(
+                logret_baseline, bond_starts, lookback, skip
+            )[:, 0]
         else:
-            signal_sorted = compute_ltreversal_signals_panel(
-                logret_sorted, bond_starts, lookback, skip
-            )[:, 0]  # Shape (n_obs,)
+            baseline_signal_sorted = compute_ltreversal_signals_panel(
+                logret_baseline, bond_starts, lookback, skip
+            )[:, 0]
 
-        # Un-sort signal back to original order
+        # Un-sort baseline signal
         unsort_idx = np.argsort(sort_idx)
-        signal = signal_sorted[unsort_idx]
+        baseline_signal = baseline_signal_sorted[unsort_idx]
+
+        # Build signals_all: (n_obs, n_filters)
+        # Most filters use baseline signal, wins filters get their own signal
+        signals_all = np.empty((len(ret), n_filters), dtype=np.float64)
+        wins_filter_indices = []
+
+        for f_idx, fc in enumerate(self._filter_configs):
+            if fc.filter_type == 'wins':
+                wins_filter_indices.append(f_idx)
+                # Wins: compute signal from winsorized returns
+                logret_wins = np.log(filtered_sorted[:, f_idx] + 1.0).reshape(-1, 1)
+                if is_momentum:
+                    wins_signal_sorted = compute_momentum_signals_panel(
+                        logret_wins, bond_starts, lookback, skip
+                    )[:, 0]
+                else:
+                    wins_signal_sorted = compute_ltreversal_signals_panel(
+                        logret_wins, bond_starts, lookback, skip
+                    )[:, 0]
+                signals_all[:, f_idx] = wins_signal_sorted[unsort_idx]
+            else:
+                # Baseline, trim, price, bounce: use baseline signal
+                signals_all[:, f_idx] = baseline_signal
 
         if self.verbose:
             print(f"    Signals computed in {time.time() - t_signal:.2f}s")
 
         # =====================================================================
-        # Step 5: Build rating mask (formation-date eligibility)
+        # Step 4: Build rating mask (formation-date eligibility)
         # =====================================================================
         if rating_cat == 'IG':
             rating_mask = (rating_num >= 1) & (rating_num <= 10)
@@ -1621,41 +1641,44 @@ class DataUncertaintyAnalysis:
             rating_mask = np.ones(len(ret), dtype=np.bool_)
 
         # =====================================================================
-        # Step 6: Build filter masks for ALL filters (combined with rating mask)
+        # Step 5: Build filter masks for ALL filters (combined with rating mask)
         # =====================================================================
-        # For strategy-based signals, ranking is based on the SAME signal (from original returns)
-        # The filter mask determines which bonds are eligible for ranking:
-        # - Valid signal (not NaN)
-        # - Valid rating (if applicable)
-        # - For trim/price/bounce: valid filtered return (not NaN) - these bonds are excluded
-        # - For baseline/wins: all bonds with valid signal are included
+        # For strategy-based signals:
+        # - Baseline/wins: include bonds with valid signal
+        # - Trim/price/bounce: also require valid filtered return (exclude extreme bonds)
         filter_masks = np.zeros((len(ret), n_filters), dtype=np.bool_)
-        wins_filter_indices = []
-
-        # Base mask: valid signal AND valid rating
-        base_mask = ~np.isnan(signal) & rating_mask
 
         for f_idx, fc in enumerate(self._filter_configs):
             if fc.filter_type in ('baseline', 'wins'):
-                # Baseline and wins: include all bonds with valid signal
-                filter_masks[:, f_idx] = base_mask
+                # Include all bonds with valid signal
+                filter_masks[:, f_idx] = ~np.isnan(signals_all[:, f_idx]) & rating_mask
             else:
                 # Trim/price/bounce: also require valid filtered return
-                filter_masks[:, f_idx] = base_mask & ~np.isnan(filtered_returns[:, f_idx])
-
-            if fc.filter_type == 'wins':
-                wins_filter_indices.append(f_idx)
+                filter_masks[:, f_idx] = (~np.isnan(signals_all[:, f_idx]) &
+                                          ~np.isnan(filtered_returns[:, f_idx]) &
+                                          rating_mask)
 
         # =====================================================================
-        # Step 7: Compute ranks for ALL filters at once (PARALLEL)
+        # Step 6: Compute ranks for ALL filters at once (PARALLEL)
         # =====================================================================
         t_ranks = time.time()
         nport = self.num_portfolios
 
-        # All filters use the SAME signal, but different masks determine eligible bonds
-        ranks_all = compute_ranks_all_filters(
-            date_idx, signal, filter_masks, n_dates, nport, n_filters
-        )
+        # Each filter uses its signal for ranking (baseline signal for most, wins signal for wins)
+        ranks_all = np.full((len(ret), n_filters), np.nan, dtype=np.float64)
+
+        for f_idx in range(n_filters):
+            signal_f = signals_all[:, f_idx]
+            mask_f = filter_masks[:, f_idx]
+
+            # Compute ranks per date for this filter
+            single_filter_mask = np.zeros((len(ret), 1), dtype=np.bool_)
+            single_filter_mask[:, 0] = mask_f
+
+            ranks_single = compute_ranks_all_filters(
+                date_idx, signal_f, single_filter_mask, n_dates, nport, 1
+            )
+            ranks_all[:, f_idx] = ranks_single[:, 0]
 
         if self.verbose:
             print(f"    Ranks computed in {time.time() - t_ranks:.2f}s")
@@ -1719,21 +1742,13 @@ class DataUncertaintyAnalysis:
             for f_idx, fc in enumerate(self._filter_configs):
                 # Column name includes strategy, hp, filter, and rating suffix
                 col_name = f"{strategy_name}_hp{hp}_{fc.get_column_suffix()}{rating_suffix}"
-                is_wins = fc.filter_type == 'wins'
 
-                if is_wins:
-                    # For wins filter:
-                    # - EA is NaN (ranking unchanged from baseline, would be identical)
-                    # - EP uses winsorized returns
-                    ew_ea_dict[col_name] = np.full(n_dates, np.nan)
-                    vw_ea_dict[col_name] = np.full(n_dates, np.nan)
-                    ew_ep_dict[col_name] = ew_ep_ls[:, f_idx]
-                    vw_ep_dict[col_name] = vw_ep_ls[:, f_idx]
-                else:
-                    ew_ea_dict[col_name] = ew_ea_ls[:, f_idx]
-                    vw_ea_dict[col_name] = vw_ea_ls[:, f_idx]
-                    ew_ep_dict[col_name] = ew_ep_ls[:, f_idx]
-                    vw_ep_dict[col_name] = vw_ep_ls[:, f_idx]
+                # For strategy-based signals, ALL filters (including wins) have EA values
+                # because each filter produces a DIFFERENT signal from filtered returns
+                ew_ea_dict[col_name] = ew_ea_ls[:, f_idx]
+                vw_ea_dict[col_name] = vw_ea_ls[:, f_idx]
+                ew_ep_dict[col_name] = ew_ep_ls[:, f_idx]
+                vw_ep_dict[col_name] = vw_ep_ls[:, f_idx]
 
                 config_rows.append({
                     'column_name': col_name,
