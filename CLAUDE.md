@@ -158,6 +158,9 @@ python examples/data_uncertainty_singlesort.py --no-validate  # Skip slow/fast c
 | `PyBondLab/numba_core.py` | Numba-optimized core kernels | See detailed section below |
 | `PyBondLab/pbl_test.py` | Baseline test script (source of truth) | `run_all_baseline_tests()`, `validate_against_baseline()` |
 | `PyBondLab/baseline_results/` | Stored baseline results | `baseline_results.json`, `baseline_results.pkl` |
+| `examples/test_fast_strategy.py` | Fast strategy path validation | `test_momentum_fast_vs_slow()`, `test_momentum_comprehensive()` |
+| `examples/debug_wins.py` | Debug script for wins thresholds | Ex-ante vs global threshold comparison |
+| `examples/debug_wins_full.py` | Debug script for wins factor comparison | Full slow vs fast path factor comparison |
 
 ### Modified Files
 
@@ -227,6 +230,22 @@ compute_turnover_all_portfolios(ranks, positions, raw_ew, raw_vw,
 # NOTE: Only zeros portfolios present in current data (bug fix)
 update_prev_scaled_weights(scaled_ew, scaled_vw, ranks, positions,
                            prev_scaled_ew, prev_scaled_vw, nport)
+```
+
+### Strategy Signal Computation (Phase 12 - 163x speedup)
+
+```python
+# Panel-based momentum signal computation (parallel over bonds)
+compute_momentum_signals_panel(logret_all, bond_starts, lookback, skip)
+    -> signals  # Shape: (n_obs, 1), rolling cumulative return
+
+# Panel-based LT-reversal signal computation (parallel over bonds)
+compute_ltreversal_signals_panel(logret_all, bond_starts, lookback, skip)
+    -> signals  # Shape: (n_obs, 1), mean of rolling returns
+
+# Helper to find bond boundaries in sorted panel data
+get_bond_boundaries(id_idx)
+    -> bond_starts  # Array of indices where bond ID changes
 ```
 
 ---
@@ -774,7 +793,12 @@ rank assignments due to floating-point comparison reordering with NaN values.
   - `compute_ls_returns_all_filters_hp1/staggered`: Returns for all filters in parallel
   - Filter-specific ranking with correct exclusion behavior
   - New price filter format: `[[left_levels], [right_levels]]`
-- **Total**: ~3x faster single-signal, ~2.5x parallel speedup for batch, **5x for large panels, 75x for DataUncertaintyAnalysis**
+- **Phase 12**: Fast Strategy Path for Momentum/LTreversal (**163x speedup**)
+  - Panel-based numba kernels: `compute_momentum_signals_panel()`, `compute_ltreversal_signals_panel()`
+  - Parallelizes signal computation over bonds (10,000+ parallel tasks)
+  - Ex-ante winsorization using rolling historical percentiles (matches slow path exactly)
+  - All filter types supported: baseline, trim, price, bounce, wins
+- **Total**: ~3x faster single-signal, ~2.5x parallel speedup for batch, **5x for large panels, 75-163x for DataUncertaintyAnalysis**
 
 ---
 
@@ -1462,7 +1486,104 @@ Fast path is automatically used when:
 
 To force slow path for validation: `DataUncertaintyAnalysis(..., use_fast_path=False)`
 
-When a `strategy` object is provided (Momentum, LTreversal), the slow path is used because
-the strategy must recompute signals using filtered returns.
+**Fast Strategy Path (Phase 12):**
+
+When a `strategy` object is provided (Momentum, LTreversal), a specialized fast strategy path
+is now used that computes signals using parallel numba kernels:
+
+```python
+mom = pbl.Momentum(lookback_period=3, skip=1)
+results = DataUncertaintyAnalysis(
+    data=data,
+    strategy=mom,           # Uses fast strategy path automatically
+    holding_periods=[1, 3],
+    filters={'trim': [0.2], 'wins': [(99, 'both')]},
+    use_fast_path=True,     # Default - enables fast strategy path
+).fit()
+```
+
+---
+
+## Fast Strategy Path (Phase 12)
+
+### Overview
+
+When using `DataUncertaintyAnalysis` with a `Momentum` or `LTreversal` strategy object,
+a specialized fast path computes signals using parallel numba kernels instead of pandas.
+
+### Performance
+
+| Dataset | Fast Path | Slow Path | Speedup |
+|---------|-----------|-----------|---------|
+| 60 dates × 300 bonds, 12 filters | **0.08s** | 13.1s | **163x** |
+| 60 dates × 500 bonds, 12 filters | **0.10s** | ~15s | **~150x** |
+
+### Key Numba Kernels
+
+```python
+# In numba_core.py - Panel-based signal computation
+compute_momentum_signals_panel(logret_all, bond_starts, lookback, skip)
+    -> signals  # Shape: (n_obs, 1)
+
+compute_ltreversal_signals_panel(logret_all, bond_starts, lookback, skip)
+    -> signals  # Shape: (n_obs, 1)
+
+get_bond_boundaries(id_idx)
+    -> bond_starts  # Array of indices where bond ID changes
+```
+
+### How It Works
+
+1. **Sort by (ID, date)**: Data is sorted once for bond-wise processing
+2. **Find bond boundaries**: `get_bond_boundaries()` identifies where each bond's data starts
+3. **Parallel signal computation**: Each bond's signal is computed independently using `prange`
+4. **Filter-specific signal computation**:
+   - Baseline/trim/price/bounce: Signal from original returns
+   - Wins: Signal from **ex-ante winsorized** returns (historical thresholds)
+
+### Ex-Ante Winsorization for Wins Filter
+
+For wins filters with strategy objects, the signal must be computed from winsorized returns.
+The fast path uses **ex-ante (rolling historical) thresholds** to match the slow path exactly:
+
+```python
+# For each date t, thresholds come from returns BEFORE date t
+def _compute_ex_ante_wins(ret, date_idx, n_dates, level, location):
+    wins_ret = ret.copy()
+    for d in range(n_dates):
+        hist_mask = date_idx < d  # Only historical data
+        hist_ret = ret[hist_mask]
+        lb = np.nanpercentile(hist_ret, 100 - level)
+        ub = np.nanpercentile(hist_ret, level)
+        # Apply thresholds to current date
+        curr_mask = date_idx == d
+        wins_ret[curr_mask] = np.clip(wins_ret[curr_mask], lb, ub)
+    return wins_ret
+```
+
+This ensures:
+- **99 percentile wins**: Exact match (diff=0.00e+00)
+- **95 percentile wins**: Exact match (diff=0.00e+00)
+
+### Signal Computation Behavior by Filter Type
+
+| Filter Type | Signal Computed From | EA Returns | EP Returns |
+|-------------|---------------------|------------|------------|
+| `baseline` | Original returns | Original `ret` | Original `ret` |
+| `trim` | Original returns | Original `ret` | Filtered `ret_trim` |
+| `price` | Original returns | Original `ret` | Filtered `ret_price` |
+| `bounce` | Original returns | Original `ret` | Filtered `ret_bounce` |
+| `wins` | **Ex-ante winsorized** returns | Original `ret` | Winsorized `ret` |
+
+### Test Script
+
+```bash
+python examples/test_fast_strategy.py
+```
+
+This validates:
+1. Numba signal computation matches pandas (< 1e-10 tolerance)
+2. Fast path matches slow path for all filter types
+3. Wins filter uses ex-ante thresholds correctly
 
 ---
