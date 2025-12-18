@@ -3100,6 +3100,115 @@ def apply_winsorization_fast(
     return wins_ret
 
 
+@njit(parallel=True, cache=True)
+def _compute_thresholds_parallel(
+    ret_sorted: np.ndarray,
+    date_sorted: np.ndarray,
+    n_dates: int,
+    hist_counts: np.ndarray,
+    lb_pct: float,
+    ub_pct: float
+) -> np.ndarray:
+    """
+    Numba kernel for parallel threshold computation.
+
+    For each date d, finds the lb and ub percentile values among
+    returns with date < d, by scanning through the sorted array.
+
+    Uses numpy's 'linear' interpolation method for percentiles to match
+    np.nanpercentile exactly.
+
+    Parameters
+    ----------
+    ret_sorted : np.ndarray
+        Returns sorted by VALUE (ascending)
+    date_sorted : np.ndarray
+        Date indices corresponding to ret_sorted
+    n_dates : int
+        Number of unique dates
+    hist_counts : np.ndarray
+        hist_counts[d] = count of values with date < d
+    lb_pct : float
+        Lower bound percentile fraction (e.g., 0.05 for 5th percentile)
+    ub_pct : float
+        Upper bound percentile fraction (e.g., 0.95 for 95th percentile)
+
+    Returns
+    -------
+    np.ndarray
+        Shape (n_dates, 2) with [lb, ub] for each date
+    """
+    n = len(ret_sorted)
+    thresholds = np.full((n_dates, 2), np.nan, dtype=np.float64)
+
+    # Parallel over dates - each date processes independently
+    for d in prange(1, n_dates):
+        hist_count = hist_counts[d]
+        if hist_count == 0:
+            continue
+
+        # Compute fractional indices using numpy's 'linear' method:
+        # index = (n - 1) * percentile / 100
+        lb_index = (hist_count - 1) * lb_pct
+        ub_index = (hist_count - 1) * ub_pct
+
+        # Integer parts for interpolation
+        lb_i = int(np.floor(lb_index))
+        lb_j = int(np.ceil(lb_index))
+        ub_i = int(np.floor(ub_index))
+        ub_j = int(np.ceil(ub_index))
+
+        # Clamp to valid range
+        lb_i = max(0, min(lb_i, hist_count - 1))
+        lb_j = max(0, min(lb_j, hist_count - 1))
+        ub_i = max(0, min(ub_i, hist_count - 1))
+        ub_j = max(0, min(ub_j, hist_count - 1))
+
+        # Fractional parts for interpolation
+        lb_frac = lb_index - np.floor(lb_index)
+        ub_frac = ub_index - np.floor(ub_index)
+
+        # Scan through sorted values, collecting historical values
+        # We need values at positions lb_i, lb_j, ub_i, ub_j
+        max_pos_needed = max(lb_j, ub_j)
+
+        # Collect values at specific positions
+        lb_val_i = np.nan
+        lb_val_j = np.nan
+        ub_val_i = np.nan
+        ub_val_j = np.nan
+
+        count = 0
+        for i in range(n):
+            if date_sorted[i] < d:
+                # This value is part of historical data for date d
+                if count == lb_i:
+                    lb_val_i = ret_sorted[i]
+                if count == lb_j:
+                    lb_val_j = ret_sorted[i]
+                if count == ub_i:
+                    ub_val_i = ret_sorted[i]
+                if count == ub_j:
+                    ub_val_j = ret_sorted[i]
+
+                count += 1
+                if count > max_pos_needed:
+                    break
+
+        # Linear interpolation (matching numpy's default)
+        if lb_i == lb_j:
+            thresholds[d, 0] = lb_val_i
+        else:
+            thresholds[d, 0] = lb_val_i + (lb_val_j - lb_val_i) * lb_frac
+
+        if ub_i == ub_j:
+            thresholds[d, 1] = ub_val_i
+        else:
+            thresholds[d, 1] = ub_val_i + (ub_val_j - ub_val_i) * ub_frac
+
+    return thresholds
+
+
 def compute_ex_ante_thresholds_fast(
     ret: np.ndarray,
     date_idx: np.ndarray,
@@ -3110,7 +3219,9 @@ def compute_ex_ante_thresholds_fast(
     Compute ex-ante percentile thresholds for all dates efficiently.
 
     For each date d, thresholds are computed from all returns with date < d.
-    Uses sorting to enable efficient cumulative processing.
+
+    OPTIMIZED: Pre-sorts by VALUE once, then parallelizes over dates using numba prange.
+    Complexity: O(n log n) for sort + O(n * n_dates / n_cores) for parallel scan.
 
     Parameters
     ----------
@@ -3129,40 +3240,34 @@ def compute_ex_ante_thresholds_fast(
         Shape (n_dates, 2) with [lb, ub] for each date
         lb = percentile(100 - level), ub = percentile(level)
     """
-    # Sort by date
-    sort_idx = np.argsort(date_idx)
-    date_sorted = date_idx[sort_idx]
-    ret_sorted = ret[sort_idx]
+    # Remove NaNs first
+    valid_mask = ~np.isnan(ret)
+    ret_valid = ret[valid_mask]
+    date_valid = date_idx[valid_mask].astype(np.int64)
+    n = len(ret_valid)
 
-    # Find cumulative count up to each date
-    # date_ends[d] = number of observations with date < d
-    date_ends = np.zeros(n_dates + 1, dtype=np.int64)
-    current_count = 0
-    current_date = 0
+    if n == 0:
+        return np.full((n_dates, 2), np.nan, dtype=np.float64)
 
-    for i in range(len(date_sorted)):
-        while current_date < date_sorted[i]:
-            date_ends[current_date + 1] = current_count
-            current_date += 1
-        current_count += 1
+    # Sort ALL returns by VALUE (not by date) - O(n log n) once
+    value_order = np.argsort(ret_valid)
+    ret_sorted = ret_valid[value_order]
+    date_sorted = date_valid[value_order]
 
-    # Fill remaining dates
-    while current_date < n_dates:
-        date_ends[current_date + 1] = current_count
-        current_date += 1
+    # Count returns per date
+    date_counts = np.bincount(date_valid, minlength=n_dates)
 
-    # Compute thresholds for each date
-    thresholds = np.full((n_dates, 2), np.nan, dtype=np.float64)
+    # Cumulative historical count for each date: hist_count[d] = count with date < d
+    hist_counts = np.zeros(n_dates, dtype=np.int64)
+    hist_counts[1:] = np.cumsum(date_counts[:-1])
 
-    for d in range(1, n_dates):
-        end_idx = date_ends[d]
-        if end_idx > 0:
-            hist_ret = ret_sorted[:end_idx]
-            # Remove NaNs efficiently
-            valid_mask = ~np.isnan(hist_ret)
-            hist_valid = hist_ret[valid_mask]
-            if len(hist_valid) > 0:
-                thresholds[d, 0] = np.percentile(hist_valid, 100 - level)
-                thresholds[d, 1] = np.percentile(hist_valid, level)
+    # Compute percentile fractions
+    lb_pct = (100.0 - level) / 100.0
+    ub_pct = level / 100.0
+
+    # Call parallel numba kernel
+    thresholds = _compute_thresholds_parallel(
+        ret_sorted, date_sorted, n_dates, hist_counts, lb_pct, ub_pct
+    )
 
     return thresholds
