@@ -327,6 +327,103 @@ class BatchResults:
 
 
 # =============================================================================
+# Fast Batch Result (lightweight result object for fast path)
+# =============================================================================
+
+class _FastBatchResult:
+    """
+    Lightweight result object for fast batch path.
+
+    Provides the same interface as FormationResults for accessing long-short returns,
+    but without the full portfolio breakdown (only returns long-short factor).
+    """
+
+    def __init__(self, ew_ls: pd.Series, vw_ls: pd.Series, signal: str):
+        """
+        Parameters
+        ----------
+        ew_ls : pd.Series
+            Equal-weighted long-short returns (index=dates)
+        vw_ls : pd.Series
+            Value-weighted long-short returns (index=dates)
+        signal : str
+            Signal name
+        """
+        self.ew_ls = ew_ls
+        self.vw_ls = vw_ls
+        self.signal = signal
+
+        # Create a mock 'ea' attribute for compatibility with summary_df
+        self._ea = _FastBatchEA(ew_ls, vw_ls)
+
+    @property
+    def ea(self):
+        """Ex-ante results (returns-only for fast path)."""
+        return self._ea
+
+    @property
+    def ep(self):
+        """Ex-post results (same as EA for baseline/no-filter case)."""
+        return self._ea
+
+    def get_long_short(self, strategy: str = 'ea'):
+        """
+        Get long-short portfolio returns.
+
+        Parameters
+        ----------
+        strategy : str, default='ea'
+            'ea' for ex-ante, 'ep' for ex-post (same for fast path)
+
+        Returns
+        -------
+        tuple
+            (ew_ls, vw_ls) - Equal-weighted and value-weighted long-short returns
+        """
+        return self.ew_ls, self.vw_ls
+
+    def get_turnover(self):
+        """Turnover not available in fast batch path."""
+        return None, None
+
+    def get_characteristics(self):
+        """Characteristics not available in fast batch path."""
+        return None, None
+
+
+class _FastBatchEA:
+    """Mock EA object for fast batch results compatibility."""
+
+    def __init__(self, ew_ls: pd.Series, vw_ls: pd.Series):
+        self._ew_ls = ew_ls
+        self._vw_ls = vw_ls
+        self.turnover = None
+
+    @property
+    def returns(self):
+        """Mock returns object."""
+        return _FastBatchReturns(self._ew_ls, self._vw_ls)
+
+
+class _FastBatchReturns:
+    """Mock returns object for fast batch results compatibility."""
+
+    def __init__(self, ew_ls: pd.Series, vw_ls: pd.Series):
+        self._ew_ls = ew_ls
+        self._vw_ls = vw_ls
+
+    @property
+    def ewls_df(self):
+        """Equal-weighted long-short returns as DataFrame."""
+        return self._ew_ls.to_frame('ewls')
+
+    @property
+    def vwls_df(self):
+        """Value-weighted long-short returns as DataFrame."""
+        return self._vw_ls.to_frame('vwls')
+
+
+# =============================================================================
 # Batch Strategy Formation
 # =============================================================================
 
@@ -508,8 +605,173 @@ class BatchStrategyFormation:
         else:
             return min(self.n_jobs, mp.cpu_count())
 
+    def _can_use_fast_batch_path(self) -> bool:
+        """
+        Check if fast batch path can be used.
+
+        Fast path requires:
+        - turnover=False
+        - chars=None
+        - banding=None (no banding threshold)
+        - rating=None (no rating filter)
+        """
+        if self.turnover:
+            return False
+        if self.chars is not None and len(self.chars) > 0:
+            return False
+        if self.banding_threshold is not None:
+            return False
+        if self.rating is not None:
+            return False
+        return True
+
+    def _fit_fast_batch(self) -> BatchResults:
+        """
+        Ultra-fast batch processing using numba kernels.
+
+        Processes ALL signals in parallel using vectorized operations.
+        Only available when turnover=False, chars=None, banding=None.
+        """
+        import numpy as np
+        from .numba_core import (
+            compute_ranks_all_signals,
+            build_rank_lookups_all_signals,
+            compute_ls_returns_all_signals_hp1,
+            compute_ls_returns_all_signals_staggered,
+            build_vw_lookup_and_dynamic_weights
+        )
+
+        results = BatchResults(
+            signals=self.signals.copy(),
+            config=self.config.copy(),
+        )
+
+        t_start = time.time()
+
+        if self.verbose:
+            print(f"FAST BATCH PATH: Processing {len(self.signals)} signals with numba...")
+
+        # =====================================================================
+        # Step 1: Extract numpy arrays from DataFrame (ONCE)
+        # =====================================================================
+        t_extract = time.time()
+        data = self.data
+
+        # Build date and ID mappings
+        dates = data['date'].unique()
+        dates = np.sort(dates)
+        date_to_idx = {d: i for i, d in enumerate(dates)}
+        n_dates = len(dates)
+
+        ids = data['ID'].unique()
+        id_to_idx = {bond_id: i for i, bond_id in enumerate(ids)}
+        n_ids = len(ids)
+
+        # Extract arrays
+        date_idx = data['date'].map(date_to_idx).values.astype(np.int64)
+        id_idx = data['ID'].map(id_to_idx).values.astype(np.int64)
+        ret = data['ret'].values.astype(np.float64)
+        vw = data['VW'].values.astype(np.float64)
+
+        # Build signal matrix (n_obs, n_signals)
+        n_signals = len(self.signals)
+        signals_matrix = np.empty((len(data), n_signals), dtype=np.float64)
+        for s_idx, signal in enumerate(self.signals):
+            signals_matrix[:, s_idx] = data[signal].values.astype(np.float64)
+
+        # Build VW from d-1 (dynamic weights) - use existing numba function
+        vw_lag = build_vw_lookup_and_dynamic_weights(
+            date_idx, id_idx, vw, n_dates, n_ids
+        )
+
+        if self.verbose:
+            print(f"    Data extracted in {time.time() - t_extract:.2f}s")
+
+        # =====================================================================
+        # Step 2: Compute ranks for ALL signals in parallel
+        # =====================================================================
+        t_ranks = time.time()
+        ranks_all = compute_ranks_all_signals(
+            date_idx, signals_matrix, n_dates, self.num_portfolios, n_signals
+        )
+        if self.verbose:
+            print(f"    Ranks computed in {time.time() - t_ranks:.2f}s")
+
+        # =====================================================================
+        # Step 3: Build rank lookups for ALL signals
+        # =====================================================================
+        t_lookup = time.time()
+        rank_lookups = build_rank_lookups_all_signals(
+            date_idx, id_idx, ranks_all, n_dates, n_ids, n_signals
+        )
+        if self.verbose:
+            print(f"    Rank lookups built in {time.time() - t_lookup:.2f}s")
+
+        # =====================================================================
+        # Step 4: Compute returns for ALL signals
+        # =====================================================================
+        t_returns = time.time()
+        if self.holding_period == 1:
+            ew_ls, vw_ls = compute_ls_returns_all_signals_hp1(
+                date_idx, id_idx, ret, vw_lag, rank_lookups,
+                n_dates, n_ids, self.num_portfolios, n_signals
+            )
+        else:
+            ew_ls, vw_ls = compute_ls_returns_all_signals_staggered(
+                date_idx, id_idx, ret, vw_lag, rank_lookups,
+                n_dates, n_ids, self.num_portfolios, n_signals,
+                self.holding_period
+            )
+        if self.verbose:
+            print(f"    Returns computed in {time.time() - t_returns:.2f}s")
+
+        # =====================================================================
+        # Step 5: Package results into BatchResults format
+        # =====================================================================
+        t_package = time.time()
+
+        # Create date index for output Series
+        date_index = pd.DatetimeIndex(dates)
+
+        for s_idx, signal in enumerate(self.signals):
+            try:
+                # Create simple result object with long-short returns
+                ew_series = pd.Series(ew_ls[:, s_idx], index=date_index, name='ew_ls')
+                vw_series = pd.Series(vw_ls[:, s_idx], index=date_index, name='vw_ls')
+
+                # Drop NaN values
+                ew_series = ew_series.dropna()
+                vw_series = vw_series.dropna()
+
+                # Create a minimal result object
+                result = _FastBatchResult(
+                    ew_ls=ew_series,
+                    vw_ls=vw_series,
+                    signal=signal
+                )
+
+                results.results[signal] = result
+                results.timings[signal] = 0.0  # Individual timing not available in batch
+
+            except Exception as e:
+                results.errors[signal] = str(e)
+
+        if self.verbose:
+            print(f"    Results packaged in {time.time() - t_package:.2f}s")
+
+        results.timings['total'] = time.time() - t_start
+
+        if self.verbose:
+            print(f"FAST BATCH PATH completed in {results.timings['total']:.2f}s")
+
+        return results
+
     def fit(self) -> BatchResults:
         """Run batch portfolio formation for all signals."""
+        # Check if fast batch path can be used
+        if self._can_use_fast_batch_path():
+            return self._fit_fast_batch()
+
         results = BatchResults(
             signals=self.signals.copy(),
             config=self.config.copy(),
