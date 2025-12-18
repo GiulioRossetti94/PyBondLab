@@ -58,6 +58,7 @@ Dramatically speed up portfolio formation in PyBondLab using numba/prange, while
 |-------|-------------|--------|-------|
 | **Phase 3** | Parallelize main loop with prange | ⏳ Pending | Complex due to turnover state dependencies |
 | **Phase 15a** | Non-staggered rebalancing fast path | ✅ Complete | **100x speedup** achieved! |
+| **Phase 15** | Non-staggered integration | ✅ Complete | BatchStrategyFormation (~340x), DataUncertaintyAnalysis integrated |
 | **Phase 15b** | Non-staggered with turnover/chars/banding | ⏳ Pending | Full feature optimization |
 
 ---
@@ -129,24 +130,25 @@ Legend:
   ─Rn─ = Return collected for month n
 ```
 
-### Integration Points
+### ✅ Integration Points (COMPLETE)
 
-1. **BatchStrategyFormation**: Add `rebalance_frequency` parameter
-2. **DataUncertaintyAnalysis**: Add `rebalance_frequency` parameter
-3. **Fast batch path**: Enable for non-monthly rebalancing
+1. **BatchStrategyFormation**: `rebalance_frequency` and `rebalance_month` parameters added
+   - Ultra-fast numba path enabled for non-staggered with turnover=False (~340x speedup!)
+   - 4/4 validation tests pass (annual, semi-annual, quarterly)
 
-### Validation
+2. **DataUncertaintyAnalysis**: `rebalance_frequency` and `rebalance_month` parameters added
+   - Slow path integration complete (3/3 tests pass)
+   - Fast path disabled for non-staggered (TODO: Phase 15b)
 
-Test matrix:
-- `rebalance_frequency`: 3, 6, 12
-- `rebalance_month`: 1, 6, 12
-- `turnover`: True/False
-- `chars`: None/['char1']
-- `banding`: None/1
+3. **StrategyFormation**: Fast path already integrated in Phase 15a (~100x speedup)
 
-Scripts:
-- `examples/validate_nonstaggered_rebalancing.py` - Slow path behavior
-- `examples/validate_nonstaggered_fast_path.py` - Fast vs slow comparison
+### Validation Scripts
+
+| Script | Description | Results |
+|--------|-------------|---------|
+| `examples/validate_nonstaggered_fast_path.py` | StrategyFormation fast vs slow | 7/7 PASS, ~100x speedup |
+| `examples/validate_batch_nonstaggered.py` | BatchStrategyFormation fast vs slow | 4/4 PASS, ~340x speedup |
+| `examples/validate_dua_nonstaggered.py` | DataUncertaintyAnalysis slow path | 3/3 PASS |
 
 Documentation: `docs/NonStaggeredRebalancing_README.md`
 
