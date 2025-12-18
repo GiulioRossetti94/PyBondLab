@@ -1292,16 +1292,24 @@ results = DataUncertaintyAnalysis(
 **Strategy object** (for Momentum/LTreversal):
 ```python
 # Strategy computes signal from returns; filters affect signal computation
+# Note: holding_period and num_portfolios are NOT needed here - they come from
+# DataUncertaintyAnalysis parameters (holding_periods, num_portfolios)
 mom = pbl.Momentum(lookback_period=3, skip=1)
 results = DataUncertaintyAnalysis(
     data=data,
     strategy=mom,
+    holding_periods=[1, 3, 6],  # These override any strategy values
+    num_portfolios=5,           # This overrides any strategy value
     ...
 )
 ```
 
 Note: When using a strategy object with filters, the signal is recomputed using
 filtered returns (e.g., `ret_trim` for Momentum).
+
+**Momentum/LTreversal API:**
+- `lookback_period`, `skip`: Required - define the signal computation
+- `holding_period`, `num_portfolios`: Optional - only needed for standalone `StrategyFormation` use
 
 ### Multiple Signals
 

@@ -19,24 +19,28 @@ class Strategy(ABC):
     """Abstract base class for investment strategies."""
 
     def __init__(
-        self, 
-        holding_period: int, 
-        num_portfolios: int, 
-        lookback_period: Optional[int] = None, 
+        self,
+        holding_period: Optional[int] = None,
+        num_portfolios: Optional[int] = None,
+        lookback_period: Optional[int] = None,
         skip: Optional[int] = None,
         rebalance_frequency: Union[str, int] = 'monthly',
-        rebalance_month: Union[int, List[int]] = 6, 
+        rebalance_month: Union[int, List[int]] = 6,
         verbose: bool = True
     ):
         """
         Initialize strategy with consistent parameter ordering.
-        
+
         Parameters
         ----------
-        holding_period : int
-            Holding period for the strategy
-        num_portfolios : int
-            Number of portfolios to create
+        holding_period : int, optional
+            Holding period for the strategy.
+            Required when using with StrategyFormation.
+            Optional when using with DataUncertaintyAnalysis (overridden by holding_periods parameter).
+        num_portfolios : int, optional
+            Number of portfolios to create.
+            Required when using with StrategyFormation.
+            Optional when using with DataUncertaintyAnalysis (overridden by num_portfolios parameter).
         lookback_period : int, optional
             Lookback/formation period
         skip : int, optional
@@ -459,13 +463,13 @@ class Momentum(Strategy):
     """Momentum strategy."""
     def __init__(
         self,
-        holding_period: Optional[int] = None,
-        num_portfolios: Optional[int] = None,
         lookback_period: Optional[int] = None,
         skip: int = 1,
         no_gap: bool = False,
         fill_na: bool = False,
         drop_na: bool = False,
+        holding_period: Optional[int] = None,
+        num_portfolios: Optional[int] = None,
         rebalance_frequency: Union[str, int] = 'monthly',
         rebalance_month: Union[int, List[int]] = 6,
         verbose: bool = True,
@@ -479,12 +483,8 @@ class Momentum(Strategy):
 
         Parameters
         ----------
-        holding_period : int
-            Holding period for the strategy
-        num_portfolios : int
-            Number of portfolios to create
         lookback_period : int
-            Formation period (lookback window)
+            Formation period (lookback window). Required.
         skip : int, default 1
             Skip period between formation and holding
         no_gap : bool, default False
@@ -501,6 +501,14 @@ class Momentum(Strategy):
             lookback_period valid observations.
             If False, window is fixed at lookback_period rows.
             Note: drop_na=True and fill_na=True cannot both be True.
+        holding_period : int, optional
+            Holding period for the strategy.
+            Required when using with StrategyFormation.
+            Not needed when using with DataUncertaintyAnalysis.
+        num_portfolios : int, optional
+            Number of portfolios to create.
+            Required when using with StrategyFormation.
+            Not needed when using with DataUncertaintyAnalysis.
         rebalance_frequency : str or int, default 'monthly'
             Rebalancing frequency ('monthly', 'quarterly', 'semi-annual', 'annual', or int)
         rebalance_month : int or list of int, default 6
@@ -526,6 +534,14 @@ class Momentum(Strategy):
 
         The no_gap parameter can be combined with any of the above:
         - no_gap=True: Also requires consecutive calendar months (no missing rows)
+
+        Examples
+        --------
+        # For DataUncertaintyAnalysis (hp and nport not needed):
+        >>> mom = Momentum(lookback_period=3, skip=1)
+
+        # For StrategyFormation (hp and nport required):
+        >>> mom = Momentum(lookback_period=3, skip=1, holding_period=6, num_portfolios=5)
         """
         # Handle backward compatibility: map old parameter names to new ones
         if K is not None:
@@ -536,10 +552,6 @@ class Momentum(Strategy):
             lookback_period = J
 
         # Validate required parameters
-        if holding_period is None:
-            raise ValueError("holding_period (or K) is required")
-        if num_portfolios is None:
-            raise ValueError("num_portfolios (or nport) is required")
         if lookback_period is None:
             raise ValueError("Momentum strategy requires lookback_period (or J)")
 
@@ -704,13 +716,13 @@ class LTreversal(Strategy):
     """Long-term reversal strategy."""
     def __init__(
         self,
-        holding_period: int,
-        num_portfolios: int,
-        lookback_period: int,
-        skip: int,
+        lookback_period: Optional[int] = None,
+        skip: Optional[int] = None,
         no_gap: bool = False,
         fill_na: bool = False,
         drop_na: bool = False,
+        holding_period: Optional[int] = None,
+        num_portfolios: Optional[int] = None,
         rebalance_frequency: Union[str, int] = 'monthly',
         rebalance_month: Union[int, List[int]] = 6,
         verbose: bool = True
@@ -723,14 +735,10 @@ class LTreversal(Strategy):
 
         Parameters
         ----------
-        holding_period : int
-            Holding period for the strategy
-        num_portfolios : int
-            Number of portfolios to create
         lookback_period : int
-            Formation period (total lookback window)
+            Formation period (total lookback window). Required.
         skip : int
-            Recent period to exclude from signal
+            Recent period to exclude from signal. Required.
         no_gap : bool, default False
             If True, require consecutive calendar months in the formation window.
             If a month row is missing (gap in data), signal is set to NaN.
@@ -745,6 +753,14 @@ class LTreversal(Strategy):
             lookback_period valid observations.
             If False, window is fixed at lookback_period rows.
             Note: drop_na=True and fill_na=True cannot both be True.
+        holding_period : int, optional
+            Holding period for the strategy.
+            Required when using with StrategyFormation.
+            Not needed when using with DataUncertaintyAnalysis.
+        num_portfolios : int, optional
+            Number of portfolios to create.
+            Required when using with StrategyFormation.
+            Not needed when using with DataUncertaintyAnalysis.
         rebalance_frequency : str or int, default 'monthly'
             Rebalancing frequency ('monthly', 'quarterly', 'semi-annual', 'annual', or int)
         rebalance_month : int or list of int, default 6
@@ -764,6 +780,14 @@ class LTreversal(Strategy):
 
         The no_gap parameter can be combined with any of the above:
         - no_gap=True: Also requires consecutive calendar months (no missing rows)
+
+        Examples
+        --------
+        # For DataUncertaintyAnalysis (hp and nport not needed):
+        >>> ltr = LTreversal(lookback_period=60, skip=12)
+
+        # For StrategyFormation (hp and nport required):
+        >>> ltr = LTreversal(lookback_period=60, skip=12, holding_period=6, num_portfolios=5)
         """
         if lookback_period is None or skip is None:
             raise ValueError("LT reversal strategy requires both lookback_period and skip periods")
