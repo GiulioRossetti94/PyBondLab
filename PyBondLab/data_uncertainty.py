@@ -37,6 +37,10 @@ import time
 import warnings
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Union, Any, Tuple
+from numbers import Number
+
+# Type alias for subset filter
+SubsetFilter = Dict[str, Tuple[float, float]]
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import platform
 
@@ -615,8 +619,9 @@ class DataUncertaintyAnalysis:
         dynamic_weights: bool = True,
         filters: Optional[Dict[str, List]] = None,
         include_baseline: bool = True,
-        rating: Optional[str] = None,
-        ratings: Optional[List[Optional[str]]] = None,
+        rating: Optional[Union[str, Tuple[int, int]]] = None,
+        ratings: Optional[List[Optional[Union[str, Tuple[int, int]]]]] = None,
+        subset_filter: Optional[SubsetFilter] = None,
         columns: Optional[Dict[str, str]] = None,
         n_jobs: int = 1,
         verbose: bool = True,
@@ -638,11 +643,16 @@ class DataUncertaintyAnalysis:
         else:
             self.ratings = [None]  # Default: all bonds
 
-        # Validate ratings
-        valid_ratings = {'IG', 'NIG', None}
+        # Validate ratings - accepts 'IG', 'NIG', None, or tuple (min, max)
+        valid_rating_strings = {'IG', 'NIG', None}
         for r in self.ratings:
-            if r not in valid_ratings:
-                raise ValueError(f"Invalid rating '{r}'. Must be 'IG', 'NIG', or None")
+            if r not in valid_rating_strings and not isinstance(r, tuple):
+                raise ValueError(f"Invalid rating '{r}'. Must be 'IG', 'NIG', None, or tuple (min, max)")
+            if isinstance(r, tuple):
+                if len(r) != 2:
+                    raise ValueError(f"Rating tuple must have 2 elements (min, max), got {len(r)}")
+                if not all(isinstance(x, (int, float)) for x in r):
+                    raise ValueError(f"Rating tuple elements must be numeric, got {r}")
 
         self.data_raw = data
         self.signals = signals if signals is not None else [None]
@@ -653,6 +663,7 @@ class DataUncertaintyAnalysis:
         self.filters = filters or {}
         self.include_baseline = include_baseline
         self.rating = rating  # Keep for backward compatibility (slow path)
+        self.subset_filter = subset_filter
         self.n_jobs = n_jobs
         self.verbose = verbose
         self.use_fast_path = use_fast_path
@@ -818,6 +829,15 @@ class DataUncertaintyAnalysis:
                         needed_user_cols.append(sig)
                 else:
                     raise ValueError(f"Signal column '{sig}' not found in data")
+
+        # Add subset_filter columns (keep original names)
+        if self.subset_filter is not None:
+            for col in self.subset_filter.keys():
+                if col in self.data_raw.columns:
+                    if col not in needed_user_cols:
+                        needed_user_cols.append(col)
+                else:
+                    raise ValueError(f"Subset filter column '{col}' not found in data")
 
         # Subset and rename
         data = self.data_raw[needed_user_cols].copy()
@@ -1390,13 +1410,23 @@ class DataUncertaintyAnalysis:
         # Rating mask determines which bonds are eligible for portfolio formation
         # at each observation's date. This is AND-ed with filter masks.
         # IG: RATING_NUM 1-10, NIG: RATING_NUM 11-22
+        # Tuple: (min, max) custom range
         if rating_cat == 'IG':
             rating_mask = (rating_num >= 1) & (rating_num <= 10)
         elif rating_cat == 'NIG':
             rating_mask = (rating_num >= 11) & (rating_num <= 22)
+        elif isinstance(rating_cat, tuple):
+            min_r, max_r = rating_cat
+            rating_mask = (rating_num >= min_r) & (rating_num <= max_r)
         else:
             # None = all bonds
             rating_mask = np.ones(len(ret), dtype=np.bool_)
+
+        # Apply subset_filter to rating mask (AND with rating mask)
+        if self.subset_filter is not None:
+            for col, (min_val, max_val) in self.subset_filter.items():
+                col_vals = data[col].values.astype(np.float64)
+                rating_mask = rating_mask & (col_vals >= min_val) & (col_vals <= max_val)
 
         # =====================================================================
         # Step 4: Build filter masks for ALL filters (combined with rating mask)
@@ -1716,12 +1746,22 @@ class DataUncertaintyAnalysis:
         # =====================================================================
         # Step 4: Build rating mask (formation-date eligibility)
         # =====================================================================
+        # IG: RATING_NUM 1-10, NIG: RATING_NUM 11-22, Tuple: (min, max) custom range
         if rating_cat == 'IG':
             rating_mask = (rating_num >= 1) & (rating_num <= 10)
         elif rating_cat == 'NIG':
             rating_mask = (rating_num >= 11) & (rating_num <= 22)
+        elif isinstance(rating_cat, tuple):
+            min_r, max_r = rating_cat
+            rating_mask = (rating_num >= min_r) & (rating_num <= max_r)
         else:
             rating_mask = np.ones(len(ret), dtype=np.bool_)
+
+        # Apply subset_filter to rating mask (AND with rating mask)
+        if self.subset_filter is not None:
+            for col, (min_val, max_val) in self.subset_filter.items():
+                col_vals = data[col].values.astype(np.float64)
+                rating_mask = rating_mask & (col_vals >= min_val) & (col_vals <= max_val)
 
         # =====================================================================
         # Step 5: Build filter masks for ALL filters (combined with rating mask)

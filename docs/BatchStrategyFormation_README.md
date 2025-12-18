@@ -54,7 +54,8 @@ BatchStrategyFormation(
     num_portfolios: int = 5,
     turnover: bool = True,
     chars: List[str] = None,
-    rating: str = None,
+    rating: Union[str, Tuple[int, int]] = None,
+    subset_filter: Dict[str, Tuple[float, float]] = None,
     banding: int = None,
     columns: Dict[str, str] = None,
     n_jobs: int = 1,
@@ -74,7 +75,8 @@ BatchStrategyFormation(
 | `num_portfolios` | int | 5 | Number of quantile portfolios (5 = quintiles, 10 = deciles) |
 | `turnover` | bool | True | Whether to compute portfolio turnover statistics |
 | `chars` | List[str] | None | Characteristic columns to aggregate at portfolio level |
-| `rating` | str | None | Filter by credit rating: `'IG'`, `'NIG'`, or `None` for all |
+| `rating` | str/tuple | None | Filter by credit rating: `'IG'`, `'NIG'`, `(min, max)` tuple, or `None` for all |
+| `subset_filter` | Dict | None | Filter by characteristics: `{'col': (min, max)}` (e.g., `{'MATURITY': (1, 5)}`) |
 | `banding` | int | None | Banding parameter to reduce turnover (1 or 2 typical) |
 | `columns` | Dict | None | Column name mapping (see [Custom Column Names](#custom-column-names)) |
 | `n_jobs` | int | 1 | Number of parallel workers (-1 = all cores) |
@@ -182,7 +184,7 @@ When you only need long-short returns (no turnover, characteristics, or banding)
 # - turnover=False
 # - chars=None
 # - banding=None
-# - rating=None
+# - rating and subset_filter are now SUPPORTED in fast path!
 
 batch = BatchStrategyFormation(
     data=data,
@@ -193,11 +195,12 @@ batch = BatchStrategyFormation(
     turnover=False,   # Required for fast path
     chars=None,       # Required for fast path
     banding=None,     # Required for fast path
-    rating=None,      # Required for fast path
+    rating='IG',      # Now works with fast path!
+    subset_filter={'MATURITY': (1, 5)},  # Now works with fast path!
     verbose=True,
 )
 results = batch.fit()
-# Prints: "FAST BATCH PATH: Processing 10 signals with numba..."
+# Prints: "FAST BATCH PATH: Processing 10 signals with numba with filters..."
 ```
 
 **Performance comparison (25K rows, 10 signals):**
@@ -206,6 +209,8 @@ results = batch.fit()
 | Slow path | 10.4s | Uses multiprocessing |
 | Fast batch | 3.8s | Uses numba kernels |
 | **Speedup** | **2.7x** | |
+
+**Note:** Rating and subset_filter are applied at formation date only to avoid look-ahead bias. Bonds are excluded from ranking but their returns are still collected if they were ranked at a previous formation date.
 
 ---
 
@@ -386,7 +391,8 @@ ew_chars, vw_chars = results['momentum'].get_characteristics()
 
 | Feature | Fast Path | Slow Path |
 |---------|-----------|-----------|
-| **When used** | `turnover=False`, `chars=None`, `banding=None`, `rating=None` | Any other case |
+| **When used** | `turnover=False`, `chars=None`, `banding=None` | `turnover=True` OR `chars` specified OR `banding` specified |
+| **Rating/Subset Filter** | ✅ Supported | ✅ Supported |
 | **Method** | Numba kernels (all signals at once) | Multiprocessing (one signal per worker) |
 | **Speed** | 2.7-3x faster | Baseline |
 | **Memory** | Lower (single process) | Higher (multiple processes) |
@@ -422,17 +428,19 @@ ew_chars, vw_chars = results['momentum'].get_characteristics()
 - No turnover analysis needed
 - No characteristic aggregation needed
 - No banding required
-- No rating filter needed
 - Processing many signals (10+)
+- Rating and subset_filter are fine (they work with fast path!)
 
 ```python
-# Fast path example - factor screening
+# Fast path example - factor screening with filters
 batch = BatchStrategyFormation(
     data=data,
     signals=signal_columns,  # 50+ signals to screen
     holding_period=1,
     num_portfolios=5,
     turnover=False,
+    rating='IG',                          # Works with fast path
+    subset_filter={'MATURITY': (1, 5)},   # Works with fast path
     verbose=True,
 )
 ```
@@ -442,7 +450,6 @@ batch = BatchStrategyFormation(
 - Need turnover analysis
 - Need to track portfolio characteristics
 - Using banding to reduce turnover
-- Filtering by credit rating
 - Need full portfolio breakdown (not just long-short)
 
 ```python

@@ -20,6 +20,7 @@ This is essential for understanding the robustness of trading strategies to data
    - [Multiple Signals](#multiple-signals)
    - [Filter Configurations](#filter-configurations)
    - [Rating as a Dimension](#rating-as-a-dimension)
+   - [Subset Filter (Characteristic-Based Filtering)](#subset-filter-characteristic-based-filtering)
    - [Filtering and Exporting Results](#filtering-and-exporting-results)
 5. [Accessing Results](#accessing-results)
 6. [Understanding the Summary Output](#understanding-the-summary-output)
@@ -103,8 +104,11 @@ DataUncertaintyAnalysis(
     include_baseline: bool = True,
 
     # Rating configuration
-    rating: str = None,                  # Single rating: 'IG', 'NIG', or None
-    ratings: List[str] = None,           # Rating as dimension: ['IG', 'NIG', None]
+    rating: Union[str, Tuple[int, int]] = None,  # 'IG', 'NIG', None, or (min, max) tuple
+    ratings: List[...] = None,           # Rating as dimension: ['IG', 'NIG', (1, 10), None]
+
+    # Characteristic filter
+    subset_filter: Dict[str, Tuple[float, float]] = None,  # e.g., {'MATURITY': (1, 5)}
 
     # Column mapping
     columns: Dict[str, str] = None,
@@ -128,8 +132,9 @@ DataUncertaintyAnalysis(
 | `dynamic_weights` | bool | True | Use VW from d-1 (True) or formation date (False) |
 | `filters` | Dict | None | Filter configurations (see [Filter Configurations](#filter-configurations)) |
 | `include_baseline` | bool | True | Always include no-filter baseline |
-| `rating` | str | None | Single rating filter: `'IG'`, `'NIG'`, or `None` |
-| `ratings` | List[str] | None | Test multiple ratings: `['IG', 'NIG', None]` |
+| `rating` | str/tuple | None | Single rating: `'IG'`, `'NIG'`, `None`, or tuple `(min, max)` |
+| `ratings` | List | None | Test multiple ratings: `['IG', 'NIG', (1, 10), None]` |
+| `subset_filter` | Dict | None | **NEW**: Characteristic filter: `{'col': (min, max)}` |
 | `columns` | Dict | None | Column name mapping |
 | `n_jobs` | int | 1 | Parallel workers (for slow path only) |
 | `verbose` | bool | True | Show progress |
@@ -423,6 +428,103 @@ print(comparison.pivot(index=['signal', 'hp'], columns='rating', values='ew_ea_m
 - `'IG'`: RATING_NUM 1-10 (Investment Grade)
 - `'NIG'`: RATING_NUM 11-22 (Non-Investment Grade / High Yield)
 - `None`: All bonds (no rating restriction)
+
+#### Using Rating Tuples
+
+You can also specify custom rating ranges using tuples `(min, max)`:
+
+```python
+# Single rating as tuple (equivalent to 'IG')
+results = DataUncertaintyAnalysis(
+    data=data,
+    signals=['momentum'],
+    holding_periods=[1, 3],
+    rating=(1, 10),  # Same as 'IG'
+).fit()
+
+# Custom rating range (e.g., only BBB-rated bonds)
+results = DataUncertaintyAnalysis(
+    data=data,
+    signals=['momentum'],
+    holding_periods=[1, 3],
+    rating=(7, 10),  # BBB+, BBB, BBB- (RATING_NUM 7-10)
+).fit()
+
+# Multiple custom ranges as dimension
+results = DataUncertaintyAnalysis(
+    data=data,
+    signals=['momentum'],
+    holding_periods=[1, 3],
+    ratings=[
+        'IG',           # Investment Grade (1-10)
+        'NIG',          # Non-Investment Grade (11-22)
+        (1, 5),         # AA and above
+        (6, 10),        # A to BBB-
+        (11, 15),       # BB to B
+        None,           # All bonds
+    ],
+).fit()
+```
+
+---
+
+### Subset Filter (Characteristic-Based Filtering)
+
+Filter the universe based on bond characteristics at formation date:
+
+```python
+# Filter to bonds with specific characteristics
+results = DataUncertaintyAnalysis(
+    data=data,
+    signals=['momentum'],
+    holding_periods=[1, 3],
+    subset_filter={
+        'MATURITY': (1, 5),      # Maturity 1-5 years
+        'DURATION': (2, 8),      # Duration 2-8 years
+    },
+).fit()
+```
+
+**Key behaviors:**
+- Filters are applied at **formation date only** (no look-ahead bias)
+- Bonds excluded from ranking can still contribute returns if they were ranked in prior periods
+- Multiple filters are combined with AND logic
+
+#### Combining Rating and Subset Filter
+
+```python
+# IG bonds with maturity 1-5 years
+results = DataUncertaintyAnalysis(
+    data=data,
+    signals=['momentum'],
+    holding_periods=[1, 3],
+    rating='IG',
+    subset_filter={'MATURITY': (1, 5)},
+).fit()
+
+# Custom rating range with characteristic filter
+results = DataUncertaintyAnalysis(
+    data=data,
+    signals=['momentum'],
+    holding_periods=[1, 3],
+    rating=(7, 10),              # BBB bonds only
+    subset_filter={
+        'DURATION': (3, 7),      # Mid-duration
+        'char1': (-1.0, 1.0),    # Custom characteristic range
+    },
+).fit()
+
+# Subset filter with rating as dimension
+results = DataUncertaintyAnalysis(
+    data=data,
+    signals=['momentum'],
+    holding_periods=[1, 3],
+    ratings=['IG', 'NIG', None],
+    subset_filter={'MATURITY': (1, 5)},  # Applied to all rating categories
+).fit()
+```
+
+**Note:** The `subset_filter` applies the same filter to all configurations. It is not treated as a dimension (unlike `ratings`).
 
 ---
 

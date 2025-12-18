@@ -813,7 +813,7 @@ Validation confirms fast batch matches slow path within machine epsilon (< 1e-17
 
 ---
 
-## Filter Support for BatchStrategyFormation (Phase 14) - IN PROGRESS
+## Filter Support for BatchStrategyFormation (Phase 14) - COMPLETE
 
 ### Overview
 
@@ -824,9 +824,11 @@ in the ultra-fast numba path, while avoiding look-ahead bias.
 
 | Parameter | Slow Path | Fast Path | Status |
 |-----------|-----------|-----------|--------|
-| `rating='IG'` or `'NIG'` | ✅ Works | ❌ Disabled | **Phase 14** |
-| `rating=(min, max)` tuple | ✅ Works | ❌ Disabled | **Phase 14** |
-| `subset_filter={...}` | ❌ Not implemented | ❌ Not implemented | **Phase 14** |
+| `rating='IG'` or `'NIG'` | ✅ Works | ✅ Works | **Complete** |
+| `rating=(min, max)` tuple | ✅ Works | ✅ Works | **Complete** |
+| `subset_filter={...}` | ✅ Works | ✅ Works | **Complete** |
+
+**All 14 validation tests pass with machine epsilon tolerance (<1e-17).**
 
 ### The Look-Ahead Bias Problem
 
@@ -1317,8 +1319,11 @@ DataUncertaintyAnalysis(
     include_baseline: bool = True,
 
     # Rating configuration
-    rating: str = None,              # Single rating: 'IG', 'NIG', or None
-    ratings: List[str] = None,       # Multiple ratings: ['IG', 'NIG', None] for dimension
+    rating: Union[str, Tuple[int, int]] = None,  # 'IG', 'NIG', None, or (min, max) tuple
+    ratings: List[...] = None,       # Multiple ratings as dimension: ['IG', 'NIG', (1, 10), None]
+
+    # Subset filter (characteristic-based filtering)
+    subset_filter: Dict[str, Tuple[float, float]] = None,  # e.g., {'MATURITY': (1, 5)}
 
     # Optional
     n_jobs: int = 1,                 # Parallel workers
@@ -1338,8 +1343,9 @@ DataUncertaintyAnalysis(
 | `dynamic_weights` | bool | True | VW from d-1 (True) or formation date (False) |
 | `filters` | Dict | None | Filter configurations (see below) |
 | `include_baseline` | bool | True | Always include no-filter baseline |
-| `rating` | str | None | Single rating filter: 'IG', 'NIG', or None |
-| `ratings` | List | None | **NEW**: Rating as dimension: `['IG', 'NIG', None]` |
+| `rating` | str/tuple | None | Single rating filter: 'IG', 'NIG', None, or tuple `(min, max)` |
+| `ratings` | List | None | Rating as dimension: `['IG', 'NIG', (1, 10), None]` |
+| `subset_filter` | Dict | None | **NEW**: Characteristic filter: `{'col': (min, max)}` |
 | `columns` | Dict | None | Column name mapping (see below) |
 | `n_jobs` | int | 1 | Parallel workers (only used by slow path) |
 | `verbose` | bool | True | Show progress output |
@@ -1658,6 +1664,38 @@ results_ratings = DataUncertaintyAnalysis(
 ).fit()
 
 # This produces: 2 signals × 3 ratings × 2 filters × 2 HPs = 24 configs
+
+# Example with rating tuple (custom range)
+results_custom_rating = DataUncertaintyAnalysis(
+    data=data,
+    signals=['signal1'],
+    holding_periods=[1, 3],
+    rating=(7, 10),                    # Custom rating range (BBB+ to BBB-)
+    verbose=True,
+).fit()
+
+# Example with subset_filter (characteristic-based filtering)
+results_filtered = DataUncertaintyAnalysis(
+    data=data,
+    signals=['signal1'],
+    holding_periods=[1, 3],
+    subset_filter={
+        'MATURITY': (1, 5),            # Maturity 1-5 years
+    },
+    verbose=True,
+).fit()
+
+# Example with combined rating and subset_filter
+results_combined = DataUncertaintyAnalysis(
+    data=data,
+    signals=['signal1'],
+    holding_periods=[1, 3],
+    rating='IG',                       # Investment grade only
+    subset_filter={
+        'DURATION': (2, 8),            # Duration 2-8 years
+    },
+    verbose=True,
+).fit()
 ```
 
 ### Example Script
