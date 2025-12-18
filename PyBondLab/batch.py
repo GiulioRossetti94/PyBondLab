@@ -42,8 +42,11 @@ import gc
 import platform
 import warnings
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any, Union, Tuple
+from typing import Dict, List, Optional, Any, Union, Tuple, Callable
 from collections import OrderedDict
+
+# Type alias for subset_filter
+SubsetFilter = Dict[str, Tuple[float, float]]
 import time
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -107,7 +110,7 @@ def _process_single_signal(args: Tuple) -> Tuple[str, Any, float, Optional[str]]
     ----------
     args : tuple
         (signal, data, holding_period, num_portfolios, turnover,
-         chars, rating, banding_threshold)
+         chars, rating, subset_filter, banding_threshold)
 
         NOTE: shared_precomp is NOT passed to avoid pickle overhead.
         Each worker computes its own precompute data.
@@ -118,7 +121,7 @@ def _process_single_signal(args: Tuple) -> Tuple[str, Any, float, Optional[str]]
         (signal_name, result_or_none, elapsed_time, error_or_none)
     """
     (signal, data, holding_period, num_portfolios, turnover,
-     chars, rating, banding_threshold) = args
+     chars, rating, subset_filter, banding_threshold) = args
 
     t_start = time.time()
 
@@ -139,6 +142,7 @@ def _process_single_signal(args: Tuple) -> Tuple[str, Any, float, Optional[str]]
             sf_config = StrategyFormationConfig(
                 data=DataConfig(
                     rating=rating,
+                    subset_filter=subset_filter,
                     chars=chars,
                 ),
                 formation=FormationConfig(
@@ -175,7 +179,7 @@ def _process_signal_batch(args: Tuple) -> List[Tuple[str, Any, float, Optional[s
     ----------
     args : tuple
         (signals_list, data, holding_period, num_portfolios, turnover,
-         chars, rating, banding_threshold)
+         chars, rating, subset_filter, banding_threshold)
 
     Returns
     -------
@@ -183,7 +187,7 @@ def _process_signal_batch(args: Tuple) -> List[Tuple[str, Any, float, Optional[s
         [(signal_name, result_or_none, elapsed_time, error_or_none), ...]
     """
     (signals_list, data, holding_period, num_portfolios, turnover,
-     chars, rating, banding_threshold) = args
+     chars, rating, subset_filter, banding_threshold) = args
 
     results = []
     for signal in signals_list:
@@ -200,7 +204,7 @@ def _process_signal_batch(args: Tuple) -> List[Tuple[str, Any, float, Optional[s
                 )
 
                 sf_config = StrategyFormationConfig(
-                    data=DataConfig(rating=rating, chars=chars),
+                    data=DataConfig(rating=rating, subset_filter=subset_filter, chars=chars),
                     formation=FormationConfig(
                         dynamic_weights=True,
                         compute_turnover=turnover,
@@ -446,7 +450,14 @@ class BatchStrategyFormation:
     chars : list of str, optional
         Characteristic columns to aggregate
     rating : str or tuple, optional
-        Rating filter
+        Rating filter:
+        - 'IG': Investment grade (RATING_NUM 1-10)
+        - 'NIG': Non-investment grade (RATING_NUM 11-22)
+        - (min, max): Custom rating range, e.g., (7, 10) for BBB only
+    subset_filter : dict, optional
+        Characteristic-based filters: {column: (min, max)}
+        Example: {'MATURITY': (1, 5), 'DURATION': (2, 8)}
+        Filters are applied at formation date only (no look-ahead bias).
     banding : int, optional
         Banding parameter
     columns : dict, optional
@@ -474,6 +485,16 @@ class BatchStrategyFormation:
     ...     n_jobs=4
     ... )
     >>> results = batch.fit()
+    >>>
+    >>> # With rating and subset filters
+    >>> batch = BatchStrategyFormation(
+    ...     data=data,
+    ...     signals=['signal1', 'signal2'],
+    ...     rating=(1, 10),  # IG only
+    ...     subset_filter={'MATURITY': (1, 5)},  # Maturity 1-5 years
+    ...     turnover=False,
+    ... )
+    >>> results = batch.fit()
     """
 
     def __init__(
@@ -485,6 +506,7 @@ class BatchStrategyFormation:
         turnover: bool = True,
         chars: Optional[List[str]] = None,
         rating: Optional[Union[str, tuple]] = None,
+        subset_filter: Optional[SubsetFilter] = None,
         banding: Optional[int] = None,
         columns: Optional[Dict[str, str]] = None,
         n_jobs: int = 1,
@@ -512,6 +534,7 @@ class BatchStrategyFormation:
         self.turnover = turnover
         self.chars = chars
         self.rating = rating
+        self.subset_filter = subset_filter
         self.banding = banding
         self.n_jobs = n_jobs
         self.signals_per_worker = max(1, signals_per_worker)
@@ -527,6 +550,7 @@ class BatchStrategyFormation:
             'turnover': turnover,
             'chars': chars,
             'rating': rating,
+            'subset_filter': subset_filter,
             'banding': banding,
             'n_jobs': n_jobs,
             'signals_per_worker': signals_per_worker,
@@ -613,7 +637,10 @@ class BatchStrategyFormation:
         - turnover=False
         - chars=None
         - banding=None (no banding threshold)
-        - rating=None (no rating filter)
+
+        Fast path NOW SUPPORTS (Phase 14):
+        - rating filter (applied at formation date only, no look-ahead bias)
+        - subset_filter (applied at formation date only, no look-ahead bias)
         """
         if self.turnover:
             return False
@@ -621,8 +648,7 @@ class BatchStrategyFormation:
             return False
         if self.banding_threshold is not None:
             return False
-        if self.rating is not None:
-            return False
+        # rating and subset_filter are now supported in fast path
         return True
 
     def _fit_fast_batch(self) -> BatchResults:
@@ -630,7 +656,12 @@ class BatchStrategyFormation:
         Ultra-fast batch processing using numba kernels.
 
         Processes ALL signals in parallel using vectorized operations.
-        Only available when turnover=False, chars=None, banding=None.
+        Available when turnover=False, chars=None, banding=None.
+
+        Supports rating and subset_filter by applying filters at formation date only
+        (no look-ahead bias). Filters set signal to NaN for excluded observations,
+        so they won't be ranked. Returns are collected from ALL bonds that were
+        assigned to portfolios, regardless of their filter status at return date.
         """
         import numpy as np
         from .numba_core import (
@@ -640,6 +671,7 @@ class BatchStrategyFormation:
             compute_ls_returns_all_signals_staggered,
             build_vw_lookup_and_dynamic_weights
         )
+        from .constants import RatingBounds
 
         results = BatchResults(
             signals=self.signals.copy(),
@@ -648,8 +680,15 @@ class BatchStrategyFormation:
 
         t_start = time.time()
 
+        filter_desc = []
+        if self.rating is not None:
+            filter_desc.append(f"rating={self.rating}")
+        if self.subset_filter is not None:
+            filter_desc.append(f"subset_filter={list(self.subset_filter.keys())}")
+        filter_str = f" with filters: {', '.join(filter_desc)}" if filter_desc else ""
+
         if self.verbose:
-            print(f"FAST BATCH PATH: Processing {len(self.signals)} signals with numba...")
+            print(f"FAST BATCH PATH: Processing {len(self.signals)} signals with numba{filter_str}...")
 
         # =====================================================================
         # Step 1: Extract numpy arrays from DataFrame (ONCE)
@@ -673,13 +712,50 @@ class BatchStrategyFormation:
         ret = data['ret'].values.astype(np.float64)
         vw = data['VW'].values.astype(np.float64)
 
+        # =====================================================================
+        # Step 1b: Build filter mask (Phase 14 - avoid look-ahead bias)
+        # =====================================================================
+        # Filter mask: True = observation passes filter at this date
+        # We apply filter by setting signal to NaN for filtered-out observations.
+        # This means filtered bonds won't be ranked at formation date.
+        # BUT their returns are still collected if they were in a portfolio.
+        filter_mask = np.ones(len(data), dtype=np.bool_)
+
+        if self.rating is not None:
+            rating_vals = data['RATING_NUM'].values
+            if self.rating == 'IG':
+                filter_mask &= (rating_vals <= RatingBounds.IG_MAX)
+            elif self.rating == 'NIG':
+                filter_mask &= (rating_vals > RatingBounds.IG_MAX)
+            elif isinstance(self.rating, (tuple, list)):
+                min_r, max_r = self.rating
+                filter_mask &= (rating_vals >= min_r) & (rating_vals <= max_r)
+
+        if self.subset_filter is not None:
+            for col, (min_val, max_val) in self.subset_filter.items():
+                if col not in data.columns:
+                    raise ValueError(f"subset_filter column '{col}' not found in data")
+                col_vals = data[col].values
+                filter_mask &= (col_vals >= min_val) & (col_vals <= max_val)
+
+        n_filtered = (~filter_mask).sum()
+        if self.verbose and n_filtered > 0:
+            pct_filtered = 100 * n_filtered / len(data)
+            print(f"    Filter excludes {n_filtered:,} observations ({pct_filtered:.1f}%) from ranking")
+
         # Build signal matrix (n_obs, n_signals)
+        # Apply filter mask: set signal to NaN for filtered-out observations
         n_signals = len(self.signals)
         signals_matrix = np.empty((len(data), n_signals), dtype=np.float64)
         for s_idx, signal in enumerate(self.signals):
-            signals_matrix[:, s_idx] = data[signal].values.astype(np.float64)
+            sig_vals = data[signal].values.astype(np.float64)
+            # Set signal to NaN for observations that don't pass filter
+            # This ensures they won't be ranked (rank computation skips NaN)
+            sig_vals[~filter_mask] = np.nan
+            signals_matrix[:, s_idx] = sig_vals
 
         # Build VW from d-1 (dynamic weights) - use existing numba function
+        # Note: VW is NOT filtered - we use VW from ALL observations
         vw_lag = build_vw_lookup_and_dynamic_weights(
             date_idx, id_idx, vw, n_dates, n_ids
         )
@@ -820,7 +896,11 @@ class BatchStrategyFormation:
                 )
 
                 sf_config = StrategyFormationConfig(
-                    data=DataConfig(rating=self.rating, chars=self.chars),
+                    data=DataConfig(
+                        rating=self.rating,
+                        subset_filter=self.subset_filter,
+                        chars=self.chars
+                    ),
                     formation=FormationConfig(
                         dynamic_weights=True,
                         compute_turnover=self.turnover,
@@ -878,6 +958,12 @@ class BatchStrategyFormation:
                 if char not in cols and char in self.data.columns:
                     cols.append(char)
 
+        # Add subset_filter columns if specified
+        if self.subset_filter:
+            for col in self.subset_filter.keys():
+                if col not in cols and col in self.data.columns:
+                    cols.append(col)
+
         # Only include columns that exist in data
         cols = [c for c in cols if c in self.data.columns]
 
@@ -902,6 +988,12 @@ class BatchStrategyFormation:
             for char in self.chars:
                 if char not in cols and char in self.data.columns:
                     cols.append(char)
+
+        # Add subset_filter columns if specified
+        if self.subset_filter:
+            for col in self.subset_filter.keys():
+                if col not in cols and col in self.data.columns:
+                    cols.append(col)
 
         cols = [c for c in cols if c in self.data.columns]
         return self.data[cols].copy()
@@ -934,7 +1026,11 @@ class BatchStrategyFormation:
                 verbose=False
             )
             sf_config = StrategyFormationConfig(
-                data=DataConfig(rating=self.rating, chars=self.chars),
+                data=DataConfig(
+                    rating=self.rating,
+                    subset_filter=self.subset_filter,
+                    chars=self.chars
+                ),
                 formation=FormationConfig(
                     dynamic_weights=True,
                     compute_turnover=self.turnover,
@@ -1008,7 +1104,8 @@ class BatchStrategyFormation:
                 batch_data = self._get_minimal_data_batch(batch)
                 worker_args.append((
                     batch, batch_data, self.holding_period, self.num_portfolios,
-                    self.turnover, self.chars, self.rating, self.banding_threshold
+                    self.turnover, self.chars, self.rating, self.subset_filter,
+                    self.banding_threshold
                 ))
 
             if self.verbose and offset == 0:
@@ -1056,7 +1153,8 @@ class BatchStrategyFormation:
                 minimal_data = self._get_minimal_data(signal)
                 worker_args.append((
                     signal, minimal_data, self.holding_period, self.num_portfolios,
-                    self.turnover, self.chars, self.rating, self.banding_threshold
+                    self.turnover, self.chars, self.rating, self.subset_filter,
+                    self.banding_threshold
                 ))
 
             if self.verbose and offset == 0:

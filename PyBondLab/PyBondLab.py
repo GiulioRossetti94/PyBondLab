@@ -1264,6 +1264,38 @@ class StrategyFormation:
         signal = data[sort_var_main].values.astype(np.float64)
         vw = data[ColumnNames.VALUE_WEIGHT].values.astype(np.float64)
 
+        # Step 1b: Build filter mask for rating and subset_filter (Phase 14)
+        # Filter mask: True = observation passes filter at this date
+        # We apply filter by setting signal to NaN for filtered-out observations.
+        # This ensures filtered bonds won't be ranked at formation date.
+        # BUT their returns are still collected if they were in a portfolio.
+        if self.rating is not None or self.subset_filter is not None:
+            filter_mask = np.ones(len(data), dtype=np.bool_)
+
+            if self.rating is not None:
+                rating_vals = data[ColumnNames.RATING].values
+                if isinstance(self.rating, str):
+                    min_r, max_r = get_rating_bounds(self.rating)
+                else:
+                    min_r, max_r = self.rating
+                filter_mask &= (rating_vals >= min_r) & (rating_vals <= max_r)
+
+            if self.subset_filter is not None:
+                for col, (min_val, max_val) in self.subset_filter.items():
+                    if col not in data.columns:
+                        raise ValueError(f"subset_filter column '{col}' not found in data")
+                    col_vals = data[col].values
+                    filter_mask &= (col_vals >= min_val) & (col_vals <= max_val)
+
+            # Set signal to NaN for observations that don't pass filter
+            # This ensures they won't be ranked (rank computation skips NaN)
+            signal[~filter_mask] = np.nan
+
+            if self.verbose:
+                n_filtered = (~filter_mask).sum()
+                pct_filtered = 100 * n_filtered / len(data)
+                print(f"  Filter excludes {n_filtered:,} observations ({pct_filtered:.1f}%) from ranking")
+
         # Return data: need to handle NaN in ret_col properly
         # For EP, set NaN returns so they're excluded from return calculation
         returns = data[ret_col].values.astype(np.float64)

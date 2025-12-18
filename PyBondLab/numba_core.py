@@ -3534,7 +3534,9 @@ def compute_ls_returns_all_signals_staggered(
     """
     Compute long-short returns for ALL signals with staggered rebalancing (HP > 1).
 
-    Uses cohort averaging: each date averages returns from HP different cohorts.
+    Uses cohort averaging: each portfolio's return is averaged across cohorts
+    independently, then L-S is computed from the averaged portfolio returns.
+    This matches the behavior of compute_staggered_returns_ultrafast.
 
     Returns
     -------
@@ -3558,10 +3560,10 @@ def compute_ls_returns_all_signals_staggered(
         if d < holding_period:
             continue
 
-        # Average over HP cohorts
-        cohort_ew_ls = np.zeros(holding_period, dtype=np.float64)
-        cohort_vw_ls = np.zeros(holding_period, dtype=np.float64)
-        valid_cohorts = 0
+        # Store portfolio returns per cohort for each portfolio
+        # Shape: (holding_period, nport)
+        cohort_ew = np.full((holding_period, nport), np.nan, dtype=np.float64)
+        cohort_vw = np.full((holding_period, nport), np.nan, dtype=np.float64)
 
         for cohort in range(holding_period):
             form_d = d - 1 - cohort
@@ -3605,34 +3607,40 @@ def compute_ls_returns_all_signals_staggered(
                 sum_weight[p] += weight
                 count[p] += 1
 
-            # Compute portfolio returns for this cohort
-            if count[0] > 0 and count[nport - 1] > 0:
-                ew_top = sum_ret[nport - 1] / count[nport - 1]
-                ew_bot = sum_ret[0] / count[0]
-                cohort_ew_ls[valid_cohorts] = ew_top - ew_bot
+            # Compute portfolio returns for this cohort (each portfolio independently)
+            for p in range(nport):
+                if count[p] > 0:
+                    cohort_ew[cohort, p] = sum_ret[p] / count[p]
+                if sum_weight[p] > 0:
+                    cohort_vw[cohort, p] = sum_wret[p] / sum_weight[p]
 
-                if sum_weight[nport - 1] > 0 and sum_weight[0] > 0:
-                    vw_top = sum_wret[nport - 1] / sum_weight[nport - 1]
-                    vw_bot = sum_wret[0] / sum_weight[0]
-                    cohort_vw_ls[valid_cohorts] = vw_top - vw_bot
-                else:
-                    cohort_vw_ls[valid_cohorts] = np.nan
+        # Average each portfolio across cohorts independently
+        avg_ew = np.full(nport, np.nan, dtype=np.float64)
+        avg_vw = np.full(nport, np.nan, dtype=np.float64)
 
-                valid_cohorts += 1
-
-        # Average across cohorts
-        if valid_cohorts > 0:
+        for p in range(nport):
             ew_sum = 0.0
             vw_sum = 0.0
+            ew_count = 0
             vw_count = 0
-            for c in range(valid_cohorts):
-                ew_sum += cohort_ew_ls[c]
-                if not np.isnan(cohort_vw_ls[c]):
-                    vw_sum += cohort_vw_ls[c]
+
+            for cohort in range(holding_period):
+                if not np.isnan(cohort_ew[cohort, p]):
+                    ew_sum += cohort_ew[cohort, p]
+                    ew_count += 1
+                if not np.isnan(cohort_vw[cohort, p]):
+                    vw_sum += cohort_vw[cohort, p]
                     vw_count += 1
 
-            ew_ls[d, s] = ew_sum / valid_cohorts
+            if ew_count > 0:
+                avg_ew[p] = ew_sum / ew_count
             if vw_count > 0:
-                vw_ls[d, s] = vw_sum / vw_count
+                avg_vw[p] = vw_sum / vw_count
+
+        # Compute L-S from averaged portfolio returns
+        if not np.isnan(avg_ew[nport - 1]) and not np.isnan(avg_ew[0]):
+            ew_ls[d, s] = avg_ew[nport - 1] - avg_ew[0]
+        if not np.isnan(avg_vw[nport - 1]) and not np.isnan(avg_vw[0]):
+            vw_ls[d, s] = avg_vw[nport - 1] - avg_vw[0]
 
     return ew_ls, vw_ls

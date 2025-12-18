@@ -813,6 +813,180 @@ Validation confirms fast batch matches slow path within machine epsilon (< 1e-17
 
 ---
 
+## Filter Support for BatchStrategyFormation (Phase 14) - IN PROGRESS
+
+### Overview
+
+Phase 14 extends `BatchStrategyFormation` to support `rating` and `subset_filter` parameters
+in the ultra-fast numba path, while avoiding look-ahead bias.
+
+### Current State
+
+| Parameter | Slow Path | Fast Path | Status |
+|-----------|-----------|-----------|--------|
+| `rating='IG'` or `'NIG'` | ✅ Works | ❌ Disabled | **Phase 14** |
+| `rating=(min, max)` tuple | ✅ Works | ❌ Disabled | **Phase 14** |
+| `subset_filter={...}` | ❌ Not implemented | ❌ Not implemented | **Phase 14** |
+
+### The Look-Ahead Bias Problem
+
+**Naive filtering introduces bias:**
+```python
+# WRONG: This filters based on characteristics at ALL dates
+data = data[data['RATING_NUM'] <= 10]  # Look-ahead bias!
+```
+
+**Example scenario:**
+```
+Date t   (formation): Bond has RATING_NUM=10 (IG) → Should be ranked
+Date t+1 (return):    Bond has RATING_NUM=11 (downgraded) → Return should be collected!
+```
+
+With naive filtering, the (t+1, bond) row is removed entirely, losing the return observation.
+This uses future information (the downgrade) to exclude returns - look-ahead bias.
+
+### Correct Approach: Filter at Formation Only
+
+**The key insight:** Filters should be applied only when computing ranks (formation date),
+not when collecting returns. The fast path already has this structure:
+
+```python
+# Return computation looks up rank from FORMATION date
+for i in range(n_obs):
+    d = date_idx[i]           # Return date (t+1)
+    bond = id_idx[i]
+
+    form_d = d - 1            # Formation date (t)
+    rank = rank_lookups[form_d, bond, s]  # Was bond ranked at formation?
+
+    if rank > 0:              # Bond was in a portfolio at formation
+        # Include this return (regardless of current characteristics)
+```
+
+### Implementation: Set Signal to NaN for Filtered Observations
+
+Instead of removing rows, we set the signal to NaN for observations that don't pass the filter:
+
+```python
+def _fit_fast_batch(self) -> BatchResults:
+    data = self.data  # DON'T pre-filter rows!
+
+    # Build filter mask (True = passes filter at this date)
+    filter_mask = np.ones(len(data), dtype=np.bool_)
+
+    if self.rating is not None:
+        rating_vals = data['RATING_NUM'].values
+        if self.rating == 'IG':
+            filter_mask &= (rating_vals <= 10)
+        elif self.rating == 'NIG':
+            filter_mask &= (rating_vals > 10)
+        elif isinstance(self.rating, tuple):
+            min_r, max_r = self.rating
+            filter_mask &= (rating_vals >= min_r) & (rating_vals <= max_r)
+
+    if self.subset_filter is not None:
+        for col, (min_val, max_val) in self.subset_filter.items():
+            col_vals = data[col].values
+            filter_mask &= (col_vals >= min_val) & (col_vals <= max_val)
+
+    # Set signals to NaN for filtered-out observations
+    # Existing rank code already skips NaN → these bonds won't be ranked
+    signals_matrix = np.empty((len(data), n_signals), dtype=np.float64)
+    for s_idx, signal in enumerate(self.signals):
+        sig_vals = data[signal].values.astype(np.float64)
+        sig_vals[~filter_mask] = np.nan  # Filter out at formation
+        signals_matrix[:, s_idx] = sig_vals
+
+    # Rank computation: only ranks non-NaN signals (filtered bonds excluded)
+    ranks_all = compute_ranks_all_signals(...)
+
+    # Return computation: uses FULL returns array (no filtering)
+    ret = data['ret'].values.astype(np.float64)  # ALL returns
+```
+
+### Why This Works
+
+| Step | What Happens | Look-Ahead Bias? |
+|------|--------------|------------------|
+| Formation (t) | Check if bond passes filter → if yes, rank it | No - decision at t |
+| Rank lookup | Look up rank assigned at formation date | No - uses t info |
+| Return (t+1) | Collect return if bond was ranked | No - includes downgrades |
+
+**Example with downgrade scenario:**
+```
+Date t:   RATING_NUM=10, passes IG filter → ranked, assigned to portfolio 3
+Date t+1: RATING_NUM=11 (downgraded)
+          - Rank lookup uses formation date (t) → rank = 3
+          - Return IS collected (bond was in portfolio at formation)
+```
+
+### Implementation Plan
+
+**Step 1: Add `subset_filter` to slow path**
+- Add parameter to `BatchStrategyFormation.__init__`
+- Thread through to worker functions
+- Pass to `DataConfig(subset_filter=...)`
+
+**Step 2: Enable fast path with filters**
+- Remove `if self.rating is not None: return False` check
+- Build filter mask in `_fit_fast_batch`
+- Apply mask to signals (set to NaN) before ranking
+- Keep returns/VW arrays unfiltered
+
+**Step 3: Validation**
+Compare fast batch vs slow SingleSort:
+- `rating=(1, 10)` with HP=1 and HP=3
+- `rating=(11, 22)` (NIG) with HP=1
+- `subset_filter={'char1': (min, max)}` test case
+- Verify differences < 1e-10
+
+### New API
+
+```python
+from PyBondLab import BatchStrategyFormation
+
+batch = BatchStrategyFormation(
+    data=data,
+    signals=['signal1', 'signal2'],
+    holding_period=3,
+    num_portfolios=5,
+    turnover=False,
+
+    # NEW: Filter support (now works with fast path!)
+    rating=(1, 10),                    # IG bonds only (or 'IG', 'NIG')
+    subset_filter={
+        'MATURITY': (1, 5),            # Maturity 1-5 years
+        'DURATION': (2, 8),            # Duration 2-8 years
+    },
+
+    verbose=True,
+)
+results = batch.fit()  # Uses fast path with filters!
+```
+
+### Expected Performance
+
+| Configuration | Time (est.) | Notes |
+|---------------|-------------|-------|
+| No filter (fast path) | ~1.0s | Current fast path |
+| With rating filter (fast path) | ~1.1s | +0.1s for filter mask |
+| With subset_filter (fast path) | ~1.1s | +0.1s for filter mask |
+| With filter (slow path) | ~15-30s | Current fallback |
+
+### Validation Script
+
+```bash
+python examples/validate_fast_batch_filters.py
+```
+
+Tests:
+- `rating=(1, 10)` vs `rating='IG'` (should be identical)
+- Fast batch with rating vs slow SingleSort with rating
+- Fast batch with subset_filter vs slow SingleSort with subset_filter
+- HP=1 and HP=3 for all configurations
+
+---
+
 ## Multi-Signal Vectorized Functions (Experimental)
 
 Located in `numba_core.py`, these attempt to process all signals at once:
