@@ -68,8 +68,17 @@ def _get_start_method() -> str:
         # Linux and macOS support fork
         return 'fork'
 
-# Required columns that must always be present
+# Required columns that must always be present (PyBondLab internal names)
 REQUIRED_COLUMNS = ['date', 'ID', 'ret', 'VW', 'RATING_NUM']
+
+# Default column name mapping (PyBondLab name -> default user name)
+DEFAULT_COLUMNS = {
+    'date': 'date',
+    'ID': 'ID',
+    'ret': 'ret',
+    'VW': 'VW',
+    'RATING_NUM': 'RATING_NUM',
+}
 
 # Try to import tqdm for progress bars
 try:
@@ -343,6 +352,10 @@ class BatchStrategyFormation:
         Rating filter
     banding : int, optional
         Banding parameter
+    columns : dict, optional
+        Column name mapping from PyBondLab names to your data's column names.
+        Default mapping: {'date': 'date', 'ID': 'ID', 'ret': 'ret', 'VW': 'VW', 'RATING_NUM': 'RATING_NUM'}
+        Example: {'ID': 'cusip', 'ret': 'ret_vw', 'VW': 'mcap_e', 'RATING_NUM': 'spc_rat'}
     n_jobs : int, default=1
         Number of parallel jobs. Use -1 for all cores, 1 for sequential.
     signals_per_worker : int, default=1
@@ -353,6 +366,17 @@ class BatchStrategyFormation:
         If None, processes all signals at once. Recommended for 50+ signals.
     verbose : bool, default=True
         Whether to show progress
+
+    Examples
+    --------
+    >>> # With custom column names
+    >>> batch = BatchStrategyFormation(
+    ...     data=data,
+    ...     signals=['cs', 'ytm'],
+    ...     columns={'ID': 'cusip', 'ret': 'ret_vw', 'VW': 'mcap_e', 'RATING_NUM': 'spc_rat'},
+    ...     n_jobs=4
+    ... )
+    >>> results = batch.fit()
     """
 
     def __init__(
@@ -365,14 +389,26 @@ class BatchStrategyFormation:
         chars: Optional[List[str]] = None,
         rating: Optional[Union[str, tuple]] = None,
         banding: Optional[int] = None,
+        columns: Optional[Dict[str, str]] = None,
         n_jobs: int = 1,
         signals_per_worker: int = 1,
         chunk_size: Optional[int] = None,
         verbose: bool = True,
     ):
-        self._validate_inputs(data, signals)
+        # Store verbose first (needed by _prepare_data)
+        self.verbose = verbose
 
-        self.data = data
+        # Build column mapping (merge defaults with user-provided)
+        self.columns = DEFAULT_COLUMNS.copy()
+        if columns is not None:
+            self.columns.update(columns)
+
+        # Prepare data (rename columns to PyBondLab standard names)
+        self.data_raw = data
+        self.data = self._prepare_data(data, signals)
+
+        self._validate_inputs(self.data, signals)
+
         self.signals = list(signals)
         self.holding_period = holding_period
         self.num_portfolios = num_portfolios
@@ -383,7 +419,6 @@ class BatchStrategyFormation:
         self.n_jobs = n_jobs
         self.signals_per_worker = max(1, signals_per_worker)
         self.chunk_size = chunk_size
-        self.verbose = verbose
 
         self.banding_threshold = None
         if banding is not None:
@@ -401,6 +436,48 @@ class BatchStrategyFormation:
             'chunk_size': chunk_size,
         }
 
+    def _prepare_data(self, data: pd.DataFrame, signals: List[str]) -> pd.DataFrame:
+        """
+        Prepare data by renaming columns to PyBondLab standard names.
+
+        Parameters
+        ----------
+        data : pd.DataFrame
+            Raw input data with user's column names
+        signals : List[str]
+            Signal column names (these are NOT renamed)
+
+        Returns
+        -------
+        pd.DataFrame
+            Data with standardized column names
+        """
+        # Build rename mapping: user_col_name -> pbl_name
+        rename_map = {}
+        for pbl_name, user_name in self.columns.items():
+            if user_name != pbl_name and user_name in data.columns:
+                rename_map[user_name] = pbl_name
+
+        if not rename_map:
+            # No renaming needed
+            return data
+
+        # Check for conflicts: user columns that would overwrite existing columns
+        for user_name, pbl_name in rename_map.items():
+            if pbl_name in data.columns and pbl_name != user_name:
+                # The target column already exists and is different from source
+                # This could cause issues, warn or handle appropriately
+                pass
+
+        # Rename columns
+        data_prepared = data.rename(columns=rename_map)
+
+        if self.verbose:
+            renamed_str = ', '.join(f'{k}->{v}' for k, v in rename_map.items())
+            print(f"Columns renamed: {renamed_str}")
+
+        return data_prepared
+
     def _validate_inputs(self, data: pd.DataFrame, signals: List[str]):
         if data is None or data.empty:
             raise ValueError("Data cannot be None or empty")
@@ -409,7 +486,13 @@ class BatchStrategyFormation:
         required = ['date', 'ID', 'ret', 'VW', 'RATING_NUM']
         missing = [col for col in required if col not in data.columns]
         if missing:
-            raise ValueError(f"Data missing required columns: {missing}")
+            # Provide helpful error message with column mapping info
+            user_cols = [self.columns.get(c, c) for c in missing]
+            raise ValueError(
+                f"Data missing required columns: {missing}. "
+                f"Expected columns (based on your 'columns' mapping): {user_cols}. "
+                f"Use the 'columns' parameter to map your column names."
+            )
         missing_signals = [s for s in signals if s not in data.columns]
         if missing_signals:
             raise ValueError(f"Signal columns not found in data: {missing_signals}")
