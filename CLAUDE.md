@@ -732,6 +732,87 @@ data.to_parquet('/tmp/data.parquet')
 
 ---
 
+## Fast Batch Path (Phase 13)
+
+### Overview
+
+When `BatchStrategyFormation` is called with `turnover=False`, `chars=None`, `banding=None`, and `rating=None`,
+an ultra-fast path is automatically used that processes ALL signals in parallel using numba kernels.
+
+This bypasses the multiprocessing overhead entirely and computes ranks + returns for all signals at once.
+
+### Performance
+
+| Dataset | Signals | Slow Path | Fast Batch | Speedup |
+|---------|---------|-----------|------------|---------|
+| 25K rows, HP=1 | 10 | 10.4s | 3.8s | **2.7x** |
+| 25K rows, HP=3 | 10 | 4.3s | 1.5s | **2.9x** |
+
+**Note:** Speedup improves with more signals since the fast path amortizes setup cost.
+
+### When Fast Batch Path is Used
+
+Fast path is **automatically enabled** when ALL of these conditions are met:
+
+| Condition | Required Value |
+|-----------|---------------|
+| `turnover` | `False` |
+| `chars` | `None` |
+| `banding` | `None` |
+| `rating` | `None` |
+
+### Key Numba Kernels
+
+```python
+# In numba_core.py - Multi-signal batch processing
+compute_ranks_all_signals(date_idx, signals, n_dates, nport, n_signals)
+    -> ranks_all  # Shape: (n_obs, n_signals)
+
+build_rank_lookups_all_signals(date_idx, id_idx, ranks_all, n_dates, n_ids, n_signals)
+    -> rank_lookups  # Shape: (n_dates * n_ids, n_signals)
+
+compute_ls_returns_all_signals_hp1(...)  # HP=1
+    -> (ew_ls, vw_ls)  # Shape: (n_dates, n_signals)
+
+compute_ls_returns_all_signals_staggered(...)  # HP>1
+    -> (ew_ls, vw_ls)  # Shape: (n_dates, n_signals)
+```
+
+### Usage Example
+
+```python
+from PyBondLab import BatchStrategyFormation
+
+# Fast path is used automatically when conditions are met
+batch = BatchStrategyFormation(
+    data=data,
+    signals=['signal1', 'signal2', 'signal3', ...],  # Can be 100+ signals
+    holding_period=1,
+    num_portfolios=5,
+    turnover=False,   # Required for fast path
+    chars=None,       # Required for fast path
+    banding=None,     # Required for fast path
+    rating=None,      # Required for fast path
+    n_jobs=4,         # Ignored when fast path is used
+    verbose=True,
+)
+results = batch.fit()  # Prints "FAST BATCH PATH: Processing N signals..."
+
+# Access results (same API)
+ew_ls, vw_ls = results['signal1'].get_long_short()
+```
+
+### Validation Script
+
+```bash
+python examples/validate_fast_batch.py
+python examples/validate_fast_batch.py --hp 3 --n_signals 20
+```
+
+Validation confirms fast batch matches slow path within machine epsilon (< 1e-17).
+
+---
+
 ## Multi-Signal Vectorized Functions (Experimental)
 
 Located in `numba_core.py`, these attempt to process all signals at once:
@@ -798,6 +879,12 @@ rank assignments due to floating-point comparison reordering with NaN values.
   - Parallelizes signal computation over bonds (10,000+ parallel tasks)
   - Ex-ante winsorization using rolling historical percentiles (matches slow path exactly)
   - All filter types supported: baseline, trim, price, bounce, wins
+- **Phase 13**: Fast Batch Path for BatchStrategyFormation (**2.7-3x speedup**)
+  - Processes ALL signals in parallel using numba kernels
+  - `compute_ranks_all_signals()`: Ranks for all signals at once
+  - `compute_ls_returns_all_signals_hp1/staggered()`: Returns for all signals
+  - Bypasses multiprocessing overhead when turnover=False, chars=None, banding=None
+  - Exact match with slow path (< 1e-17 tolerance)
 - **Total**: ~3x faster single-signal, ~2.5x parallel speedup for batch, **5x for large panels, 75-163x for DataUncertaintyAnalysis**
 
 ---
