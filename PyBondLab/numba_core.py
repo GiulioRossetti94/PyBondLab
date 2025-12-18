@@ -2842,3 +2842,199 @@ def compute_ls_returns_all_filters_staggered(
             vw_ep_ls[d, f] = vw_ep_ptf[nport-1] - vw_ep_ptf[0]
 
     return ew_ea_ls, vw_ea_ls, ew_ep_ls, vw_ep_ls
+
+
+# =============================================================================
+# Momentum/LTreversal Signal Computation (Panel-Based)
+# =============================================================================
+
+@njit(cache=True, parallel=True)
+def compute_momentum_signals_panel(
+    logret_all: np.ndarray,
+    bond_starts: np.ndarray,
+    lookback: int,
+    skip: int
+) -> np.ndarray:
+    """
+    Compute Momentum signals for ALL filters in parallel over bonds.
+
+    This matches pandas groupby('ID').rolling() behavior exactly by processing
+    each bond's rows independently (not using a dense date×bond matrix).
+
+    Parameters
+    ----------
+    logret_all : np.ndarray
+        Log returns for all filters, shape (n_obs, n_filters)
+        Data must be sorted by (ID, date)
+    bond_starts : np.ndarray
+        Array of indices where each bond starts, length (n_bonds + 1)
+        bond_starts[i] = start index of bond i
+        bond_starts[n_bonds] = n_obs (sentinel)
+    lookback : int
+        Number of periods for momentum calculation (J)
+    skip : int
+        Number of periods to skip (most recent)
+
+    Returns
+    -------
+    np.ndarray
+        Signal values, shape (n_obs, n_filters)
+        signal = exp(rolling_sum) - 1, shifted by skip
+    """
+    n_obs, n_filters = logret_all.shape
+    signals = np.full((n_obs, n_filters), np.nan, dtype=np.float64)
+    n_bonds = len(bond_starts) - 1
+
+    # Parallel over bonds
+    for bond_idx in prange(n_bonds):
+        start = bond_starts[bond_idx]
+        end = bond_starts[bond_idx + 1]
+        bond_len = end - start
+
+        if bond_len < lookback + skip:
+            # Not enough observations for this bond
+            continue
+
+        # For each filter
+        for f in range(n_filters):
+            # Compute rolling sum for this bond's rows
+            # First, compute raw rolling sums (before skip shift)
+            raw_signals = np.full(bond_len, np.nan, dtype=np.float64)
+
+            for i in range(lookback - 1, bond_len):
+                window_sum = 0.0
+                valid = True
+                for j in range(i - lookback + 1, i + 1):
+                    val = logret_all[start + j, f]
+                    if np.isnan(val):
+                        valid = False
+                        break
+                    window_sum += val
+                if valid:
+                    raw_signals[i] = window_sum
+
+            # Apply skip (shift within bond) and exp transform
+            for i in range(skip, bond_len):
+                if not np.isnan(raw_signals[i - skip]):
+                    signals[start + i, f] = np.exp(raw_signals[i - skip]) - 1.0
+
+    return signals
+
+
+@njit(cache=True, parallel=True)
+def compute_ltreversal_signals_panel(
+    logret_all: np.ndarray,
+    bond_starts: np.ndarray,
+    lookback: int,
+    skip: int
+) -> np.ndarray:
+    """
+    Compute LT-Reversal signals for ALL filters in parallel over bonds.
+
+    LT-Reversal signal = cumulative return over (lookback) minus cumulative
+    return over (skip), i.e., long-term return excluding recent return.
+
+    This matches pandas groupby('ID').rolling() behavior exactly.
+
+    Parameters
+    ----------
+    logret_all : np.ndarray
+        Log returns for all filters, shape (n_obs, n_filters)
+        Data must be sorted by (ID, date)
+    bond_starts : np.ndarray
+        Array of indices where each bond starts, length (n_bonds + 1)
+    lookback : int
+        Number of periods for long-term calculation (J)
+    skip : int
+        Number of recent periods to exclude
+
+    Returns
+    -------
+    np.ndarray
+        Signal values, shape (n_obs, n_filters)
+    """
+    n_obs, n_filters = logret_all.shape
+    signals = np.full((n_obs, n_filters), np.nan, dtype=np.float64)
+    n_bonds = len(bond_starts) - 1
+
+    # Parallel over bonds
+    for bond_idx in prange(n_bonds):
+        start = bond_starts[bond_idx]
+        end = bond_starts[bond_idx + 1]
+        bond_len = end - start
+
+        if bond_len < lookback + skip:
+            continue
+
+        for f in range(n_filters):
+            # Compute rolling sums for lookback and skip windows
+            long_sums = np.full(bond_len, np.nan, dtype=np.float64)
+            recent_sums = np.full(bond_len, np.nan, dtype=np.float64)
+
+            # Long-term rolling sum (lookback periods)
+            for i in range(lookback - 1, bond_len):
+                window_sum = 0.0
+                valid = True
+                for j in range(i - lookback + 1, i + 1):
+                    val = logret_all[start + j, f]
+                    if np.isnan(val):
+                        valid = False
+                        break
+                    window_sum += val
+                if valid:
+                    long_sums[i] = window_sum
+
+            # Recent rolling sum (skip periods)
+            for i in range(skip - 1, bond_len):
+                window_sum = 0.0
+                valid = True
+                for j in range(i - skip + 1, i + 1):
+                    val = logret_all[start + j, f]
+                    if np.isnan(val):
+                        valid = False
+                        break
+                    window_sum += val
+                if valid:
+                    recent_sums[i] = window_sum
+
+            # Signal = long - recent, shifted by skip, then exp transform
+            for i in range(skip, bond_len):
+                idx = i - skip
+                if not np.isnan(long_sums[idx]) and not np.isnan(recent_sums[idx]):
+                    log_signal = long_sums[idx] - recent_sums[idx]
+                    signals[start + i, f] = np.exp(log_signal) - 1.0
+
+    return signals
+
+
+def get_bond_boundaries(id_values: np.ndarray) -> np.ndarray:
+    """
+    Find bond boundaries (where ID changes) in sorted panel data.
+
+    Parameters
+    ----------
+    id_values : np.ndarray
+        ID values for each observation, must be sorted by ID
+
+    Returns
+    -------
+    np.ndarray
+        Array of boundary indices, length (n_bonds + 1)
+        bond_starts[i] = start index of bond i
+        bond_starts[-1] = n_obs (sentinel)
+    """
+    n = len(id_values)
+    if n == 0:
+        return np.array([0], dtype=np.int64)
+
+    # Find where ID changes
+    changes = np.where(id_values[1:] != id_values[:-1])[0] + 1
+
+    # Add start (0) and end (n) sentinels
+    bond_starts = np.concatenate([
+        np.array([0], dtype=np.int64),
+        changes.astype(np.int64),
+        np.array([n], dtype=np.int64)
+    ])
+
+    return bond_starts

@@ -1027,9 +1027,45 @@ class DataUncertaintyAnalysis:
         if not self.use_fast_path:
             return False
         if self.strategy is not None:
-            return False
+            # Check if strategy can use fast path
+            return self._can_use_fast_strategy_path()
         if self.signals[0] is None:
             return False
+        return True
+
+    def _can_use_fast_strategy_path(self) -> bool:
+        """
+        Check if fast strategy path can be used for Momentum/LTreversal.
+
+        Fast strategy path requires:
+        - Strategy is Momentum or LTreversal
+        - no_gap=False, fill_na=False, drop_na=False (default NaN handling)
+
+        These restrictions exist because the numba kernels only implement
+        the default behavior (NaN propagates in rolling window).
+        """
+        if self.strategy is None:
+            return False
+
+        # Check if strategy is Momentum or LTreversal
+        if not isinstance(self.strategy, (Momentum, LTreversal)):
+            return False
+
+        # Check for non-default NaN handling options
+        # The numba kernels only implement default behavior
+        if getattr(self.strategy, 'no_gap', False):
+            if self.verbose:
+                print("Fast strategy path disabled: no_gap=True not supported")
+            return False
+        if getattr(self.strategy, 'fill_na', False):
+            if self.verbose:
+                print("Fast strategy path disabled: fill_na=True not supported")
+            return False
+        if getattr(self.strategy, 'drop_na', False):
+            if self.verbose:
+                print("Fast strategy path disabled: drop_na=True not supported")
+            return False
+
         return True
 
     def _apply_filters_vectorized(
@@ -1138,19 +1174,34 @@ class DataUncertaintyAnalysis:
 
         Combines results from all (signal × rating) combinations into
         a single DataUncertaintyResults object.
+
+        Routes to _fit_fast_strategy() for Momentum/LTreversal strategies,
+        or _fit_fast_single() for pre-computed signals.
         """
         t0 = time.time()
 
         n_filters = len(self._filter_configs)
-        n_signals = len(self.signals)
         n_ratings = len(self.ratings)
         n_hps = len(self.holding_periods)
 
-        if self.verbose:
-            print(f"DataUncertaintyAnalysis FAST PATH: {n_signals} signals × {n_ratings} ratings × {n_filters} filters × {n_hps} HPs")
-            print(f"  Signals: {self.signals}")
-            print(f"  Ratings: {self.ratings}")
-            print(f"  Holding periods: {self.holding_periods}")
+        # Check if using strategy-based signals
+        use_strategy_path = self.strategy is not None
+
+        if use_strategy_path:
+            strategy_name = self.strategy.__strategy_name__
+            if self.verbose:
+                print(f"DataUncertaintyAnalysis FAST STRATEGY PATH: {strategy_name}")
+                print(f"  Lookback: {self.strategy.lookback_period}, Skip: {self.strategy.skip}")
+                print(f"  Ratings: {self.ratings}")
+                print(f"  Filters: {n_filters}")
+                print(f"  Holding periods: {self.holding_periods}")
+        else:
+            n_signals = len(self.signals)
+            if self.verbose:
+                print(f"DataUncertaintyAnalysis FAST PATH: {n_signals} signals × {n_ratings} ratings × {n_filters} filters × {n_hps} HPs")
+                print(f"  Signals: {self.signals}")
+                print(f"  Ratings: {self.ratings}")
+                print(f"  Holding periods: {self.holding_periods}")
 
         # Accumulate results from all (signal × rating) combinations
         all_ew_ea = {}
@@ -1159,9 +1210,10 @@ class DataUncertaintyAnalysis:
         all_vw_ep = {}
         all_config_rows = []
 
-        for signal_col in self.signals:
+        if use_strategy_path:
+            # Route to strategy path
             for rating_cat in self.ratings:
-                result = self._fit_fast_single(signal_col, rating_cat)
+                result = self._fit_fast_strategy(rating_cat)
 
                 # Merge results
                 all_ew_ea.update(result['ew_ea'])
@@ -1169,6 +1221,18 @@ class DataUncertaintyAnalysis:
                 all_ew_ep.update(result['ew_ep'])
                 all_vw_ep.update(result['vw_ep'])
                 all_config_rows.extend(result['configs'])
+        else:
+            # Route to pre-computed signal path
+            for signal_col in self.signals:
+                for rating_cat in self.ratings:
+                    result = self._fit_fast_single(signal_col, rating_cat)
+
+                    # Merge results
+                    all_ew_ea.update(result['ew_ea'])
+                    all_vw_ea.update(result['vw_ea'])
+                    all_ew_ep.update(result['ew_ep'])
+                    all_vw_ep.update(result['vw_ep'])
+                    all_config_rows.extend(result['configs'])
 
         # Create DataFrames
         dates = self.data['date'].unique()
@@ -1408,6 +1472,283 @@ class DataUncertaintyAnalysis:
                 print(f"    HP={hp}: Processed {n_filters} filters in {time.time() - t_hp:.2f}s")
 
         # Return dict of results (will be combined in _fit_fast_all_signals)
+        return {
+            'ew_ea': ew_ea_dict,
+            'vw_ea': vw_ea_dict,
+            'ew_ep': ew_ep_dict,
+            'vw_ep': vw_ep_dict,
+            'configs': config_rows
+        }
+
+    # =========================================================================
+    # FAST STRATEGY PATH - Momentum/LTreversal with numba signal computation
+    # =========================================================================
+
+    def _fit_fast_strategy(
+        self,
+        rating_cat: Optional[str]
+    ) -> Dict[str, Any]:
+        """
+        FAST path for Momentum/LTreversal strategies.
+
+        Computes signals for ALL filters at once using panel-based numba kernels,
+        then uses the existing fast portfolio formation code.
+
+        Parameters
+        ----------
+        rating_cat : str or None
+            Rating category: 'IG', 'NIG', or None (all bonds)
+
+        Returns
+        -------
+        Dict with keys: 'ew_ea', 'vw_ea', 'ew_ep', 'vw_ep', 'configs'
+        """
+        from .numba_core import (
+            compute_momentum_signals_panel,
+            compute_ltreversal_signals_panel,
+            get_bond_boundaries,
+            compute_ranks_all_filters,
+            build_rank_lookups_all_filters,
+            compute_ls_returns_all_filters_hp1,
+            compute_ls_returns_all_filters_staggered
+        )
+
+        n_filters = len(self._filter_configs)
+        strategy = self.strategy
+        lookback = strategy.lookback_period
+        skip = strategy.skip
+        is_momentum = isinstance(strategy, Momentum)
+        strategy_name = 'momentum' if is_momentum else 'ltreversal'
+
+        # Rating suffix for column names
+        rating_suffix = f"_{rating_cat}" if rating_cat is not None else ""
+
+        # =====================================================================
+        # Step 1: Extract numpy arrays from DataFrame (ONCE)
+        # =====================================================================
+        data = self.data
+
+        # Build date and ID mappings
+        dates = data['date'].unique()
+        dates = np.sort(dates)
+        date_to_idx = {d: i for i, d in enumerate(dates)}
+        n_dates = len(dates)
+
+        ids = data['ID'].unique()
+        id_to_idx = {bond_id: i for i, bond_id in enumerate(ids)}
+        n_ids = len(ids)
+
+        # Extract arrays
+        date_idx = data['date'].map(date_to_idx).values.astype(np.int64)
+        id_idx = data['ID'].map(id_to_idx).values.astype(np.int64)
+        ret = data['ret'].values.astype(np.float64)
+        vw = data['VW'].values.astype(np.float64)
+
+        # Rating array for rating mask
+        rating_num = data['RATING_NUM'].values.astype(np.float64)
+
+        # Optional arrays for filters
+        price = data['PRICE'].values.astype(np.float64) if 'PRICE' in data.columns else None
+
+        # Compute ret_lag for bounce filters
+        has_bounce = any(fc.filter_type == 'bounce' for fc in self._filter_configs)
+        if has_bounce:
+            ret_lag = np.full(len(ret), np.nan, dtype=np.float64)
+            sort_idx = np.lexsort((date_idx, id_idx))
+            for i in range(1, len(sort_idx)):
+                curr = sort_idx[i]
+                prev = sort_idx[i - 1]
+                if id_idx[curr] == id_idx[prev]:
+                    ret_lag[curr] = ret[prev]
+        else:
+            ret_lag = None
+
+        # =====================================================================
+        # Step 2: Apply all filters to returns (vectorized)
+        # =====================================================================
+        t_filter = time.time()
+        filtered_returns, filter_names = self._apply_filters_vectorized(ret, price, ret_lag)
+        if self.verbose:
+            print(f"    Filters applied in {time.time() - t_filter:.2f}s")
+
+        # =====================================================================
+        # Step 3: Compute signal from ORIGINAL returns (not filtered!)
+        # =====================================================================
+        # IMPORTANT: For Momentum/LTreversal, the signal is computed from
+        # ORIGINAL returns, not filtered returns. The filter only affects:
+        # - Which bonds are included in ranking (bonds with NaN filtered returns excluded)
+        # - Which returns are used for EP (filtered returns)
+        t_signal = time.time()
+
+        # Sort data by (ID, date) for bond-wise processing
+        sort_idx = np.lexsort((date_idx, id_idx))
+        id_sorted = id_idx[sort_idx]
+        ret_sorted = ret[sort_idx]
+
+        # Compute log returns from ORIGINAL returns (single signal for all filters)
+        logret_sorted = np.log(ret_sorted + 1.0).reshape(-1, 1)
+
+        # Get bond boundaries
+        bond_starts = get_bond_boundaries(id_sorted)
+
+        # =====================================================================
+        # Step 4: Compute signal using numba kernel (single signal for all)
+        # =====================================================================
+        if is_momentum:
+            signal_sorted = compute_momentum_signals_panel(
+                logret_sorted, bond_starts, lookback, skip
+            )[:, 0]  # Shape (n_obs,)
+        else:
+            signal_sorted = compute_ltreversal_signals_panel(
+                logret_sorted, bond_starts, lookback, skip
+            )[:, 0]  # Shape (n_obs,)
+
+        # Un-sort signal back to original order
+        unsort_idx = np.argsort(sort_idx)
+        signal = signal_sorted[unsort_idx]
+
+        if self.verbose:
+            print(f"    Signals computed in {time.time() - t_signal:.2f}s")
+
+        # =====================================================================
+        # Step 5: Build rating mask (formation-date eligibility)
+        # =====================================================================
+        if rating_cat == 'IG':
+            rating_mask = (rating_num >= 1) & (rating_num <= 10)
+        elif rating_cat == 'NIG':
+            rating_mask = (rating_num >= 11) & (rating_num <= 22)
+        else:
+            rating_mask = np.ones(len(ret), dtype=np.bool_)
+
+        # =====================================================================
+        # Step 6: Build filter masks for ALL filters (combined with rating mask)
+        # =====================================================================
+        # For strategy-based signals, ranking is based on the SAME signal (from original returns)
+        # The filter mask determines which bonds are eligible for ranking:
+        # - Valid signal (not NaN)
+        # - Valid rating (if applicable)
+        # - For trim/price/bounce: valid filtered return (not NaN) - these bonds are excluded
+        # - For baseline/wins: all bonds with valid signal are included
+        filter_masks = np.zeros((len(ret), n_filters), dtype=np.bool_)
+        wins_filter_indices = []
+
+        # Base mask: valid signal AND valid rating
+        base_mask = ~np.isnan(signal) & rating_mask
+
+        for f_idx, fc in enumerate(self._filter_configs):
+            if fc.filter_type in ('baseline', 'wins'):
+                # Baseline and wins: include all bonds with valid signal
+                filter_masks[:, f_idx] = base_mask
+            else:
+                # Trim/price/bounce: also require valid filtered return
+                filter_masks[:, f_idx] = base_mask & ~np.isnan(filtered_returns[:, f_idx])
+
+            if fc.filter_type == 'wins':
+                wins_filter_indices.append(f_idx)
+
+        # =====================================================================
+        # Step 7: Compute ranks for ALL filters at once (PARALLEL)
+        # =====================================================================
+        t_ranks = time.time()
+        nport = self.num_portfolios
+
+        # All filters use the SAME signal, but different masks determine eligible bonds
+        ranks_all = compute_ranks_all_filters(
+            date_idx, signal, filter_masks, n_dates, nport, n_filters
+        )
+
+        if self.verbose:
+            print(f"    Ranks computed in {time.time() - t_ranks:.2f}s")
+
+        # =====================================================================
+        # Step 8: Build rank lookup tables for ALL filters
+        # =====================================================================
+        t_lookup = time.time()
+        rank_lookups = build_rank_lookups_all_filters(
+            date_idx, id_idx, ranks_all, n_dates, n_ids, n_filters
+        )
+        if self.verbose:
+            print(f"    Rank lookups built in {time.time() - t_lookup:.2f}s")
+
+        # =====================================================================
+        # Step 9: Build VW lookup table (for HP > 1 and VW from d-1)
+        # =====================================================================
+        vw_lookup = np.full(n_dates * n_ids, np.nan, dtype=np.float64)
+        for i in range(len(date_idx)):
+            d = date_idx[i]
+            bond_id = id_idx[i]
+            if d >= 0 and d < n_dates and bond_id >= 0 and bond_id < n_ids:
+                vw_lookup[d * n_ids + bond_id] = vw[i]
+
+        # Build VW from d-1 for HP=1 case
+        vw_d_minus_1 = np.full(len(ret), np.nan, dtype=np.float64)
+        for i in range(len(date_idx)):
+            d = date_idx[i]
+            bond_id = id_idx[i]
+            if d > 0:
+                lookup_idx = (d - 1) * n_ids + bond_id
+                if lookup_idx >= 0 and lookup_idx < len(vw_lookup):
+                    vw_d_minus_1[i] = vw_lookup[lookup_idx]
+
+        # =====================================================================
+        # Step 10: Compute returns for ALL (HP, filter) combinations (PARALLEL)
+        # =====================================================================
+        ew_ea_dict = {}
+        vw_ea_dict = {}
+        ew_ep_dict = {}
+        vw_ep_dict = {}
+        config_rows = []
+
+        for hp in self.holding_periods:
+            t_hp = time.time()
+
+            if hp == 1:
+                # HP=1: Use optimized kernel
+                ew_ea_ls, vw_ea_ls, ew_ep_ls, vw_ep_ls = compute_ls_returns_all_filters_hp1(
+                    date_idx, id_idx, ret, filtered_returns, vw_d_minus_1,
+                    rank_lookups, n_dates, n_ids, nport, n_filters
+                )
+            else:
+                # HP>1: Use staggered rebalancing kernel
+                ew_ea_ls, vw_ea_ls, ew_ep_ls, vw_ep_ls = compute_ls_returns_all_filters_staggered(
+                    date_idx, id_idx, ret, filtered_returns, vw_lookup,
+                    rank_lookups, n_dates, n_ids, nport, n_filters, hp, self.dynamic_weights
+                )
+
+            # Extract results for each filter
+            for f_idx, fc in enumerate(self._filter_configs):
+                # Column name includes strategy, hp, filter, and rating suffix
+                col_name = f"{strategy_name}_hp{hp}_{fc.get_column_suffix()}{rating_suffix}"
+                is_wins = fc.filter_type == 'wins'
+
+                if is_wins:
+                    # For wins filter:
+                    # - EA is NaN (ranking unchanged from baseline, would be identical)
+                    # - EP uses winsorized returns
+                    ew_ea_dict[col_name] = np.full(n_dates, np.nan)
+                    vw_ea_dict[col_name] = np.full(n_dates, np.nan)
+                    ew_ep_dict[col_name] = ew_ep_ls[:, f_idx]
+                    vw_ep_dict[col_name] = vw_ep_ls[:, f_idx]
+                else:
+                    ew_ea_dict[col_name] = ew_ea_ls[:, f_idx]
+                    vw_ea_dict[col_name] = vw_ea_ls[:, f_idx]
+                    ew_ep_dict[col_name] = ew_ep_ls[:, f_idx]
+                    vw_ep_dict[col_name] = vw_ep_ls[:, f_idx]
+
+                config_rows.append({
+                    'column_name': col_name,
+                    'signal': strategy_name,
+                    'hp': hp,
+                    'rating': rating_cat,
+                    'filter_type': fc.filter_type,
+                    'level': fc.level,
+                    'location': fc.location
+                })
+
+            if self.verbose:
+                print(f"    HP={hp}: Processed {n_filters} filters in {time.time() - t_hp:.2f}s")
+
+        # Return dict of results
         return {
             'ew_ea': ew_ea_dict,
             'vw_ea': vw_ea_dict,
