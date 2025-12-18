@@ -1177,16 +1177,12 @@ class StrategyFormation:
         return results
 
     def _can_use_nonstaggered_fast_path(self) -> bool:
-        """Check if fast non-staggered returns-only path can be used."""
+        """Check if fast non-staggered path can be used.
+
+        Phase 15b: Now supports turnover, chars, and banding!
+        """
         # Must be non-staggered rebalancing
         if self.rebalance_frequency == 'monthly':
-            return False
-        # Fast path requires: no turnover, no chars, no banding
-        if self.turnover:
-            return False
-        if self.chars:
-            return False
-        if self.banding_threshold is not None:
             return False
         # Only SingleSort supported (no DoubleSort)
         is_double = getattr(self.strategy, "double_sort", 0) or getattr(self.strategy, "DoubleSort", 0)
@@ -1195,6 +1191,7 @@ class StrategyFormation:
         # Disable fast path for filters - need to validate filter handling first
         if self.config.has_filters:
             return False
+        # Phase 15b: turnover, chars, and banding are now supported
         return True
 
     def _fit_nonstaggered_fast(self):
@@ -1206,24 +1203,29 @@ class StrategyFormation:
         2. Uses parallel numba kernels for return computation
         3. Bypasses pandas precomputation entirely
 
+        Phase 15b: Now supports turnover, chars, and banding!
+
         Requirements:
         - Non-staggered rebalancing (quarterly, semi-annual, annual)
-        - turnover=False
-        - chars=None
-        - banding=None
         - SingleSort only
         """
         from .numba_core import (
-            compute_ranks_at_rebal_dates,
-            build_rank_lookup_nonstaggered,
-            compute_nonstaggered_returns_fast,
-            build_vw_lookup_table,
+            compute_nonstaggered_full_fast,
             compute_nonstaggered_ls_returns,
+            build_vw_lookup_table,
         )
         from .utils_optimized import _get_rebalancing_dates
 
         if self.verbose:
-            print(f"Using ULTRA-FAST non-staggered path ({self.rebalance_frequency})...")
+            features = []
+            if self.turnover:
+                features.append("turnover")
+            if self.chars:
+                features.append("chars")
+            if self.banding_threshold is not None:
+                features.append("banding")
+            feature_str = f" ({', '.join(features)})" if features else ""
+            print(f"Using ULTRA-FAST non-staggered path ({self.rebalance_frequency}){feature_str}...")
 
         TM = len(self.datelist)
         tot_nport = self._get_total_portfolios()
@@ -1271,28 +1273,30 @@ class StrategyFormation:
         ret = data[ret_col].values.astype(np.float64)
         vw = data[ColumnNames.VALUE_WEIGHT].values.astype(np.float64)
 
-        # Step 1: Compute ranks at rebalancing dates only
-        ranks = compute_ranks_at_rebal_dates(
-            date_idx, signal, rebal_dates_idx, TM, tot_nport
-        )
-
-        # Step 2: Build rank lookup table
-        rank_lookups = build_rank_lookup_nonstaggered(
-            date_idx, id_idx, ranks, rebal_dates_idx, TM, n_ids
-        )
-
-        # Step 3: Build VW lookup table
+        # Build VW lookup table
         vw_lookup = build_vw_lookup_table(date_idx, id_idx, vw, TM, n_ids)
 
-        # Step 4: Compute returns for all (rebal, return) pairs
-        ew_ret_arr, vw_ret_arr = compute_nonstaggered_returns_fast(
-            date_idx, id_idx, ret, vw,
-            rebal_dates_idx, self.hor,
-            rank_lookups, TM, n_ids, tot_nport,
-            self.dynamic_weights, vw_lookup
-        )
+        # Prepare characteristics array if needed
+        n_chars = len(self.chars) if self.chars else 0
+        if n_chars > 0:
+            char_values = np.column_stack([
+                data[c].values.astype(np.float64) for c in self.chars
+            ])
+        else:
+            char_values = np.empty((len(data), 0), dtype=np.float64)
 
-        # Step 5: Compute long-short returns
+        # Banding threshold (-1 means no banding)
+        banding = self.banding_threshold if self.banding_threshold is not None else -1.0
+
+        # Call the full-featured numba kernel
+        ew_ret_arr, vw_ret_arr, ew_turn_arr, vw_turn_arr, ew_chars_arr, vw_chars_arr = \
+            compute_nonstaggered_full_fast(
+                date_idx, id_idx, signal, ret, vw, char_values,
+                rebal_dates_idx, self.hor, TM, n_ids, tot_nport, n_chars,
+                self.turnover, n_chars > 0, banding, self.dynamic_weights, vw_lookup
+            )
+
+        # Compute long-short returns
         ew_ls, vw_ls = compute_nonstaggered_ls_returns(ew_ret_arr, vw_ret_arr, tot_nport)
 
         # Build results structure
@@ -1327,6 +1331,34 @@ class StrategyFormation:
         ew_short_df = pd.DataFrame(ew_short, index=self.datelist, columns=[f'SHORT_{prefix}_{self.name}'])
         vw_short_df = pd.DataFrame(vw_short, index=self.datelist, columns=[f'SHORT_{vw_prefix}_{self.name}'])
 
+        # Process turnover if computed
+        if self.turnover:
+            # Skip first row (no turnover at first rebalancing)
+            ew_turnover_df = pd.DataFrame(
+                ew_turn_arr[1:, :], index=self.datelist[1:], columns=ptf_labels
+            )
+            vw_turnover_df = pd.DataFrame(
+                vw_turn_arr[1:, :], index=self.datelist[1:], columns=ptf_labels
+            )
+        else:
+            ew_turnover_df = None
+            vw_turnover_df = None
+
+        # Process characteristics if computed
+        if n_chars > 0:
+            chars_ew = {}
+            chars_vw = {}
+            for c_idx, c_name in enumerate(self.chars):
+                chars_ew[c_name] = pd.DataFrame(
+                    ew_chars_arr[:, c_idx, :], index=self.datelist, columns=ptf_labels
+                )
+                chars_vw[c_name] = pd.DataFrame(
+                    vw_chars_arr[:, c_idx, :], index=self.datelist, columns=ptf_labels
+                )
+        else:
+            chars_ew = None
+            chars_vw = None
+
         # Build and return StrategyResults (same format as slow path)
         return build_strategy_results(
             ewport_df=ew_df,
@@ -1337,10 +1369,10 @@ class StrategyFormation:
             vwls_long_df=vw_long_df,
             ewls_short_df=ew_short_df,
             vwls_short_df=vw_short_df,
-            turnover_ew_df=None,
-            turnover_vw_df=None,
-            chars_ew=None,
-            chars_vw=None,
+            turnover_ew_df=ew_turnover_df,
+            turnover_vw_df=vw_turnover_df,
+            chars_ew=chars_ew,
+            chars_vw=chars_vw,
         )
 
     def _can_use_fast_path(self) -> bool:
