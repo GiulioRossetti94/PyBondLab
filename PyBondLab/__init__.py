@@ -13,6 +13,13 @@ except ImportError as e:
     print(f"Warning: Could not import batch processing: {e}")
     BatchStrategyFormation = BatchResults = batch_single_sort = None
 
+# Batch WithinFirmSort processing
+try:
+    from .batch_withinfirm import BatchWithinFirmSortFormation
+except ImportError as e:
+    print(f"Warning: Could not import BatchWithinFirmSortFormation: {e}")
+    BatchWithinFirmSortFormation = None
+
 # Strategy classes
 try:
     from .StrategyClass import SingleSort, DoubleSort, Momentum, LTreversal, WithinFirmSort
@@ -75,6 +82,7 @@ __all__ = [
     'StrategyFormation',
     'load_breakpoints_WRDS',
     'BatchStrategyFormation',
+    'BatchWithinFirmSortFormation',
     'BatchResults',
     'batch_single_sort',
     'SingleSort',
