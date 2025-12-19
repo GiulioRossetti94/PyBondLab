@@ -2135,13 +2135,72 @@ Added `compute_within_firm_aggregation_fast()` numba kernel that:
 
 #### Phase 16d: Create Ultra-Fast Path for WithinFirmSort
 
-**Status: ⏳ IN PROGRESS**
+**Status: ❌ FAILED - REVERTED**
 
-Similar to SingleSort ultra-fast path (for `turnover=False`, `chars=None`):
-1. Bypass `_precompute_data()` entirely
-2. Convert DataFrame to numpy arrays once
-3. Use parallel numba kernels for all computation
-4. Vectorize within-firm assignment and hierarchical aggregation
+An attempt was made to create an ultra-fast path for WithinFirmSort similar to SingleSort.
+The implementation was reverted due to critical issues.
+
+**What Was Attempted:**
+1. Add `compute_within_firm_assignments_all_dates()` numba kernel for parallel portfolio assignment
+2. Add `_can_use_withinfirm_fast_path()` to detect when fast path is applicable
+3. Add `_fit_withinfirm_fast()` for ultra-fast WithinFirmSort execution
+4. Bypass `_precompute_data()` entirely and work directly with numpy arrays
+
+**Critical Issues Discovered:**
+
+1. **Severe Performance Regression:**
+   - Fast path took 105+ seconds on real data (2.4M rows, 50k cusips)
+   - Slow path was ~15 seconds
+   - Root cause: Python loops iterating over (n_dates × n_bonds) to collect returns
+   - The approach was fundamentally wrong - needed numba vectorization, not Python loops
+
+2. **Incorrect Result Indexing:**
+   - Fast path indexed results by FORMATION date
+   - This does NOT match SingleSort/DoubleSort which index by RETURN date
+   - WithinFirmSort should align with standard strategies for consistency
+
+3. **Potential HP>1 Bug in Slow Path (NEEDS INVESTIGATION):**
+   - For HP>1, `port_idx` dictionary is overwritten in the loop over horizons `h`
+   - Only the LAST horizon's data (h=hp-1) is retained in `port_idx`
+   - This means `compute_within_firm_returns_aggregation()` only sees one horizon's returns
+   - **Expected behavior**: For HP=3, each return should be average of 3 cohorts
+   - **Actual behavior**: Only uses returns from `form_date + hp` (last horizon)
+   - This may be a BUG in the slow path that needs fixing BEFORE fast path work
+
+**Evidence of HP>1 Issue:**
+```python
+# In _form_cohort_portfolios, for HP=3:
+for h in range(self.hor):  # h = 0, 1, 2
+    # ... calls _form_single_period ...
+    # At end of loop:
+    self.port_idx[date_t] = weights_df  # OVERWRITES each iteration!
+# Result: port_idx[date_t] only contains h=2 data (return at form_date + 3)
+```
+
+Tested with synthetic data where returns differ by date:
+- Formation date 0: port_idx stores return from date 3 (not average of dates 1, 2, 3)
+- Formation date 1: port_idx stores return from date 4 (not average of dates 2, 3, 4)
+
+**What Needs To Be Done:**
+
+1. **FIRST: Fix HP>1 behavior in slow path (if it's a bug)**
+   - Investigate whether `port_idx` overwrite is intentional or a bug
+   - If bug: Modify to store all horizon returns and average properly
+   - If intentional: Document the rationale clearly
+
+2. **THEN: Implement fast path correctly**
+   - Use vectorized numba kernels (not Python loops)
+   - Index results by RETURN date (matching SingleSort/DoubleSort)
+   - For HP>1, implement proper cohort averaging
+   - Target: Match slow path results exactly, then optimize
+
+3. **Design Considerations for Correct Fast Path:**
+   - Build rank lookup table: `(form_date, bond_id) -> (rank, rating_terc, firm_idx, vw)`
+   - For each return date, look up ranks from all contributing formation dates
+   - Collect returns and aggregate with proper cohort averaging
+   - Use prange parallelization for the return collection loop
+
+**Reverted Commit:** `a88ad94` was reverted to `34f291c`
 
 #### Phase 16e: Implement Chars Support
 
