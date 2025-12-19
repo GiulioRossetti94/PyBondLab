@@ -2090,40 +2090,39 @@ formation month using the same hierarchical aggregation as returns:
 
 #### Phase 16a: Profile and Identify Bottlenecks
 
-**Status: Pending**
+**Status: ✅ COMPLETE**
 
-1. Profile the current slow path to identify where time is spent
-2. Key areas to investigate:
-   - `compute_within_firm_portfolios()` - groupby operations
-   - `compute_within_firm_returns_aggregation()` - per-date looping
-   - Precompute integration overhead
+Profiling revealed aggregation as the major bottleneck (78% of time):
+- `compute_within_firm_returns_aggregation()`: **6.49s (78%)**
+- `_precompute_data()`: 1.15s (14%)
+- `_form_cohort_portfolios()`: 0.63s (8%)
+- Portfolio assignment: 0.02s (<1%)
+
+The pandas-based nested loop aggregation (60 dates × 3 ratings × ~20 firms) was the culprit.
 
 #### Phase 16b: Vectorize Portfolio Assignment
 
-**Status: Pending**
+**Status: Pending** (Low priority - only 0.02s)
 
-Current bottleneck in `compute_within_firm_portfolios()`:
+Current implementation in `compute_within_firm_portfolios()`:
 - Creates pandas groupby for (date, rating_terc, firm)
 - Calls numba kernel per group
-
-Optimization approach:
-1. Pre-sort data by (date, rating_terc, firm)
-2. Find group boundaries once (similar to Phase 12's `get_bond_boundaries()`)
-3. Process all groups in parallel using `prange`
+- Already fast (~0.02s), not a bottleneck
 
 #### Phase 16c: Vectorize Return Aggregation
 
-**Status: Pending**
+**Status: ✅ COMPLETE**
 
-Current bottleneck in `compute_within_firm_returns_aggregation()`:
-- Loops through each date
-- For each date, loops through rating terciles
-- For each rating tercile, loops through firms
+Added `compute_within_firm_aggregation_fast()` numba kernel that:
+1. Single-pass accumulation over all (date, rating_terc, firm, portfolio) groups
+2. Vectorized firm-level H-L factor computation
+3. Vectorized cap-weighted aggregation across firms
+4. Vectorized averaging across rating terciles
 
-Optimization approach:
-1. Pre-compute all firm-level returns in parallel
-2. Use vectorized aggregation across firms and ratings
-3. Avoid per-date DataFrame operations
+**Performance:**
+- Aggregation kernel: **0.0001s** (was 2.8s = **40,000x speedup**)
+- Including prep: 0.008s (= **350x speedup**)
+- Overall: **3-4x speedup** (bottleneck moved elsewhere)
 
 #### Phase 16d: Create Ultra-Fast Path for WithinFirmSort
 
@@ -2154,14 +2153,24 @@ Create fast path that supports turnover and/or chars:
 2. Maintain exact numerical match with slow path
 3. Target 5-10x speedup over current implementation
 
-### Target Performance
+### Performance Results (Phase 16c)
 
-| Configuration | Current | Target | Target Speedup |
-|---------------|---------|--------|----------------|
-| HP=1, no turnover, no chars | ~3.8s | <0.5s | **7x+** |
-| HP=3, no turnover, no chars | ~4.2s | <0.6s | **7x+** |
-| HP=1, with turnover | ~3.7s | <1.0s | **4x+** |
-| HP=1, with chars | TBD | TBD | **5x+** |
+| Configuration | Before | After | Achieved Speedup |
+|---------------|--------|-------|------------------|
+| HP=1, no turnover | 3.8s | **0.94s** | **4.0x** ✅ |
+| HP=1, with turnover | 3.7s | **0.94s** | **3.9x** ✅ |
+| HP=3, no turnover | 4.2s | **1.50s** | **2.8x** |
+| HP=3, with turnover | 4.3s | **1.56s** | **2.8x** |
+
+*Test data: 11,940 rows, 199 bonds, 50 firms, 60 dates*
+
+### Target Performance (Future Phases)
+
+| Configuration | Current | Target | Status |
+|---------------|---------|--------|--------|
+| HP=1, no turnover, no chars | 0.94s | <0.5s | Phase 16d |
+| HP=3, no turnover, no chars | 1.50s | <0.6s | Phase 16d |
+| HP=1, with chars | TBD | TBD | Phase 16e |
 
 ### Validation Script
 
