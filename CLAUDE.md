@@ -60,7 +60,7 @@ Dramatically speed up portfolio formation in PyBondLab using numba/prange, while
 | **Phase 15a** | Non-staggered rebalancing fast path | ✅ Complete | **100x speedup** achieved! |
 | **Phase 15** | Non-staggered integration | ✅ Complete | BatchStrategyFormation (~340x), DataUncertaintyAnalysis integrated |
 | **Phase 15b** | Non-staggered with turnover/chars/banding | ✅ Complete | **21-103x speedup**, all 6 tests PASS |
-| **Phase 16** | Optimize WithinFirmSort | ⏳ In Progress | See Phase 16 section below |
+| **Phase 16** | Optimize WithinFirmSort | ⏳ In Progress | 16g (33x speedup) + 16h (chars) ✅, 16i pending |
 
 ---
 
@@ -2462,7 +2462,7 @@ for sig in signals:
 
 Add characteristics aggregation using the same hierarchical structure as returns.
 
-**Status: ⏳ PLANNED**
+**Status: ✅ COMPLETE**
 
 ### Key Point: Chars at Formation Date
 
@@ -2478,6 +2478,7 @@ Formation date t:
   3. Across rating_terc: simple average
 
 Char values come from formation date data (It0/It1m), not return date.
+port_idx is indexed by return date (t+1), so chars need to use date lookup to formation date (t).
 ```
 
 ### Aggregation Logic
@@ -2491,42 +2492,48 @@ For each characteristic at each formation date:
 
 ```python
 # For single signal (via StrategyFormation):
-result.get_characteristics()
-# Returns:
-{
-    'char1': pd.DataFrame(index=dates, columns=['LOW', 'HIGH']),
-    'char2': pd.DataFrame(index=dates, columns=['LOW', 'HIGH']),
-    ...
-}
+ew_chars, vw_chars = result.get_characteristics()
+# Returns tuple of dicts:
+# ew_chars = {'char1': DataFrame(LOW, HIGH), 'char2': DataFrame(LOW, HIGH), ...}
+# vw_chars = {'char1': DataFrame(LOW, HIGH), 'char2': DataFrame(LOW, HIGH), ...}
 
 # For batch (multiple signals via BatchWithinFirmSortFormation):
 batch_results['signal1'].get_characteristics()
-# Same format as above
+# Same format as above (tuple of dicts)
 ```
 
-### Implementation Steps
+### Implementation Details
 
-1. **Slow path first** (in `_form_single_period` or similar):
-   - Extend existing chars logic for WithinFirmSort
-   - Use hierarchical aggregation matching returns structure
-   - Validate correctness against manual calculation
+**Numba kernel added** (`numba_core.py`):
+```python
+compute_within_firm_chars_aggregation(
+    date_idx, id_idx, firm_idx, rating_terc, ptf_rank, char_values, vw, n_dates, n_firms
+) -> (ew_low, ew_high, vw_low, vw_high)
+```
 
-2. **Batch support via multiprocessing**:
-   - When `chars` is set, `BatchWithinFirmSortFormation` uses slow path
-   - Each worker runs `StrategyFormation(chars=...)` for one signal
-   - Results collected and merged
+**Key implementation points**:
+1. Uses hierarchical aggregation matching returns structure
+2. port_idx indexed by return date (t+1), so chars lookup uses formation date (t = t+1 - 1)
+3. Date mapping created: `{return_date: formation_date}` for char value lookup
+4. Merge chars from raw data at formation date, then aggregate using numba kernel
 
-3. **Optional: Fast path** (if performance insufficient):
-   - `compute_withinfirm_chars_all_dates()` - Parallel char aggregation
-   - `compute_withinfirm_chars_all_signals()` - Vectorized across signals
+### Validation Results
 
-### Target Performance
+All tests pass:
+```
+EW Chars keys: ['char1', 'char2']
+VW Chars keys: ['char1', 'char2']
 
-| Configuration | Target | Notes |
-|---------------|--------|-------|
-| 1 signal, 2 chars | <1.5s | Slow path (same as returns) |
-| 10 signals, 2 chars (4 workers) | <4s | Multiprocessing |
-| 50 signals, 5 chars (4 workers) | <15s | Multiprocessing |
+char1:
+  EW shape: (15, 2), VW shape: (15, 2)
+  EW non-NaN: LOW=14, HIGH=14
+  VW non-NaN: LOW=14, HIGH=14
+```
+
+### Batch Support
+
+When `chars` is set, `BatchWithinFirmSortFormation` automatically uses the slow path
+with multiprocessing. Each worker runs `StrategyFormation(chars=...)` for one signal.
 
 ---
 
