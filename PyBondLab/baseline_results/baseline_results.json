@@ -38,7 +38,7 @@
     "chars_ew_means": null,
     "chars_vw_means": null,
     "n_dates": 60,
-    "runtime_seconds": 0.3160245418548584
+    "runtime_seconds": 8.97307276725769
   },
   "test_02_single_hp1_noband_turn": {
     "test_name": "test_02_single_hp1_noband_turn",
@@ -91,7 +91,7 @@
     "chars_ew_means": null,
     "chars_vw_means": null,
     "n_dates": 60,
-    "runtime_seconds": 0.6772720813751221
+    "runtime_seconds": 2.1185333728790283
   },
   "test_03_single_hp1_band1_turn": {
     "test_name": "test_03_single_hp1_band1_turn",
@@ -144,7 +144,7 @@
     "chars_ew_means": null,
     "chars_vw_means": null,
     "n_dates": 60,
-    "runtime_seconds": 0.6635332107543945
+    "runtime_seconds": 0.6589465141296387
   },
   "test_04_single_hp1_band2_turn": {
     "test_name": "test_04_single_hp1_band2_turn",
@@ -197,7 +197,7 @@
     "chars_ew_means": null,
     "chars_vw_means": null,
     "n_dates": 60,
-    "runtime_seconds": 0.6398887634277344
+    "runtime_seconds": 0.6629555225372314
   },
   "test_05_single_hp3_noband_turn": {
     "test_name": "test_05_single_hp3_noband_turn",
@@ -250,7 +250,7 @@
     "chars_ew_means": null,
     "chars_vw_means": null,
     "n_dates": 60,
-    "runtime_seconds": 1.2919249534606934
+    "runtime_seconds": 1.2981517314910889
   },
   "test_06_single_hp3_band1_turn": {
     "test_name": "test_06_single_hp3_band1_turn",
@@ -303,7 +303,7 @@
     "chars_ew_means": null,
     "chars_vw_means": null,
     "n_dates": 60,
-    "runtime_seconds": 1.6115987300872803
+    "runtime_seconds": 1.5323286056518555
   },
   "test_07_double_uncond_hp1_noband_turn": {
     "test_name": "test_07_double_uncond_hp1_noband_turn",
@@ -436,7 +436,7 @@
     "chars_ew_means": null,
     "chars_vw_means": null,
     "n_dates": 60,
-    "runtime_seconds": 0.5690534114837646
+    "runtime_seconds": 0.7212295532226562
   },
   "test_08_double_cond_hp1_noband_turn": {
     "test_name": "test_08_double_cond_hp1_noband_turn",
@@ -569,7 +569,7 @@
     "chars_ew_means": null,
     "chars_vw_means": null,
     "n_dates": 60,
-    "runtime_seconds": 0.6413464546203613
+    "runtime_seconds": 3.1200335025787354
   },
   "test_09_double_uncond_hp3_band1_turn": {
     "test_name": "test_09_double_uncond_hp3_band1_turn",
@@ -702,7 +702,7 @@
     "chars_ew_means": null,
     "chars_vw_means": null,
     "n_dates": 60,
-    "runtime_seconds": 1.652618169784546
+    "runtime_seconds": 1.7741949558258057
   },
   "test_10_double_cond_hp3_band1_turn": {
     "test_name": "test_10_double_cond_hp3_band1_turn",
@@ -835,7 +835,7 @@
     "chars_ew_means": null,
     "chars_vw_means": null,
     "n_dates": 60,
-    "runtime_seconds": 1.6487860679626465
+    "runtime_seconds": 1.6028120517730713
   },
   "test_11_single_hp1_turn_chars2": {
     "test_name": "test_11_single_hp1_turn_chars2",
@@ -906,22 +906,22 @@
     },
     "chars_vw_means": {
       "char1": [
-        0.017139623434017592,
-        -0.10244032991660593,
-        -0.2401303549605864,
+        0.017139623434017582,
+        -0.10244032991660597,
+        -0.24013035496058632,
         0.10421425256939584,
-        -0.057310238584256094
+        -0.05731023858425616
       ],
       "char2": [
-        -0.27639610116443636,
+        -0.2763961011644363,
         0.06369145246508935,
-        -0.1376356205630684,
-        0.028396299016124036,
-        -0.1939062225656595
+        -0.13763562056306833,
+        0.02839629901612402,
+        -0.19390622256565954
       ]
     },
     "n_dates": 60,
-    "runtime_seconds": 1.5536301136016846
+    "runtime_seconds": 0.6468994617462158
   },
   "test_12_single_hp3_band1_turn_chars3": {
     "test_name": "test_12_single_hp3_band1_turn_chars3",
@@ -1001,27 +1001,27 @@
     "chars_vw_means": {
       "char1": [
         -0.04126001200018746,
-        -0.07276113489858074,
-        -0.14185586296476996,
-        0.08644581615755573,
-        -0.1173337178045902
+        -0.07276113489858076,
+        -0.14185586296476993,
+        0.08644581615755571,
+        -0.11733371780459023
       ],
       "char2": [
         -0.191919352917665,
-        0.02069960169452604,
+        0.020699601694526,
         -0.15796086301566703,
         -0.11170812458972389,
         -0.06611341793587218
       ],
       "char3": [
-        -0.018640035232697985,
-        0.0840344747175759,
-        0.008044214345346521,
-        0.003531713117303733,
-        0.09068639902220597
+        -0.018640035232697933,
+        0.08403447471757589,
+        0.008044214345346527,
+        0.003531713117303731,
+        0.09068639902220599
       ]
     },
     "n_dates": 60,
-    "runtime_seconds": 2.2917063236236572
+    "runtime_seconds": 2.1120002269744873
   }
 }

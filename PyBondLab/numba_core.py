@@ -234,7 +234,7 @@ def compute_scaled_weights_single(
     return ew_scaled, vw_scaled
 
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)  # Note: fastmath=True breaks NaN comparisons, do not use here
 def compute_characteristics_single(
     ranks: np.ndarray,
     weights: np.ndarray,
