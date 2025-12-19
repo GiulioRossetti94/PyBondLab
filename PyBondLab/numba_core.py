@@ -4450,7 +4450,7 @@ def build_ret_lookup(
     return ret_lookup
 
 
-@njit(cache=True, parallel=True)
+@njit(cache=True)
 def compute_nonstaggered_full_fast(
     date_idx: np.ndarray,
     id_idx: np.ndarray,
@@ -4475,52 +4475,11 @@ def compute_nonstaggered_full_fast(
 
     This is the main entry point for Phase 15b optimization.
 
-    Parameters
-    ----------
-    date_idx : np.ndarray
-        Date index for each observation
-    id_idx : np.ndarray
-        Bond ID index for each observation
-    signal : np.ndarray
-        Signal values for ranking
-    ret : np.ndarray
-        Returns
-    vw : np.ndarray
-        Value weights
-    char_values : np.ndarray
-        Characteristic values, shape (n_obs, n_chars) or (n_obs,) if n_chars=1
-    rebal_date_indices : np.ndarray
-        Indices of rebalancing dates
-    hp : int
-        Holding period
-    n_dates : int
-        Total number of dates
-    n_ids : int
-        Total number of bonds
-    nport : int
-        Number of portfolios
-    n_chars : int
-        Number of characteristics (0 if not computing chars)
-    compute_turnover : bool
-        Whether to compute turnover
-    compute_chars : bool
-        Whether to compute characteristics
-    banding_threshold : float
-        Banding threshold (use -1.0 if no banding)
-    dynamic_weights : bool
-        Whether to use dynamic weights
-    vw_lookup : np.ndarray
-        VW lookup table, shape (n_dates, n_ids)
-
-    Returns
-    -------
-    Tuple containing:
-        - ew_ret: shape (n_dates, nport)
-        - vw_ret: shape (n_dates, nport)
-        - ew_turnover: shape (n_dates, nport)
-        - vw_turnover: shape (n_dates, nport)
-        - ew_chars: shape (n_dates, n_chars, nport) or empty if not computing
-        - vw_chars: shape (n_dates, n_chars, nport) or empty if not computing
+    Turnover is computed at EVERY date (not just rebalancing dates) to match
+    the slow path behavior. At each date:
+    1. Current raw weights from VW at that date
+    2. Previous scaled weights: prev_weight * (1 + bond_ret) / (1 + ptf_ret)
+    3. Turnover = prev_sum + curr_sum - 2 * sum_min
     """
     n_obs = len(date_idx)
     n_rebal = len(rebal_date_indices)
@@ -4547,46 +4506,59 @@ def compute_nonstaggered_full_fast(
         if not np.isnan(r):
             ret_lookup[d, bond] = r
 
-    # Rank lookup for current rebalancing period
+    # Build characteristics lookup for computing chars at return dates
+    # Shape: (n_dates, n_ids, n_chars)
+    if compute_chars and n_chars > 0:
+        char_lookup = np.full((n_dates, n_ids, n_chars), np.nan, dtype=np.float64)
+        for i in range(n_obs):
+            d = date_idx[i]
+            bond = id_idx[i]
+            for c in range(n_chars):
+                char_lookup[d, bond, c] = char_values[i, c]
+    else:
+        char_lookup = np.empty((0, 0, 0), dtype=np.float64)
+
+    # Rank lookup: stores ranks assigned at each formation date
+    # Shape: (n_dates, n_ids) - only filled at rebalancing dates
     rank_lookup = np.full((n_dates, n_ids), np.nan, dtype=np.float64)
 
-    # Previous rank lookup for banding
+    # Previous rank lookup for banding (persists across rebalancing dates)
     prev_rank_lookup = np.full(n_ids, np.nan, dtype=np.float64)
 
-    # Track previous weights for turnover (per-bond storage)
-    prev_ew_weights = np.zeros(n_ids, dtype=np.float64)
+    # For turnover: track per-bond weights and state
+    # These are updated at each date (not just rebalancing)
+    prev_ew_weights = np.zeros(n_ids, dtype=np.float64)  # Scaled weights from prev date
     prev_vw_weights = np.zeros(n_ids, dtype=np.float64)
-    prev_ranks = np.full(n_ids, np.nan, dtype=np.float64)
-    has_prev = False
+    prev_ranks_for_turnover = np.full(n_ids, np.nan, dtype=np.float64)  # Ranks at prev date
+    prev_sum_ew = np.zeros(nport, dtype=np.float64)  # Sum of prev scaled weights per portfolio
+    prev_sum_vw = np.zeros(nport, dtype=np.float64)
+    prev_seen = np.zeros(nport, dtype=np.bool_)  # Whether each portfolio has been seen
 
-    # Process each rebalancing date sequentially (can't parallelize due to state)
+    # Process each rebalancing date to compute ranks
     for r_idx in range(n_rebal):
         rebal_d = rebal_date_indices[r_idx]
 
-        # Step 1: Compute ranks at this date using percentile thresholds
         # Collect signals at this date
-        signals_at_date = []
-        ids_at_date = []
-        obs_indices = []
-
+        n_bonds = 0
         for i in range(n_obs):
             if date_idx[i] == rebal_d and not np.isnan(signal[i]):
-                signals_at_date.append(signal[i])
-                ids_at_date.append(id_idx[i])
-                obs_indices.append(i)
+                n_bonds += 1
 
-        n_bonds = len(signals_at_date)
         if n_bonds == 0:
             continue
 
-        # Convert to arrays
+        # Allocate arrays
         sig_arr = np.empty(n_bonds, dtype=np.float64)
         id_arr = np.empty(n_bonds, dtype=np.int64)
         obs_arr = np.empty(n_bonds, dtype=np.int64)
-        for j in range(n_bonds):
-            sig_arr[j] = signals_at_date[j]
-            id_arr[j] = ids_at_date[j]
-            obs_arr[j] = obs_indices[j]
+
+        idx = 0
+        for i in range(n_obs):
+            if date_idx[i] == rebal_d and not np.isnan(signal[i]):
+                sig_arr[idx] = signal[i]
+                id_arr[idx] = id_idx[i]
+                obs_arr[idx] = i
+                idx += 1
 
         # Compute percentile thresholds
         sorted_sig = np.sort(sig_arr)
@@ -4600,246 +4572,280 @@ def compute_nonstaggered_full_fast(
             thresholds[p] = sorted_sig[idx_lo] * (1.0 - frac) + sorted_sig[idx_hi] * frac
 
         # Assign ranks
-        ranks_arr = np.empty(n_bonds, dtype=np.float64)
         for j in range(n_bonds):
             s = sig_arr[j]
             rank = 1
             for p in range(nport - 1):
                 if s > thresholds[p]:
                     rank = p + 2
-            ranks_arr[j] = float(rank)
+            bond_id = id_arr[j]
 
-        # Apply banding if needed
-        if banding_threshold > 0:
-            for j in range(n_bonds):
-                bond_id = id_arr[j]
-                curr_rank = ranks_arr[j]
+            # Apply banding if needed
+            if banding_threshold > 0:
                 prev_rank = prev_rank_lookup[bond_id]
-
                 if not np.isnan(prev_rank):
-                    rank_diff = abs(curr_rank - prev_rank)
+                    rank_diff = abs(float(rank) - prev_rank)
                     if rank_diff < banding_threshold * nport:
-                        ranks_arr[j] = prev_rank
+                        rank = int(prev_rank)
+                prev_rank_lookup[bond_id] = float(rank)
 
-            # Update previous rank lookup
-            for j in range(n_bonds):
-                prev_rank_lookup[id_arr[j]] = ranks_arr[j]
+            rank_lookup[rebal_d, bond_id] = float(rank)
 
-        # Store ranks in lookup
-        for j in range(n_bonds):
-            rank_lookup[rebal_d, id_arr[j]] = ranks_arr[j]
-
-        # Step 2: Compute weights at this date
-        ptf_count = np.zeros(nport, dtype=np.int64)
-        ptf_vw_sum = np.zeros(nport, dtype=np.float64)
-
-        for j in range(n_bonds):
-            p = int(ranks_arr[j]) - 1
-            bond_id = id_arr[j]
-            w = vw_lookup[rebal_d, bond_id] if not np.isnan(vw_lookup[rebal_d, bond_id]) else 0.0
-            ptf_count[p] += 1
-            ptf_vw_sum[p] += w
-
-        curr_ew = np.zeros(n_bonds, dtype=np.float64)
-        curr_vw = np.zeros(n_bonds, dtype=np.float64)
-        for j in range(n_bonds):
-            p = int(ranks_arr[j]) - 1
-            bond_id = id_arr[j]
-            w = vw_lookup[rebal_d, bond_id] if not np.isnan(vw_lookup[rebal_d, bond_id]) else 0.0
-            if ptf_count[p] > 0:
-                curr_ew[j] = 1.0 / ptf_count[p]
-            if ptf_vw_sum[p] > 0:
-                curr_vw[j] = w / ptf_vw_sum[p]
-
-        # Step 3: Compute turnover if we have previous weights
-        if compute_turnover and has_prev:
-            # Scale previous weights by cumulative returns
-            # For hp periods, we need to compound returns
-            scaled_ew = np.zeros(n_ids, dtype=np.float64)
-            scaled_vw = np.zeros(n_ids, dtype=np.float64)
-
-            # Compute scaling factors per portfolio
-            for p in range(nport):
-                ptf_num = p + 1
-                ew_scale_sum = 0.0
-                vw_scale_sum = 0.0
-
-                # Sum weight * (1 + cumulative_return) for previous portfolio members
-                for bond_id in range(n_ids):
-                    if prev_ranks[bond_id] != ptf_num:
-                        continue
-
-                    # Compute cumulative return from prev_rebal+1 to rebal_d
-                    cum_ret = 1.0
-                    prev_rebal_d = rebal_date_indices[r_idx - 1]
-                    for d in range(prev_rebal_d + 1, rebal_d + 1):
-                        r = ret_lookup[d, bond_id]
-                        if not np.isnan(r):
-                            cum_ret *= (1.0 + r)
-
-                    ew_scale_sum += prev_ew_weights[bond_id] * cum_ret
-                    vw_scale_sum += prev_vw_weights[bond_id] * cum_ret
-
-                # Scale weights
-                for bond_id in range(n_ids):
-                    if prev_ranks[bond_id] != ptf_num:
-                        continue
-
-                    cum_ret = 1.0
-                    prev_rebal_d = rebal_date_indices[r_idx - 1]
-                    for d in range(prev_rebal_d + 1, rebal_d + 1):
-                        r = ret_lookup[d, bond_id]
-                        if not np.isnan(r):
-                            cum_ret *= (1.0 + r)
-
-                    if ew_scale_sum > 0:
-                        scaled_ew[bond_id] = prev_ew_weights[bond_id] * cum_ret / ew_scale_sum
-                    if vw_scale_sum > 0:
-                        scaled_vw[bond_id] = prev_vw_weights[bond_id] * cum_ret / vw_scale_sum
-
-            # Compute turnover per portfolio
-            for p in range(nport):
-                ptf_num = p + 1
-
-                # Current weights sum
-                curr_sum_ew = 0.0
-                curr_sum_vw = 0.0
-                for j in range(n_bonds):
-                    if int(ranks_arr[j]) == ptf_num:
-                        curr_sum_ew += curr_ew[j]
-                        curr_sum_vw += curr_vw[j]
-
-                # Scaled previous weights sum
-                prev_sum_ew = 0.0
-                prev_sum_vw = 0.0
-                for bond_id in range(n_ids):
-                    if prev_ranks[bond_id] == ptf_num:
-                        prev_sum_ew += scaled_ew[bond_id]
-                        prev_sum_vw += scaled_vw[bond_id]
-
-                # Sum of minimums
-                sum_min_ew = 0.0
-                sum_min_vw = 0.0
-                for j in range(n_bonds):
-                    if int(ranks_arr[j]) != ptf_num:
-                        continue
-                    bond_id = id_arr[j]
-                    if prev_ranks[bond_id] == ptf_num:
-                        sum_min_ew += min(curr_ew[j], scaled_ew[bond_id])
-                        sum_min_vw += min(curr_vw[j], scaled_vw[bond_id])
-
-                ew_turnover[rebal_d, p] = prev_sum_ew + curr_sum_ew - 2.0 * sum_min_ew
-                vw_turnover[rebal_d, p] = prev_sum_vw + curr_sum_vw - 2.0 * sum_min_vw
-
-        # Step 4: Update previous weights
-        # Reset
-        for bond_id in range(n_ids):
-            prev_ew_weights[bond_id] = 0.0
-            prev_vw_weights[bond_id] = 0.0
-            prev_ranks[bond_id] = np.nan
-
-        for j in range(n_bonds):
-            bond_id = id_arr[j]
-            prev_ew_weights[bond_id] = curr_ew[j]
-            prev_vw_weights[bond_id] = curr_vw[j]
-            prev_ranks[bond_id] = ranks_arr[j]
-
-        has_prev = True
-
-        # Step 5: Compute characteristics if needed
-        # Note: char_values is always 2D (n_obs, n_chars), even when n_chars=0 (empty)
-        if compute_chars and n_chars > 0:
-            for c in range(n_chars):
-                ew_sum = np.zeros(nport, dtype=np.float64)
-                ew_cnt = np.zeros(nport, dtype=np.int64)
-                vw_sum = np.zeros(nport, dtype=np.float64)
-                vw_w_sum = np.zeros(nport, dtype=np.float64)
-
-                for j in range(n_bonds):
-                    obs_i = obs_arr[j]
-                    p = int(ranks_arr[j]) - 1
-
-                    # Always 2D access (char_values is always 2D)
-                    char_val = char_values[obs_i, c]
-
-                    if np.isnan(char_val):
-                        continue
-
-                    bond_id = id_arr[j]
-                    w = vw_lookup[rebal_d, bond_id] if not np.isnan(vw_lookup[rebal_d, bond_id]) else 0.0
-
-                    ew_sum[p] += char_val
-                    ew_cnt[p] += 1
-                    vw_sum[p] += char_val * w
-                    vw_w_sum[p] += w
-
-                for p in range(nport):
-                    if ew_cnt[p] > 0:
-                        ew_chars[rebal_d, c, p] = ew_sum[p] / ew_cnt[p]
-                    if vw_w_sum[p] > 0:
-                        vw_chars[rebal_d, c, p] = vw_sum[p] / vw_w_sum[p]
-
-    # Step 6: Compute returns for each date
-    # Returns are computed in parallel since they don't have state dependencies
-    for d in prange(n_dates):
+    # Now process each date for returns, turnover, and characteristics
+    for d in range(n_dates):
         # Find which rebalancing date this return date belongs to
-        rebal_idx = -1
+        form_d = -1
         for r in range(n_rebal):
             if rebal_date_indices[r] < d:
-                rebal_idx = r
+                form_d = rebal_date_indices[r]
+            elif rebal_date_indices[r] == d:
+                # This is a rebalancing date - use previous rebal for return calculation
+                if r > 0:
+                    form_d = rebal_date_indices[r - 1]
+                break
             else:
                 break
 
-        if rebal_idx < 0:
+        if form_d < 0:
             continue
-
-        form_d = rebal_date_indices[rebal_idx]
 
         # Check if this return date is within holding period
         if d > form_d + hp:
             continue
 
-        # Accumulate returns per portfolio
-        ew_sum = np.zeros(nport, dtype=np.float64)
-        ew_cnt = np.zeros(nport, dtype=np.int64)
-        vw_sum = np.zeros(nport, dtype=np.float64)
-        vw_w_sum = np.zeros(nport, dtype=np.float64)
-
+        # Get bonds at this return date
+        n_bonds_d = 0
         for i in range(n_obs):
-            if date_idx[i] != d:
-                continue
+            if date_idx[i] == d:
+                n_bonds_d += 1
 
-            bond_id = id_idx[i]
+        if n_bonds_d == 0:
+            continue
+
+        # Collect bond data at this date
+        id_arr_d = np.empty(n_bonds_d, dtype=np.int64)
+        ret_arr_d = np.empty(n_bonds_d, dtype=np.float64)
+        vw_arr_d = np.empty(n_bonds_d, dtype=np.float64)
+
+        idx = 0
+        for i in range(n_obs):
+            if date_idx[i] == d:
+                id_arr_d[idx] = id_idx[i]
+                ret_arr_d[idx] = ret[i]
+                vw_arr_d[idx] = vw[i]
+                idx += 1
+
+        # Get VW from appropriate date for weighting
+        vw_date = d - 1 if (dynamic_weights and d > 0) else form_d
+
+        # Compute returns and weights for this date
+        ptf_count = np.zeros(nport, dtype=np.int64)
+        ptf_vw_sum = np.zeros(nport, dtype=np.float64)
+        ew_ret_sum = np.zeros(nport, dtype=np.float64)
+        vw_ret_sum = np.zeros(nport, dtype=np.float64)
+
+        # Arrays for current weights (for turnover)
+        curr_ew = np.zeros(n_ids, dtype=np.float64)
+        curr_vw = np.zeros(n_ids, dtype=np.float64)
+        curr_ranks = np.full(n_ids, np.nan, dtype=np.float64)
+
+        # First pass: collect bonds with valid ranks and VW
+        for j in range(n_bonds_d):
+            bond_id = id_arr_d[j]
             rank = rank_lookup[form_d, bond_id]
             if np.isnan(rank):
                 continue
 
-            r = ret[i]
+            r = ret_arr_d[j]
             if np.isnan(r):
                 continue
 
-            p = int(rank) - 1
-            if p < 0 or p >= nport:
-                continue
-
-            # Get VW from appropriate date
-            if dynamic_weights:
-                w = vw_lookup[d - 1, bond_id] if d > 0 else vw_lookup[d, bond_id]
-            else:
-                w = vw_lookup[form_d, bond_id]
-
+            w = vw_lookup[vw_date, bond_id] if vw_date >= 0 and not np.isnan(vw_lookup[vw_date, bond_id]) else np.nan
             if np.isnan(w):
                 continue
 
-            ew_sum[p] += r
-            ew_cnt[p] += 1
-            vw_sum[p] += r * w
-            vw_w_sum[p] += w
+            p = int(rank) - 1
+            ptf_count[p] += 1
+            ptf_vw_sum[p] += w
+            curr_ranks[bond_id] = rank
 
+        # Second pass: compute returns and weights
+        for j in range(n_bonds_d):
+            bond_id = id_arr_d[j]
+            rank = rank_lookup[form_d, bond_id]
+            if np.isnan(rank):
+                continue
+
+            r = ret_arr_d[j]
+            if np.isnan(r):
+                continue
+
+            w = vw_lookup[vw_date, bond_id] if vw_date >= 0 and not np.isnan(vw_lookup[vw_date, bond_id]) else np.nan
+            if np.isnan(w):
+                continue
+
+            p = int(rank) - 1
+
+            # EW return contribution
+            if ptf_count[p] > 0:
+                ew_ret_sum[p] += r
+                curr_ew[bond_id] = 1.0 / ptf_count[p]
+
+            # VW return contribution
+            if ptf_vw_sum[p] > 0:
+                vw_ret_sum[p] += r * w
+                curr_vw[bond_id] = w / ptf_vw_sum[p]
+
+        # Store returns
         for p in range(nport):
-            if ew_cnt[p] > 0:
-                ew_ret[d, p] = ew_sum[p] / ew_cnt[p]
-            if vw_w_sum[p] > 0:
-                vw_ret[d, p] = vw_sum[p] / vw_w_sum[p]
+            if ptf_count[p] > 0:
+                ew_ret[d, p] = ew_ret_sum[p] / ptf_count[p]
+            if ptf_vw_sum[p] > 0:
+                vw_ret[d, p] = vw_ret_sum[p] / ptf_vw_sum[p]
+
+        # Compute characteristics at this return date
+        # Slow path: It1m = precomp.It1m.get(date_t1_minus1 if date_t1_minus1 else date_t1)
+        # where date_t1_minus1 is only set when dynamic_weights=True
+        # So: char_date = d-1 if dynamic_weights=True AND d>0, else d (return date)
+        if compute_chars and n_chars > 0:
+            if dynamic_weights and d > 0:
+                char_date = d - 1
+            else:
+                char_date = d  # Return date (matches slow path when dynamic_weights=False)
+
+            for c_idx in range(n_chars):
+                ew_char_sum = np.zeros(nport, dtype=np.float64)
+                ew_char_cnt = np.zeros(nport, dtype=np.int64)
+                vw_char_sum = np.zeros(nport, dtype=np.float64)
+
+                for j in range(n_bonds_d):
+                    bond_id = id_arr_d[j]
+
+                    # Slow path's It1 only contains bonds with valid returns
+                    # So we must check return at return date
+                    if np.isnan(ret_arr_d[j]):
+                        continue
+
+                    rank = rank_lookup[form_d, bond_id]
+                    if np.isnan(rank):
+                        continue
+
+                    # Get characteristic value from char_date
+                    if char_date >= 0:
+                        char_val = char_lookup[char_date, bond_id, c_idx]
+                    else:
+                        char_val = np.nan
+
+                    if np.isnan(char_val):
+                        continue
+
+                    # Slow path's It1m only contains bonds with valid VW at char_date
+                    # So we must check VW at char_date for characteristics (not vw_date!)
+                    vw_at_char_date = vw_lookup[char_date, bond_id] if char_date >= 0 else np.nan
+                    if np.isnan(vw_at_char_date):
+                        continue  # Bond not in It1m, skip for BOTH EW and VW chars
+
+                    p = int(rank) - 1
+
+                    # EW: include all bonds that would be in It1m_aug
+                    ew_char_sum[p] += char_val
+                    ew_char_cnt[p] += 1
+
+                    # VW: use weight from vw_date (for return weighting), normalized by ptf_vw_sum
+                    w = vw_lookup[vw_date, bond_id] if vw_date >= 0 and not np.isnan(vw_lookup[vw_date, bond_id]) else np.nan
+                    if not np.isnan(w) and ptf_vw_sum[p] > 0:
+                        # Normalized weight = VW / ptf_vw_sum (sum over ALL bonds in portfolio)
+                        vw_char_sum[p] += char_val * (w / ptf_vw_sum[p])
+
+                for p in range(nport):
+                    if ew_char_cnt[p] > 0:
+                        ew_chars[d, c_idx, p] = ew_char_sum[p] / ew_char_cnt[p]
+                    # VW chars: already weighted by normalized weights, no division needed
+                    if vw_char_sum[p] != 0.0:
+                        vw_chars[d, c_idx, p] = vw_char_sum[p]
+
+        # Compute turnover if enabled
+        if compute_turnover:
+            # Compute portfolio returns for scaling
+            ew_ptf_ret = np.zeros(nport, dtype=np.float64)
+            vw_ptf_ret = np.zeros(nport, dtype=np.float64)
+            for p in range(nport):
+                if ptf_count[p] > 0:
+                    ew_ptf_ret[p] = ew_ret_sum[p] / ptf_count[p]
+                if ptf_vw_sum[p] > 0:
+                    vw_ptf_ret[p] = vw_ret_sum[p] / ptf_vw_sum[p]
+
+            # Compute turnover per portfolio
+            for p in range(nport):
+                if not prev_seen[p]:
+                    # First time seeing this portfolio - mark as seen
+                    prev_seen[p] = True
+                    continue
+
+                # Current weights sum
+                curr_sum_ew = 0.0
+                curr_sum_vw = 0.0
+                for bond_id in range(n_ids):
+                    if curr_ranks[bond_id] == p + 1:
+                        curr_sum_ew += curr_ew[bond_id]
+                        curr_sum_vw += curr_vw[bond_id]
+
+                # Sum of min(prev_scaled, curr)
+                sum_min_ew = 0.0
+                sum_min_vw = 0.0
+                for bond_id in range(n_ids):
+                    if curr_ranks[bond_id] == p + 1 and prev_ranks_for_turnover[bond_id] == p + 1:
+                        sum_min_ew += min(curr_ew[bond_id], prev_ew_weights[bond_id])
+                        sum_min_vw += min(curr_vw[bond_id], prev_vw_weights[bond_id])
+
+                # Turnover = prev_sum + curr_sum - 2 * sum_min
+                turn_ew = prev_sum_ew[p] + curr_sum_ew - 2.0 * sum_min_ew
+                turn_vw = prev_sum_vw[p] + curr_sum_vw - 2.0 * sum_min_vw
+
+                ew_turnover[d, p] = turn_ew
+                vw_turnover[d, p] = turn_vw
+
+            # Update previous scaled weights for next date
+            # scaled_weight = curr_weight * (1 + bond_ret) / (1 + ptf_ret)
+            for bond_id in range(n_ids):
+                prev_ew_weights[bond_id] = 0.0
+                prev_vw_weights[bond_id] = 0.0
+                prev_ranks_for_turnover[bond_id] = np.nan
+
+            for p in range(nport):
+                prev_sum_ew[p] = 0.0
+                prev_sum_vw[p] = 0.0
+
+            for j in range(n_bonds_d):
+                bond_id = id_arr_d[j]
+                rank = curr_ranks[bond_id]
+                if np.isnan(rank):
+                    continue
+
+                p = int(rank) - 1
+                r = ret_arr_d[j]
+                if np.isnan(r):
+                    r = 0.0
+
+                # Scale current weight by (1 + bond_ret) / (1 + ptf_ret)
+                ew_scale = (1.0 + r) / (1.0 + ew_ptf_ret[p]) if (1.0 + ew_ptf_ret[p]) != 0 else 1.0
+                vw_scale = (1.0 + r) / (1.0 + vw_ptf_ret[p]) if (1.0 + vw_ptf_ret[p]) != 0 else 1.0
+
+                prev_ew_weights[bond_id] = curr_ew[bond_id] * ew_scale
+                prev_vw_weights[bond_id] = curr_vw[bond_id] * vw_scale
+                prev_ranks_for_turnover[bond_id] = rank
+
+                prev_sum_ew[p] += prev_ew_weights[bond_id]
+                prev_sum_vw[p] += prev_vw_weights[bond_id]
+
+    # ===== LIQUIDATION TURNOVER =====
+    # At the last date, assume all positions are liquidated
+    # This matches the slow path's finalize_turnover behavior
+    if compute_turnover:
+        tau_last = n_dates - 1
+        for p in range(nport):
+            # Liquidation turnover = sum of scaled weights (all sold, nothing bought)
+            ew_turnover[tau_last, p] = prev_sum_ew[p]
+            vw_turnover[tau_last, p] = prev_sum_vw[p]
 
     return ew_ret, vw_ret, ew_turnover, vw_turnover, ew_chars, vw_chars

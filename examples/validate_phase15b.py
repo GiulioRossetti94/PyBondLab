@@ -39,7 +39,7 @@ def run_slow_path(data, signal, hp, rebal_freq, rebal_month, turnover, chars, ba
     from PyBondLab.config import StrategyFormationConfig, DataConfig, FormationConfig
 
     config = StrategyFormationConfig(
-        data=DataConfig(),
+        data=DataConfig(chars=chars),  # Pass chars through config
         formation=FormationConfig(
             compute_turnover=turnover,
             banding_threshold=banding,
@@ -50,8 +50,6 @@ def run_slow_path(data, signal, hp, rebal_freq, rebal_month, turnover, chars, ba
     sf = pbl.StrategyFormation(
         data=data,
         strategy=strategy,
-        turnover=turnover,
-        chars=chars,
         config=config,
         verbose=False,
     )
@@ -80,7 +78,7 @@ def run_fast_path(data, signal, hp, rebal_freq, rebal_month, turnover, chars, ba
     from PyBondLab.config import StrategyFormationConfig, DataConfig, FormationConfig
 
     config = StrategyFormationConfig(
-        data=DataConfig(),
+        data=DataConfig(chars=chars),  # Pass chars through config
         formation=FormationConfig(
             compute_turnover=turnover,
             banding_threshold=banding,
@@ -91,8 +89,6 @@ def run_fast_path(data, signal, hp, rebal_freq, rebal_month, turnover, chars, ba
     sf = pbl.StrategyFormation(
         data=data,
         strategy=strategy,
-        turnover=turnover,
-        chars=chars,
         config=config,
         verbose=False,
     )

@@ -59,7 +59,7 @@ Dramatically speed up portfolio formation in PyBondLab using numba/prange, while
 | **Phase 3** | Parallelize main loop with prange | ⏳ Pending | Complex due to turnover state dependencies |
 | **Phase 15a** | Non-staggered rebalancing fast path | ✅ Complete | **100x speedup** achieved! |
 | **Phase 15** | Non-staggered integration | ✅ Complete | BatchStrategyFormation (~340x), DataUncertaintyAnalysis integrated |
-| **Phase 15b** | Non-staggered with turnover/chars/banding | 🟡 Partial | Banding: 77x speedup; Turnover/chars need validation |
+| **Phase 15b** | Non-staggered with turnover/chars/banding | ✅ Complete | **21-103x speedup**, all 6 tests PASS |
 
 ---
 
@@ -104,9 +104,9 @@ Key numba kernels in `numba_core.py`:
 - `build_vw_lookup_table()` - Build VW lookup table
 - `compute_nonstaggered_ls_returns()` - Compute long-short returns
 
-#### Phase 15b: Full Path (With Turnover/Chars/Banding) - PARTIAL
+#### Phase 15b: Full Path (With Turnover/Chars/Banding) - COMPLETE
 
-**Status: Banding COMPLETE, Turnover/Chars need validation**
+**Status: ALL FEATURES COMPLETE - 6/6 tests PASS**
 
 New numba kernels added to `numba_core.py`:
 - `compute_nonstaggered_weights_at_rebal()` - Compute weights at rebalancing date
@@ -117,21 +117,20 @@ New numba kernels added to `numba_core.py`:
 - `build_ret_lookup()` - Build returns lookup table
 - `compute_nonstaggered_full_fast()` - Main entry point (combines all features)
 
-**Validation Results:**
+**Validation Results (All PASS):**
 | Feature | Status | Speedup | Notes |
 |---------|--------|---------|-------|
-| Returns only | ✅ PASS | 20x | Validates against slow path |
-| Banding | ✅ PASS | **77x** | Validates against slow path |
-| Turnover | ❌ FAIL | ~110x | Numerical differences with slow path |
-| Characteristics | ❌ ERROR | - | Test setup issue, kernel implemented |
+| Returns only | ✅ PASS | **21x** | Validates against slow path |
+| Turnover | ✅ PASS | **103x** | Exact numerical match |
+| Characteristics | ✅ PASS | **57x** | Exact numerical match |
+| Banding | ✅ PASS | **67x** | Validates against slow path |
+| Turnover+chars | ✅ PASS | **93x** | All features combined |
+| All features | ✅ PASS | **86x** | Turnover+chars+banding |
 
-**What works:**
-- Banding threshold correctly prevents unnecessary portfolio changes
-- Returns computation matches slow path exactly
-
-**What needs work:**
-- Turnover: Cumulative return scaling differs from slow path
-- Characteristics: Test harness needs fixing (kernel code exists)
+**Key fixes implemented:**
+- Turnover: Added liquidation turnover at last date (matches slow path's `finalize_turnover()`)
+- Characteristics: Fixed bond filtering to match slow path's `It1` (bonds with valid returns only)
+- Characteristics: Corrected `char_date` logic based on `dynamic_weights` setting
 
 ### Timeline Behavior
 
