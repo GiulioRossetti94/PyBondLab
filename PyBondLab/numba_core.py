@@ -5380,3 +5380,155 @@ def compute_within_firm_aggregation_with_lookup(
             vw_long_short[d] = vw_rating_sum / vw_n_valid
 
     return ew_long_short, vw_long_short, ew_high_ret, ew_low_ret, vw_high_ret, vw_low_ret
+
+
+@njit(cache=True)
+def compute_within_firm_chars_aggregation(
+    date_idx: np.ndarray,       # Formation date index for each observation
+    id_idx: np.ndarray,         # Bond ID index for each observation
+    firm_idx: np.ndarray,       # Firm index for each observation
+    rating_terc: np.ndarray,    # Rating tercile (1, 2, 3) for each observation
+    ptf_rank: np.ndarray,       # Portfolio rank (1=LOW, 2=HIGH) for each observation
+    char_values: np.ndarray,    # Characteristic values for each observation
+    vw: np.ndarray,             # Value weights for each observation
+    n_dates: int,
+    n_firms: int,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Within-firm characteristics aggregation using hierarchical structure.
+
+    Aggregation hierarchy (same as returns):
+    - Within-firm: VW-weighted char for HIGH and LOW portfolios
+    - Across firms: Cap-weight the firm-level chars within each rating tercile
+    - Across ratings: Simple average across rating terciles
+
+    Parameters
+    ----------
+    date_idx : np.ndarray
+        Formation date index for each observation
+    id_idx : np.ndarray
+        Bond ID index for each observation
+    firm_idx : np.ndarray
+        Firm index for each observation
+    rating_terc : np.ndarray
+        Rating tercile (1, 2, 3) for each observation
+    ptf_rank : np.ndarray
+        Portfolio rank (1=LOW, 2=HIGH) for each observation
+    char_values : np.ndarray
+        Characteristic values for each observation
+    vw : np.ndarray
+        Value weights for each observation
+    n_dates : int
+        Number of unique dates
+    n_firms : int
+        Number of unique firms
+
+    Returns
+    -------
+    ew_low, ew_high : np.ndarray
+        EW characteristic values for LOW and HIGH portfolios at each date
+    vw_low, vw_high : np.ndarray
+        VW characteristic values for LOW and HIGH portfolios at each date
+    """
+    n_obs = len(date_idx)
+
+    # Accumulation arrays: (date, rating_terc, firm, portfolio)
+    # portfolio: 0=LOW, 1=HIGH
+    char_wsum = np.zeros((n_dates, 3, n_firms, 2), dtype=np.float64)
+    vw_sum = np.zeros((n_dates, 3, n_firms, 2), dtype=np.float64)
+    char_sum = np.zeros((n_dates, 3, n_firms, 2), dtype=np.float64)
+    count = np.zeros((n_dates, 3, n_firms, 2), dtype=np.float64)
+
+    # First pass: accumulate char values at formation date
+    for i in range(n_obs):
+        d = date_idx[i]
+        f = firm_idx[i]
+        rt = rating_terc[i]
+        p = ptf_rank[i]
+        c = char_values[i]
+        w = vw[i]
+
+        if d < 0 or f < 0:
+            continue
+        if np.isnan(rt) or rt < 1 or rt > 3:
+            continue
+        if np.isnan(p) or p < 1 or p > 2:
+            continue
+        if np.isnan(c):
+            continue
+
+        rt_idx = int(rt) - 1
+        p_idx = int(p) - 1
+
+        char_sum[d, rt_idx, f, p_idx] += c
+        count[d, rt_idx, f, p_idx] += 1
+
+        if not np.isnan(w) and w > 0:
+            char_wsum[d, rt_idx, f, p_idx] += c * w
+            vw_sum[d, rt_idx, f, p_idx] += w
+
+    # Output arrays
+    ew_low = np.full(n_dates, np.nan, dtype=np.float64)
+    ew_high = np.full(n_dates, np.nan, dtype=np.float64)
+    vw_low = np.full(n_dates, np.nan, dtype=np.float64)
+    vw_high = np.full(n_dates, np.nan, dtype=np.float64)
+
+    # Second pass: compute aggregated chars for each date
+    for d in range(n_dates):
+        for p_idx in range(2):
+            ew_rating_chars = np.zeros(3, dtype=np.float64)
+            vw_rating_chars = np.zeros(3, dtype=np.float64)
+            ew_rating_valid = np.zeros(3, dtype=np.bool_)
+            vw_rating_valid = np.zeros(3, dtype=np.bool_)
+
+            for rt_idx in range(3):
+                ew_firm_char_sum = 0.0
+                ew_firm_count = 0
+                vw_firm_char_sum = 0.0
+                vw_firm_weight_sum = 0.0
+
+                for f in range(n_firms):
+                    cnt = count[d, rt_idx, f, p_idx]
+                    if cnt > 0:
+                        ew_firm_char = char_sum[d, rt_idx, f, p_idx] / cnt
+                        ew_firm_char_sum += ew_firm_char
+                        ew_firm_count += 1
+
+                    vw_w = vw_sum[d, rt_idx, f, p_idx]
+                    if vw_w > 0:
+                        vw_firm_char = char_wsum[d, rt_idx, f, p_idx] / vw_w
+                        vw_firm_char_sum += vw_firm_char * vw_w
+                        vw_firm_weight_sum += vw_w
+
+                if ew_firm_count > 0:
+                    ew_rating_chars[rt_idx] = ew_firm_char_sum / ew_firm_count
+                    ew_rating_valid[rt_idx] = True
+                if vw_firm_weight_sum > 0:
+                    vw_rating_chars[rt_idx] = vw_firm_char_sum / vw_firm_weight_sum
+                    vw_rating_valid[rt_idx] = True
+
+            ew_n_valid = 0
+            ew_rating_sum = 0.0
+            vw_n_valid = 0
+            vw_rating_sum = 0.0
+
+            for rt_idx in range(3):
+                if ew_rating_valid[rt_idx]:
+                    ew_rating_sum += ew_rating_chars[rt_idx]
+                    ew_n_valid += 1
+                if vw_rating_valid[rt_idx]:
+                    vw_rating_sum += vw_rating_chars[rt_idx]
+                    vw_n_valid += 1
+
+            if p_idx == 0:  # LOW
+                if ew_n_valid > 0:
+                    ew_low[d] = ew_rating_sum / ew_n_valid
+                if vw_n_valid > 0:
+                    vw_low[d] = vw_rating_sum / vw_n_valid
+            else:  # HIGH
+                if ew_n_valid > 0:
+                    ew_high[d] = ew_rating_sum / ew_n_valid
+                if vw_n_valid > 0:
+                    vw_high[d] = vw_rating_sum / vw_n_valid
+
+    return ew_low, ew_high, vw_low, vw_high

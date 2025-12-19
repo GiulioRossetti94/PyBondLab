@@ -2490,9 +2490,94 @@ class StrategyFormation:
         ew_short_df = pd.DataFrame(ew_short, index=self.datelist, columns=[f'SHORT_{prefix}_{self.name}'])
         vw_short_df = pd.DataFrame(vw_short, index=self.datelist, columns=[f'SHORT_{vw_prefix}_{self.name}'])
 
-        # Handle characteristics (not implemented for within-firm yet)
+        # Handle characteristics using hierarchical aggregation
         chars_ew_dict = None
         chars_vw_dict = None
+
+        if self.chars and self.port_idx:
+            from .numba_core import compute_within_firm_chars_aggregation
+
+            # Collect portfolio data from all dates
+            all_port_dfs = []
+            for date_t in self.datelist:
+                if date_t not in self.port_idx:
+                    continue
+                port_df = self.port_idx[date_t]
+                if port_df.empty:
+                    continue
+                port_df_copy = port_df.copy()
+                port_df_copy[ColumnNames.DATE] = date_t
+                all_port_dfs.append(port_df_copy)
+
+            if all_port_dfs:
+                combined_df = pd.concat(all_port_dfs, ignore_index=True)
+
+                # Get firm and rating lookup from raw data
+                firm_rating_lookup = self.data_raw[
+                    [ColumnNames.ID, firm_id_col, ColumnNames.RATING]
+                ].drop_duplicates()
+                combined_df = combined_df.merge(firm_rating_lookup, on=ColumnNames.ID, how='left')
+
+                # Create rating terciles
+                combined_df['rating_terc'] = pd.cut(
+                    pd.to_numeric(combined_df[ColumnNames.RATING], errors='coerce'),
+                    bins=rating_bins,
+                    labels=[1, 2, 3],
+                    include_lowest=True
+                ).astype('Int64').fillna(0).values
+
+                # Get char values from raw data at FORMATION date (t-1, not return date)
+                # port_idx is indexed by return date (t+1), so we need chars from t = t+1 - 1
+                char_cols = [ColumnNames.ID, ColumnNames.DATE] + list(self.chars)
+                char_data = self.data_raw[char_cols].copy()
+
+                # Create formation date column (return_date - 1 period)
+                date_to_prev = {self.datelist[i]: self.datelist[i-1] for i in range(1, len(self.datelist))}
+                combined_df['form_date'] = combined_df[ColumnNames.DATE].map(date_to_prev)
+
+                # Merge chars using formation date
+                char_data = char_data.rename(columns={ColumnNames.DATE: 'form_date'})
+                combined_df = combined_df.merge(char_data, on=[ColumnNames.ID, 'form_date'], how='left')
+
+                # Create mappings
+                unique_firms = combined_df[firm_id_col].dropna().unique()
+                firm_to_idx = {f: i for i, f in enumerate(unique_firms)}
+                n_firms = len(unique_firms)
+
+                date_to_idx = {d: i for i, d in enumerate(self.datelist)}
+                n_dates = len(self.datelist)
+
+                # Convert to numpy arrays
+                date_idx = combined_df[ColumnNames.DATE].map(date_to_idx).values.astype(np.int64)
+                id_idx = np.zeros(len(combined_df), dtype=np.int64)  # Not used in aggregation
+                firm_idx = combined_df[firm_id_col].map(firm_to_idx).fillna(-1).values.astype(np.int64)
+                rating_terc = combined_df['rating_terc'].values.astype(np.float64)
+                ptf_rank = combined_df['ptf_rank'].values.astype(np.float64)
+                vw = combined_df[ColumnNames.VALUE_WEIGHT].values.astype(np.float64)
+
+                # Compute chars for each characteristic
+                chars_ew_dict = {}
+                chars_vw_dict = {}
+                ptf_labels_chars = ['LOW', 'HIGH']
+
+                for char_name in self.chars:
+                    char_values = combined_df[char_name].values.astype(np.float64)
+
+                    ew_low, ew_high, vw_low, vw_high = compute_within_firm_chars_aggregation(
+                        date_idx, id_idx, firm_idx, rating_terc, ptf_rank,
+                        char_values, vw, n_dates, n_firms
+                    )
+
+                    chars_ew_dict[char_name] = pd.DataFrame(
+                        np.column_stack([ew_low, ew_high]),
+                        index=self.datelist,
+                        columns=ptf_labels_chars
+                    )
+                    chars_vw_dict[char_name] = pd.DataFrame(
+                        np.column_stack([vw_low, vw_high]),
+                        index=self.datelist,
+                        columns=ptf_labels_chars
+                    )
 
         # Finalize turnover (use standard PyBondLab machinery)
         turnover_ew = None
