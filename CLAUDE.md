@@ -2118,6 +2118,15 @@ Added `compute_within_firm_aggregation_fast()` numba kernel that:
 2. Vectorized firm-level H-L factor computation
 3. Vectorized cap-weighted aggregation across firms
 4. Vectorized averaging across rating terciles
+5. **Properly computes BOTH EW and VW** (bug fix: EW was incorrectly copied from VW)
+
+**EW vs VW Bug Fix:**
+- **Issue**: EW and VW long-short returns were identical (EW was copied from VW)
+- **Root cause**: Code explicitly set `ewls_series = vwls_series` (PyBondLab.py:2226-2230)
+- **Fix**: Modified kernel to return 6 arrays (ew_ls, vw_ls, ew_high, ew_low, vw_high, vw_low)
+- Now properly:
+  - EW: EW returns within firm → equal-weight across firms → avg across ratings
+  - VW: VW returns within firm → cap-weight across firms → avg across ratings
 
 **Performance:**
 - Aggregation kernel: **0.0001s** (was 2.8s = **40,000x speedup**)
@@ -2126,7 +2135,7 @@ Added `compute_within_firm_aggregation_fast()` numba kernel that:
 
 #### Phase 16d: Create Ultra-Fast Path for WithinFirmSort
 
-**Status: Pending**
+**Status: ⏳ IN PROGRESS**
 
 Similar to SingleSort ultra-fast path (for `turnover=False`, `chars=None`):
 1. Bypass `_precompute_data()` entirely
@@ -2155,6 +2164,8 @@ Create fast path that supports turnover and/or chars:
 
 ### Performance Results (Phase 16c)
 
+**Small Test Data (11,940 rows, 199 bonds, 50 firms, 60 dates):**
+
 | Configuration | Before | After | Achieved Speedup |
 |---------------|--------|-------|------------------|
 | HP=1, no turnover | 3.8s | **0.94s** | **4.0x** ✅ |
@@ -2162,7 +2173,18 @@ Create fast path that supports turnover and/or chars:
 | HP=3, no turnover | 4.2s | **1.50s** | **2.8x** |
 | HP=3, with turnover | 4.3s | **1.56s** | **2.8x** |
 
-*Test data: 11,940 rows, 199 bonds, 50 firms, 60 dates*
+**Large Data Profiling (matching user's data: 2.4M rows, ~50k cusips, 2.9k firms, 272 dates):**
+
+| Component | Time | % of Total |
+|-----------|------|------------|
+| `_precompute_data()` | **10.06s** | 58% |
+| `compute_within_firm_portfolios()` (272 calls) | **6.09s** | 35% |
+| Aggregation (fast kernel) | 1.39s | 8% |
+| **Total** | **17.5s** | 100% |
+
+**Key Insight**: After Phase 16c, the bottleneck shifted to `_precompute_data()` and
+per-date portfolio assignment calls. Phase 16d will bypass both by computing everything
+directly from numpy arrays.
 
 ### Target Performance (Future Phases)
 
