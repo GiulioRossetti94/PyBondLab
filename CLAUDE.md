@@ -2278,6 +2278,25 @@ Create an ultra-fast path for WithinFirmSort (HP=1, no turnover, no chars) and a
 
 **Status: ⏳ PLANNED**
 
+### Architecture
+
+```
+BatchWithinFirmSortFormation
+│
+├── Fast path (numba vectorized):
+│   ├── Conditions: turnover=False AND chars=None
+│   ├── Pre-compute rating terciles (ONCE)
+│   ├── Pre-compute firm groupings (ONCE)
+│   ├── Compute HIGH/LOW for ALL signals at once (numba)
+│   └── Aggregate returns for ALL signals (numba)
+│
+└── Slow path (multiprocessing):
+    ├── Conditions: turnover=True OR chars is not None
+    ├── Uses ProcessPoolExecutor with n_jobs workers
+    ├── Each worker: StrategyFormation(WithinFirmSort, signal=X)
+    └── Collect and merge results
+```
+
 ### Key Insight
 
 For WithinFirmSort with multiple signals:
@@ -2288,7 +2307,7 @@ For WithinFirmSort with multiple signals:
 
 ### Implementation Plan
 
-#### Step 1: Fast Path in StrategyFormation
+#### Step 1: Fast Path in StrategyFormation (Phase 16g.1)
 
 Add `_can_use_withinfirm_fast_path()` and `_fit_withinfirm_fast()`:
 
@@ -2310,9 +2329,9 @@ def _can_use_withinfirm_fast_path(self):
 - `compute_withinfirm_assignments_all_dates()` - Parallel assignment across all dates
 - `compute_withinfirm_returns_all_dates()` - Parallel return aggregation
 
-#### Step 2: BatchWithinFirmSortFormation Class
+#### Step 2: BatchWithinFirmSortFormation Fast Path (Phase 16g.2)
 
-New class for batch processing multiple signals:
+New class for batch processing multiple signals with numba vectorization:
 
 ```python
 class BatchWithinFirmSortFormation:
@@ -2331,18 +2350,22 @@ class BatchWithinFirmSortFormation:
         Rating bin edges (default: [-inf, 7, 10, inf])
     min_bonds_per_firm : int, default=2
         Minimum bonds per firm-date-rating group
+    turnover : bool, default=False
+        Compute turnover (uses slow path)
+    chars : list of str, optional
+        Characteristics to aggregate (uses slow path)
     rating : str or tuple, optional
         Rating filter ('IG', 'NIG', or (min, max))
     subset_filter : dict, optional
         Characteristic-based filters
     n_jobs : int, default=1
-        Parallel workers (for fallback slow path)
+        Parallel workers (for slow path)
     verbose : bool, default=True
         Show progress
     """
 ```
 
-**Fast batch path:**
+**Fast batch path (turnover=False, chars=None):**
 ```python
 def _fit_fast_batch_withinfirm(self):
     # 1. Pre-compute rating terciles (ONCE)
@@ -2356,6 +2379,52 @@ def _fit_fast_batch_withinfirm(self):
 - `compute_withinfirm_assignments_all_signals()` - Vectorized assignment
 - `compute_withinfirm_returns_all_signals()` - Vectorized aggregation
 
+#### Step 3: BatchWithinFirmSortFormation Slow Path (Phase 16g.3)
+
+When `turnover=True` or `chars` is set, use multiprocessing:
+
+```python
+def _fit_slow_batch_withinfirm(self):
+    """Slow path using multiprocessing for turnover/chars."""
+    from concurrent.futures import ProcessPoolExecutor
+
+    def process_signal(signal):
+        strategy = WithinFirmSort(
+            holding_period=1,
+            sort_var=signal,
+            firm_id_col=self.firm_id_col,
+            rating_bins=self.rating_bins,
+            min_bonds_per_firm=self.min_bonds_per_firm,
+        )
+        sf = StrategyFormation(
+            data=self.data,
+            strategy=strategy,
+            turnover=self.turnover,
+            chars=self.chars,
+        )
+        return signal, sf.fit()
+
+    with ProcessPoolExecutor(max_workers=self.n_jobs) as executor:
+        results = dict(executor.map(process_signal, self.signals))
+
+    return results
+```
+
+### Validation Strategy
+
+Batch results must match standalone StrategyFormation exactly:
+
+```python
+# Validation: batch results should match standalone
+batch = BatchWithinFirmSortFormation(data, signals=['sig1', 'sig2'], ...)
+batch_results = batch.fit()
+
+# Compare with standalone
+for sig in signals:
+    standalone = StrategyFormation(data, WithinFirmSort(sort_var=sig), ...).fit()
+    assert batch_results[sig].ew_ls == standalone.ew_ls  # Must match exactly
+```
+
 ### Target Performance
 
 | Configuration | Current | Target | Speedup |
@@ -2363,6 +2432,7 @@ def _fit_fast_batch_withinfirm(self):
 | 1 signal, HP=1, no turnover | ~1.0s | <0.2s | **5x** |
 | 10 signals, HP=1, no turnover | ~10s | <0.5s | **20x** |
 | 50 signals, HP=1, no turnover | ~50s | <1.5s | **30x+** |
+| 10 signals, with turnover (slow) | ~10s | ~3s | **3x** (multiproc) |
 
 ### File Changes
 
@@ -2384,9 +2454,25 @@ Add characteristics aggregation using the same hierarchical structure as returns
 
 **Status: ⏳ PLANNED**
 
+### Key Point: Chars at Formation Date
+
+**IMPORTANT**: Characteristics are computed at **formation date (t)**, not return date (t+1).
+This is standard PyBondLab behavior and must be preserved.
+
+```
+Formation date t:
+  1. For each (date_t, rating_terc, firm):
+     - Bonds assigned to HIGH → compute VW-weighted average of char
+     - Bonds assigned to LOW → compute VW-weighted average of char
+  2. Across firms (within rating_terc): cap-weight firm-level chars
+  3. Across rating_terc: simple average
+
+Char values come from formation date data (It0/It1m), not return date.
+```
+
 ### Aggregation Logic
 
-For each characteristic at each date:
+For each characteristic at each formation date:
 1. **Within-firm**: Compute VW-average char for HIGH and LOW portfolios
 2. **Across firms**: Cap-weight the firm-level chars within each rating tercile
 3. **Across ratings**: Simple average across rating terciles
@@ -2394,72 +2480,93 @@ For each characteristic at each date:
 ### Output Format
 
 ```python
-# For single signal:
-chars_result = {
-    'char1': pd.DataFrame with index=dates, columns=['LOW', 'HIGH'],
-    'char2': pd.DataFrame with index=dates, columns=['LOW', 'HIGH'],
+# For single signal (via StrategyFormation):
+result.get_characteristics()
+# Returns:
+{
+    'char1': pd.DataFrame(index=dates, columns=['LOW', 'HIGH']),
+    'char2': pd.DataFrame(index=dates, columns=['LOW', 'HIGH']),
     ...
 }
 
-# For batch (multiple signals):
-chars_result = {
-    'signal1': {
-        'char1': DataFrame['LOW', 'HIGH'],
-        ...
-    },
-    'signal2': {...},
-    ...
-}
+# For batch (multiple signals via BatchWithinFirmSortFormation):
+batch_results['signal1'].get_characteristics()
+# Same format as above
 ```
 
 ### Implementation Steps
 
 1. **Slow path first** (in `_form_single_period` or similar):
    - Extend existing chars logic for WithinFirmSort
+   - Use hierarchical aggregation matching returns structure
    - Validate correctness against manual calculation
 
-2. **Fast path** (numba kernel):
-   - `compute_withinfirm_chars_all_dates()` - Parallel char aggregation
-   - Same hierarchical structure as returns
+2. **Batch support via multiprocessing**:
+   - When `chars` is set, `BatchWithinFirmSortFormation` uses slow path
+   - Each worker runs `StrategyFormation(chars=...)` for one signal
+   - Results collected and merged
 
-3. **Batch support**:
-   - Extend `BatchWithinFirmSortFormation` to support `chars` parameter
+3. **Optional: Fast path** (if performance insufficient):
+   - `compute_withinfirm_chars_all_dates()` - Parallel char aggregation
    - `compute_withinfirm_chars_all_signals()` - Vectorized across signals
 
 ### Target Performance
 
 | Configuration | Target | Notes |
 |---------------|--------|-------|
-| 1 signal, 2 chars | <0.3s | After JIT warmup |
-| 10 signals, 2 chars | <0.8s | Vectorized |
-| 50 signals, 5 chars | <2.0s | Vectorized |
+| 1 signal, 2 chars | <1.5s | Slow path (same as returns) |
+| 10 signals, 2 chars (4 workers) | <4s | Multiprocessing |
+| 50 signals, 5 chars (4 workers) | <15s | Multiprocessing |
 
 ---
 
-## Phase 16i: Turnover + Chars Optimization (HP=1)
+## Phase 16i: Turnover Status (HP=1)
 
 ### Overview
 
-Optimize WithinFirmSort when user sets `turnover=True` and wants chars averages.
+Verify turnover works correctly for WithinFirmSort.
 
-**Status: ⏳ PLANNED**
+**Status: ✅ ALREADY OPTIMIZED**
 
 ### Current State
 
-Turnover uses PyBondLab's standard machinery from Phase 4. Need to verify it works
-correctly with WithinFirmSort's hierarchical aggregation.
+Turnover for WithinFirmSort uses the **same machinery as SingleSort/DoubleSort**,
+which was optimized in Phase 4 with numba kernels (`_accumulate_turnover_fast`).
 
-### Implementation Steps
+**No additional optimization work is needed.**
 
-1. **Profile** current turnover implementation with WithinFirmSort
-2. **Validate** turnover is computed correctly (at bond level, not hierarchical)
-3. **Identify** bottlenecks (if any)
-4. **Optimize** as needed using numba kernels
+### Verification
 
-### Questions to Resolve
+Turnover is computed at **bond level** (not hierarchical):
+- Each bond has individual weights (eweights, vweights)
+- Turnover = sum(|current_weight - previous_weight|) / 2
+- Standard PyBondLab turnover tracking applies
 
-- Is turnover computed at bond level (standard) or does it need hierarchical aggregation?
-- Does the fast path need separate handling for turnover?
+### Code Reference
+
+```python
+# In PyBondLab.py, WithinFirmSort uses same turnover as SingleSort:
+if self.turnover and not result['weights_df'].empty:
+    self.turnover_manager.accumulate(
+        self.turnover_state,
+        self.cohort,
+        tot_nport,
+        t_idx,
+        result['weights_df'],
+        result['weights_scaled_df']
+    )
+
+# This calls _accumulate_turnover_fast() which uses numba kernels
+```
+
+### Batch Support
+
+When `turnover=True` in `BatchWithinFirmSortFormation`:
+- Uses slow path with multiprocessing
+- Each worker runs `StrategyFormation(turnover=True)` for one signal
+- Turnover computed using optimized Phase 4 kernels
+
+No additional work needed for Phase 16i.
 
 ### Performance Results (Phase 16c)
 
