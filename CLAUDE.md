@@ -56,7 +56,6 @@ Dramatically speed up portfolio formation in PyBondLab using numba/prange, while
 
 | Phase | Description | Status | Notes |
 |-------|-------------|--------|-------|
-| **Phase 3** | Parallelize main loop with prange | ⏳ Pending | Complex due to turnover state dependencies |
 | **Phase 15a** | Non-staggered rebalancing fast path | ✅ Complete | **100x speedup** achieved! |
 | **Phase 15** | Non-staggered integration | ✅ Complete | BatchStrategyFormation (~340x), DataUncertaintyAnalysis integrated |
 | **Phase 15b** | Non-staggered with turnover/chars/banding | ✅ Complete | **21-103x speedup**, all 6 tests PASS |
@@ -533,19 +532,6 @@ sf = StrategyFormation(
 )
 result = sf.fit()
 ```
-
-### Parallelization (Phase 3) - Not Started
-
-The main loop in `_form_cohort_portfolios` could be parallelized with `prange`,
-but this is complex because:
-- Turnover state has sequential dependencies (each period depends on previous)
-- Banding creates dependencies between cohorts (lag_rank state)
-- Without turnover, parallelization would be more straightforward
-
-**Potential approaches:**
-1. Parallelize only when `turnover=False`
-2. Restructure to batch portfolio formation first, then sequential turnover
-3. Accept current 3x speedup as sufficient
 
 ---
 
