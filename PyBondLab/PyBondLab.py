@@ -1788,6 +1788,7 @@ class StrategyFormation:
                 precomp.vw_map_t0,
                 precomp.vw_map_t1m,
                 date_t,
+                date_t1,
                 date_t1_minus1,
                 ret_col)
 
@@ -1862,6 +1863,7 @@ class StrategyFormation:
                 precomp.vw_map_t0,
                 precomp.vw_map_t1m,
                 date_t,
+                date_t1,
                 date_t1_minus1,
                 ColumnNames.RETURN if self.adj not in ['trim', 'price', 'bounce'] else f"{ColumnNames.RETURN}_{self.adj}"
             )
@@ -1894,12 +1896,19 @@ class StrategyFormation:
         vw_map_t0: Dict,
         vw_map_t1m: Dict,
         date_t: pd.Timestamp,
+        date_t1: pd.Timestamp,
         date_t1_minus1: Optional[pd.Timestamp],
         ret_col: str
     ) -> Dict:
         """
         Form portfolio for a single period.
 
+        Parameters
+        ----------
+        date_t : pd.Timestamp
+            Formation date (used for rank lookup)
+        date_t1 : pd.Timestamp
+            Return date (used for port_idx key - results indexed by return date)
         """
         from .utils import intersect_id
 
@@ -1981,7 +1990,7 @@ class StrategyFormation:
             if self.save_idx:
                 if not hasattr(self, 'port_idx'):
                     self.port_idx = {}
-                self.port_idx[date_t] = weights_df
+                self.port_idx[date_t1] = weights_df
 
             # Scaled weights using numba kernel
             ew_scaled_arr, vw_scaled_arr = compute_scaled_weights_single(

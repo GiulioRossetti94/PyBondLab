@@ -2017,7 +2017,9 @@ This validates:
 
 Optimize the `WithinFirmSort` strategy for faster portfolio formation. This strategy is fundamentally different from SingleSort/DoubleSort because it sorts bonds **within each firm**, isolating within-firm bond dispersion from cross-firm differences.
 
-### Bug Fix (Completed)
+### Bug Fixes (Completed)
+
+#### Fix 1: Fast Path Exclusion
 
 **Issue**: WithinFirmSort was incorrectly using the fast path when `turnover=False`.
 
@@ -2031,21 +2033,57 @@ if is_within_firm:
     return False
 ```
 
+#### Fix 2: Result Indexing (Return Date)
+
+**Issue**: Results in `port_idx` were indexed by FORMATION date instead of RETURN date.
+
+**Root cause**: `_form_single_period()` stored `port_idx[date_t]` where `date_t` is the formation date.
+For consistency with SingleSort/DoubleSort and correct factor return alignment, results should be
+indexed by the return date (`date_t1`).
+
+**Fix**: Modified `_form_single_period()` signature to accept `date_t1` parameter and changed:
+```python
+# Before: self.port_idx[date_t] = weights_df
+# After:
+self.port_idx[date_t1] = weights_df  # Index by return date
+```
+
+Both calling sites (`_form_cohort_portfolios`, `_form_nonstaggered_portfolio`) updated to pass `date_t1`.
+
+#### Fix 3: HP>1 Disabled
+
+**Issue**: HP>1 (staggered rebalancing) had fundamental bugs in cohort averaging.
+
+**Root cause**: In `_form_cohort_portfolios`, `port_idx[date_t]` was overwritten in the horizon loop,
+so only the LAST horizon's data was retained. For HP=3, this means only returns from `form_date + 3`
+were used, instead of averaging across all 3 cohorts.
+
+**Fix**: Disabled HP>1 for WithinFirmSort until proper cohort averaging is implemented:
+```python
+# In StrategyClass.py WithinFirmSort.__init__():
+if holding_period > 1:
+    raise ValueError(
+        f"WithinFirmSort currently only supports holding_period=1. "
+        f"Got holding_period={holding_period}. "
+        f"HP>1 staggered rebalancing has known bugs and is disabled."
+    )
+```
+
 ### Current Baseline Performance
 
 | Configuration | Time | Notes |
 |---------------|------|-------|
-| HP=1, no turnover | ~3.8s | Test data: 11,940 rows |
-| HP=1, with turnover | ~3.7s | 199 bonds, 50 firms |
-| HP=3, no turnover | ~4.2s | 60 dates |
-| HP=3, with turnover | ~4.3s | |
+| HP=1, no turnover | ~1.0s | Test data: 11,940 rows |
+| HP=1, with turnover | ~0.9s | 199 bonds, 50 firms, 60 dates |
+
+**Note**: HP>1 is currently disabled (raises ValueError).
 
 ### Feature Support
 
 | Feature | Supported | Notes |
 |---------|-----------|-------|
 | **Turnover** | ✅ YES | Uses standard PyBondLab machinery |
-| **HP>1 (Staggered)** | ✅ YES | Cohort averaging works correctly |
+| **HP>1 (Staggered)** | ❌ DISABLED | Cohort averaging bug - raises ValueError |
 | **Chars** | ⏳ TODO | Will implement with Option B aggregation |
 | **Banding** | ❌ NO | Not applicable - only HIGH/LOW portfolios |
 
@@ -2053,6 +2091,10 @@ if is_within_firm:
 reassignment when rank changes by less than `banding/nport`. With nport=2, banding=1 would
 require a change of 0.5 (i.e., moving from one portfolio to the other), which is always
 the case when rank changes. Therefore banding is meaningless for WithinFirmSort.
+
+**Why HP>1 disabled?** The current cohort loop overwrites `port_idx` on each iteration,
+so only the last horizon's data is retained for aggregation. Proper fix requires restructuring
+to store all cohort data and average correctly.
 
 **Chars aggregation (Option B):** For chars, we need to average characteristics at the
 formation month using the same hierarchical aggregation as returns:

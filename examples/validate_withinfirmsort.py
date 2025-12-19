@@ -207,69 +207,42 @@ def test_withinfirmsort_turnover_comparison(data: pd.DataFrame, verbose: bool = 
     }
 
 
-def test_withinfirmsort_hp3(data: pd.DataFrame, verbose: bool = True) -> dict:
+def test_withinfirmsort_hp_gt1_disabled(data: pd.DataFrame, verbose: bool = True) -> dict:
     """
-    Test: WithinFirmSort with holding_period=3 (staggered).
+    Test: Verify that WithinFirmSort with HP>1 raises an error.
+    HP>1 is currently disabled due to known bugs in cohort averaging.
     """
     if verbose:
         print("\n" + "="*70)
-        print("Test 3: WithinFirmSort with HP=3 (Staggered)")
+        print("Test 3: Verify HP>1 is Disabled (should raise ValueError)")
         print("="*70)
 
-    strategy = pbl.WithinFirmSort(
-        holding_period=3,
-        sort_var='CS',
-        firm_id_col='PERMNO',
-        min_bonds_per_firm=2,
-        rating_bins=[-np.inf, 7, 10, np.inf],
-        num_portfolios=2,
-        verbose=False
-    )
-
-    # Run with turnover=True
-    t0 = time.time()
-    result_with = pbl.StrategyFormation(
-        data=data.copy(),
-        strategy=strategy,
-        turnover=True,
-        verbose=False
-    ).fit()
-    time_with = time.time() - t0
-
-    # Run with turnover=False
-    t0 = time.time()
-    result_without = pbl.StrategyFormation(
-        data=data.copy(),
-        strategy=strategy,
-        turnover=False,
-        verbose=False
-    ).fit()
-    time_without = time.time() - t0
-
-    ew_with, vw_with = result_with.get_long_short()
-    ew_without, vw_without = result_without.get_long_short()
-
-    ew_diff = np.abs(np.array(ew_with) - np.array(ew_without))
-    vw_diff = np.abs(np.array(vw_with) - np.array(vw_without))
-
-    max_ew_diff = np.nanmax(ew_diff)
-    max_vw_diff = np.nanmax(vw_diff)
-
-    passed = max_ew_diff < 1e-10 and max_vw_diff < 1e-10
+    try:
+        strategy = pbl.WithinFirmSort(
+            holding_period=3,
+            sort_var='CS',
+            firm_id_col='PERMNO',
+            min_bonds_per_firm=2,
+            rating_bins=[-np.inf, 7, 10, np.inf],
+            num_portfolios=2,
+            verbose=False
+        )
+        passed = False  # Should have raised an error
+        error_msg = "No error raised"
+    except ValueError as e:
+        passed = True
+        error_msg = str(e)
 
     if verbose:
-        print(f"\nWith turnover=True:    {time_with:.2f}s, EW mean={ew_with.mean()*100:.4f}%")
-        print(f"With turnover=False:   {time_without:.2f}s, EW mean={ew_without.mean()*100:.4f}%")
-        print(f"\nMax EW difference: {max_ew_diff:.2e}")
-        print(f"Max VW difference: {max_vw_diff:.2e}")
         print(f"\nResult: {'PASS' if passed else 'FAIL'}")
+        if passed:
+            print(f"ValueError raised as expected: {error_msg[:80]}...")
+        else:
+            print("ERROR: HP>1 should raise ValueError but didn't!")
 
     return {
-        'time_with': time_with,
-        'time_without': time_without,
-        'max_ew_diff': max_ew_diff,
-        'max_vw_diff': max_vw_diff,
-        'passed': passed
+        'passed': passed,
+        'error_msg': error_msg if passed else None
     }
 
 
@@ -350,6 +323,7 @@ def test_withinfirmsort_vs_singlesort(data: pd.DataFrame, verbose: bool = True) 
 def run_baseline_timing(data: pd.DataFrame, n_runs: int = 3, verbose: bool = True) -> dict:
     """
     Establish baseline timing for Phase 16 optimization.
+    Note: Only HP=1 is tested since HP>1 is currently disabled.
     """
     if verbose:
         print("\n" + "="*70)
@@ -359,34 +333,32 @@ def run_baseline_timing(data: pd.DataFrame, n_runs: int = 3, verbose: bool = Tru
     timings = {
         'hp1_no_turnover': [],
         'hp1_with_turnover': [],
-        'hp3_no_turnover': [],
-        'hp3_with_turnover': [],
     }
 
-    for hp in [1, 3]:
-        for turnover in [False, True]:
-            key = f"hp{hp}_{'with' if turnover else 'no'}_turnover"
+    # Only test HP=1 (HP>1 is disabled due to known bugs)
+    for turnover in [False, True]:
+        key = f"hp1_{'with' if turnover else 'no'}_turnover"
 
-            strategy = pbl.WithinFirmSort(
-                holding_period=hp,
-                sort_var='CS',
-                firm_id_col='PERMNO',
-                min_bonds_per_firm=2,
-                rating_bins=[-np.inf, 7, 10, np.inf],
-                num_portfolios=2,
+        strategy = pbl.WithinFirmSort(
+            holding_period=1,
+            sort_var='CS',
+            firm_id_col='PERMNO',
+            min_bonds_per_firm=2,
+            rating_bins=[-np.inf, 7, 10, np.inf],
+            num_portfolios=2,
+            verbose=False
+        )
+
+        for run in range(n_runs):
+            t0 = time.time()
+            result = pbl.StrategyFormation(
+                data=data.copy(),
+                strategy=strategy,
+                turnover=turnover,
                 verbose=False
-            )
-
-            for run in range(n_runs):
-                t0 = time.time()
-                result = pbl.StrategyFormation(
-                    data=data.copy(),
-                    strategy=strategy,
-                    turnover=turnover,
-                    verbose=False
-                ).fit()
-                elapsed = time.time() - t0
-                timings[key].append(elapsed)
+            ).fit()
+            elapsed = time.time() - t0
+            timings[key].append(elapsed)
 
     if verbose:
         print(f"\nData size: {len(data)} rows, {data['ID'].nunique()} bonds, "
@@ -431,8 +403,8 @@ def main():
     # Test 2: turnover comparison (the key fix validation)
     results['turnover_comparison'] = test_withinfirmsort_turnover_comparison(data)
 
-    # Test 3: HP=3 staggered
-    results['hp3'] = test_withinfirmsort_hp3(data)
+    # Test 3: Verify HP>1 is disabled
+    results['hp_gt1_disabled'] = test_withinfirmsort_hp_gt1_disabled(data)
 
     # Test 4: vs SingleSort
     results['vs_singlesort'] = test_withinfirmsort_vs_singlesort(data)
@@ -450,7 +422,7 @@ def main():
     test_names = [
         ('basic', 'Basic Execution', lambda r: r['success']),
         ('turnover_comparison', 'Turnover=True vs False', lambda r: r['passed']),
-        ('hp3', 'HP=3 Staggered', lambda r: r['passed']),
+        ('hp_gt1_disabled', 'HP>1 Disabled Check', lambda r: r['passed']),
         ('vs_singlesort', 'vs SingleSort Different', lambda r: r['are_different']),
     ]
 

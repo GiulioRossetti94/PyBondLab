@@ -1031,6 +1031,14 @@ class WithinFirmSort(Strategy):
             )
             num_portfolios = 2
 
+        # Validate holding_period - HP>1 is currently not supported (cohort averaging bug)
+        if holding_period > 1:
+            raise ValueError(
+                f"WithinFirmSort currently only supports holding_period=1. "
+                f"Got holding_period={holding_period}. "
+                f"HP>1 staggered rebalancing has known bugs and is disabled."
+            )
+
         # Call parent constructor
         super().__init__(
             holding_period=holding_period,
