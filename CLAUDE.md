@@ -2248,20 +2248,218 @@ Tested with synthetic data where returns differ by date:
 
 **Status: Pending**
 
-Add characteristics aggregation using Option B (firm-cap-weighted → rating-averaged):
+Add characteristics aggregation using hierarchical aggregation (same as returns):
 1. At each formation date, compute VW-average char for HIGH and LOW within each firm
 2. Aggregate across firms using cap-weighting within each rating tercile
 3. Average across rating terciles
 4. Output: DataFrame with columns `['LOW', 'HIGH']` for each characteristic
 
-#### Phase 16f: Fast Path with Turnover/Chars
+**Implementation Steps:**
+1. Slow path first (validate correctness)
+2. Fast path with numba kernel `compute_withinfirm_chars_all_dates()`
+
+#### Phase 16f: Turnover Optimization
 
 **Status: Pending**
 
-Create fast path that supports turnover and/or chars:
-1. Use vectorized computation where possible
-2. Maintain exact numerical match with slow path
-3. Target 5-10x speedup over current implementation
+Optimize turnover computation for WithinFirmSort:
+1. Profile current implementation
+2. Identify bottlenecks
+3. Optimize with numba if needed
+
+---
+
+## Phase 16g: WithinFirmSort Fast Path + BatchWithinFirmSortFormation
+
+### Overview
+
+Create an ultra-fast path for WithinFirmSort (HP=1, no turnover, no chars) and a new
+`BatchWithinFirmSortFormation` class for processing multiple signals in parallel.
+
+**Status: ⏳ PLANNED**
+
+### Key Insight
+
+For WithinFirmSort with multiple signals:
+- **Rating terciles**: Computed ONCE (depends on `RATING_NUM`, not signal)
+- **Firm groupings**: Computed ONCE (depends on `PERMNO`, not signal)
+- **HIGH/LOW assignment**: Computed N times (one per signal) - CAN BE VECTORIZED
+- **Return aggregation**: Computed N times (one per signal) - CAN BE VECTORIZED
+
+### Implementation Plan
+
+#### Step 1: Fast Path in StrategyFormation
+
+Add `_can_use_withinfirm_fast_path()` and `_fit_withinfirm_fast()`:
+
+```python
+def _can_use_withinfirm_fast_path(self):
+    """Check if WithinFirmSort fast path can be used."""
+    if self.strategy.__strategy_name__ != "Within-Firm Sort":
+        return False
+    if self.turnover:
+        return False
+    if self.chars:
+        return False
+    if self.hor != 1:
+        return False
+    return True
+```
+
+**Key numba kernels to add:**
+- `compute_withinfirm_assignments_all_dates()` - Parallel assignment across all dates
+- `compute_withinfirm_returns_all_dates()` - Parallel return aggregation
+
+#### Step 2: BatchWithinFirmSortFormation Class
+
+New class for batch processing multiple signals:
+
+```python
+class BatchWithinFirmSortFormation:
+    """
+    Batch processing for WithinFirmSort with multiple signals.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Bond panel data
+    signals : list of str
+        Column names to use as sorting signals
+    firm_id_col : str, default='PERMNO'
+        Firm identifier column
+    rating_bins : list, optional
+        Rating bin edges (default: [-inf, 7, 10, inf])
+    min_bonds_per_firm : int, default=2
+        Minimum bonds per firm-date-rating group
+    rating : str or tuple, optional
+        Rating filter ('IG', 'NIG', or (min, max))
+    subset_filter : dict, optional
+        Characteristic-based filters
+    n_jobs : int, default=1
+        Parallel workers (for fallback slow path)
+    verbose : bool, default=True
+        Show progress
+    """
+```
+
+**Fast batch path:**
+```python
+def _fit_fast_batch_withinfirm(self):
+    # 1. Pre-compute rating terciles (ONCE)
+    # 2. Pre-compute firm groupings (ONCE)
+    # 3. Compute HIGH/LOW for ALL signals at once
+    # 4. Build rank lookups for ALL signals
+    # 5. Aggregate returns for ALL signals in parallel
+```
+
+**Key numba kernels:**
+- `compute_withinfirm_assignments_all_signals()` - Vectorized assignment
+- `compute_withinfirm_returns_all_signals()` - Vectorized aggregation
+
+### Target Performance
+
+| Configuration | Current | Target | Speedup |
+|---------------|---------|--------|---------|
+| 1 signal, HP=1, no turnover | ~1.0s | <0.2s | **5x** |
+| 10 signals, HP=1, no turnover | ~10s | <0.5s | **20x** |
+| 50 signals, HP=1, no turnover | ~50s | <1.5s | **30x+** |
+
+### File Changes
+
+| File | Changes |
+|------|---------|
+| `PyBondLab/PyBondLab.py` | Add `_can_use_withinfirm_fast_path()`, `_fit_withinfirm_fast()` |
+| `PyBondLab/numba_core.py` | Add WithinFirmSort numba kernels |
+| `PyBondLab/batch_withinfirm.py` | **NEW** - `BatchWithinFirmSortFormation` class |
+| `PyBondLab/__init__.py` | Export `BatchWithinFirmSortFormation` |
+| `examples/validate_batch_withinfirm.py` | **NEW** - Validation script |
+
+---
+
+## Phase 16h: Chars Support for WithinFirmSort (HP=1)
+
+### Overview
+
+Add characteristics aggregation using the same hierarchical structure as returns.
+
+**Status: ⏳ PLANNED**
+
+### Aggregation Logic
+
+For each characteristic at each date:
+1. **Within-firm**: Compute VW-average char for HIGH and LOW portfolios
+2. **Across firms**: Cap-weight the firm-level chars within each rating tercile
+3. **Across ratings**: Simple average across rating terciles
+
+### Output Format
+
+```python
+# For single signal:
+chars_result = {
+    'char1': pd.DataFrame with index=dates, columns=['LOW', 'HIGH'],
+    'char2': pd.DataFrame with index=dates, columns=['LOW', 'HIGH'],
+    ...
+}
+
+# For batch (multiple signals):
+chars_result = {
+    'signal1': {
+        'char1': DataFrame['LOW', 'HIGH'],
+        ...
+    },
+    'signal2': {...},
+    ...
+}
+```
+
+### Implementation Steps
+
+1. **Slow path first** (in `_form_single_period` or similar):
+   - Extend existing chars logic for WithinFirmSort
+   - Validate correctness against manual calculation
+
+2. **Fast path** (numba kernel):
+   - `compute_withinfirm_chars_all_dates()` - Parallel char aggregation
+   - Same hierarchical structure as returns
+
+3. **Batch support**:
+   - Extend `BatchWithinFirmSortFormation` to support `chars` parameter
+   - `compute_withinfirm_chars_all_signals()` - Vectorized across signals
+
+### Target Performance
+
+| Configuration | Target | Notes |
+|---------------|--------|-------|
+| 1 signal, 2 chars | <0.3s | After JIT warmup |
+| 10 signals, 2 chars | <0.8s | Vectorized |
+| 50 signals, 5 chars | <2.0s | Vectorized |
+
+---
+
+## Phase 16i: Turnover + Chars Optimization (HP=1)
+
+### Overview
+
+Optimize WithinFirmSort when user sets `turnover=True` and wants chars averages.
+
+**Status: ⏳ PLANNED**
+
+### Current State
+
+Turnover uses PyBondLab's standard machinery from Phase 4. Need to verify it works
+correctly with WithinFirmSort's hierarchical aggregation.
+
+### Implementation Steps
+
+1. **Profile** current turnover implementation with WithinFirmSort
+2. **Validate** turnover is computed correctly (at bond level, not hierarchical)
+3. **Identify** bottlenecks (if any)
+4. **Optimize** as needed using numba kernels
+
+### Questions to Resolve
+
+- Is turnover computed at bond level (standard) or does it need hierarchical aggregation?
+- Does the fast path need separate handling for turnover?
 
 ### Performance Results (Phase 16c)
 
@@ -2271,8 +2469,8 @@ Create fast path that supports turnover and/or chars:
 |---------------|--------|-------|------------------|
 | HP=1, no turnover | 3.8s | **0.94s** | **4.0x** ✅ |
 | HP=1, with turnover | 3.7s | **0.94s** | **3.9x** ✅ |
-| HP=3, no turnover | 4.2s | **1.50s** | **2.8x** |
-| HP=3, with turnover | 4.3s | **1.56s** | **2.8x** |
+
+**Note**: HP>1 is now disabled due to cohort averaging bugs (see Fix 3 above).
 
 **Large Data Profiling (matching user's data: 2.4M rows, ~50k cusips, 2.9k firms, 272 dates):**
 
@@ -2284,16 +2482,16 @@ Create fast path that supports turnover and/or chars:
 | **Total** | **17.5s** | 100% |
 
 **Key Insight**: After Phase 16c, the bottleneck shifted to `_precompute_data()` and
-per-date portfolio assignment calls. Phase 16d will bypass both by computing everything
+per-date portfolio assignment calls. Phase 16g will bypass both by computing everything
 directly from numpy arrays.
 
 ### Target Performance (Future Phases)
 
 | Configuration | Current | Target | Status |
 |---------------|---------|--------|--------|
-| HP=1, no turnover, no chars | 0.94s | <0.5s | Phase 16d |
-| HP=3, no turnover, no chars | 1.50s | <0.6s | Phase 16d |
-| HP=1, with chars | TBD | TBD | Phase 16e |
+| HP=1, no turnover, no chars | 0.94s | <0.2s | Phase 16g |
+| HP=1, with chars | TBD | <0.3s | Phase 16h |
+| HP=1, turnover + chars | TBD | TBD | Phase 16i |
 
 ### Validation Script
 
