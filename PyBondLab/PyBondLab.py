@@ -969,9 +969,12 @@ class StrategyFormation:
         # Check if fast returns-only path can be used
         use_fast_path = self._can_use_fast_path()
         use_nonstaggered_fast_path = self._can_use_nonstaggered_fast_path()
+        use_withinfirm_fast_path = self._can_use_withinfirm_fast_path()
 
         # Form portfolios (EA results)
-        if use_fast_path:
+        if use_withinfirm_fast_path:
+            ea_results = self._fit_withinfirm_fast()
+        elif use_fast_path:
             ea_results = self._fit_fast_returns_only()
         elif use_nonstaggered_fast_path:
             ea_results = self._fit_nonstaggered_fast()
@@ -987,7 +990,9 @@ class StrategyFormation:
             self._computing_ep = True
 
             # Re-run portfolio formation. # uses It2
-            if use_fast_path:
+            if use_withinfirm_fast_path:
+                ep_results = self._fit_withinfirm_fast()
+            elif use_fast_path:
                 ep_results = self._fit_fast_returns_only()
             elif use_nonstaggered_fast_path:
                 ep_results = self._fit_nonstaggered_fast()
@@ -1403,6 +1408,202 @@ class StrategyFormation:
         # - True: VW from day before return date (d-1)
         # - False: VW from formation date (different per cohort for hp>1)
         return True
+
+    def _can_use_withinfirm_fast_path(self) -> bool:
+        """Check if WithinFirmSort fast path can be used."""
+        # Only for WithinFirmSort strategy
+        if self.strategy.__strategy_name__ != "Within-Firm Sort":
+            return False
+        # No turnover (uses slow path with multiprocessing for turnover)
+        if self.turnover:
+            return False
+        # No chars (uses slow path with multiprocessing for chars)
+        if self.chars:
+            return False
+        # HP=1 only (HP>1 is disabled for WithinFirmSort)
+        if self.hor != 1:
+            return False
+        # Monthly rebalancing only
+        if self.rebalance_frequency != 'monthly':
+            return False
+        return True
+
+    def _fit_withinfirm_fast(self):
+        """
+        Ultra-fast portfolio formation for WithinFirmSort (HP=1, no turnover, no chars).
+
+        This bypasses _precompute_data() entirely and works directly with numpy arrays.
+
+        For HP=1:
+        - Formation date t: rank bonds using signal_t within (rating_terc_t, firm_t) groups
+        - Return date t+1: collect returns from date t+1 for those ranked bonds
+        - Result indexed at t+1 (return date)
+
+        Requirements:
+        - WithinFirmSort strategy
+        - turnover=False
+        - chars=None
+        - holding_period=1
+        - Monthly rebalancing
+        """
+        from .numba_core import (
+            compute_withinfirm_assignments_all_dates,
+            compute_within_firm_aggregation_with_lookup
+        )
+
+        if self.verbose:
+            print("Using ULTRA-FAST WithinFirmSort path...")
+
+        # Get strategy parameters
+        firm_id_col = getattr(self.strategy, 'firm_id_col', 'PERMNO')
+        rating_bins = getattr(self.strategy, 'rating_bins', [-np.inf, 7, 10, np.inf])
+        min_bonds = getattr(self.strategy, 'min_bonds_per_firm', 2)
+        sort_var = self.strategy.sort_var
+
+        # Get filtered data
+        tab = self.data
+
+        # Create mappings
+        date_to_idx = {d: i for i, d in enumerate(self.datelist)}
+        n_dates = len(self.datelist)
+
+        # Filter to valid dates
+        valid_mask = tab[ColumnNames.DATE].isin(self.datelist)
+        data = tab[valid_mask].copy()
+
+        if data.empty:
+            return self._create_empty_results()
+
+        # Create ID mapping
+        unique_ids = data[ColumnNames.ID].unique()
+        id_to_idx = {id_: i for i, id_ in enumerate(unique_ids)}
+        n_ids = len(unique_ids)
+
+        # Create firm mapping
+        unique_firms = data[firm_id_col].dropna().unique()
+        firm_to_idx = {f: i for i, f in enumerate(unique_firms)}
+        n_firms = len(unique_firms)
+
+        # Create rating terciles
+        rating_terc = pd.cut(
+            pd.to_numeric(data[ColumnNames.RATING], errors='coerce'),
+            bins=rating_bins,
+            labels=[1, 2, 3],
+            include_lowest=True
+        ).astype('Int64').fillna(0).values.astype(np.int64)
+
+        # Convert to numpy arrays
+        date_idx = data[ColumnNames.DATE].map(date_to_idx).values.astype(np.int64)
+        id_idx = data[ColumnNames.ID].map(id_to_idx).values.astype(np.int64)
+        firm_idx = data[firm_id_col].map(firm_to_idx).fillna(-1).values.astype(np.int64)
+        signal = data[sort_var].values.astype(np.float64)
+        ret = data[ColumnNames.RETURN].values.astype(np.float64)
+        vw = data[ColumnNames.VALUE_WEIGHT].values.astype(np.float64)
+
+        # Sort by (date, rating_terc, firm) for group processing
+        sort_order = np.lexsort((firm_idx, rating_terc, date_idx))
+        date_idx_sorted = date_idx[sort_order]
+        rating_terc_sorted = rating_terc[sort_order].astype(np.float64)
+        firm_idx_sorted = firm_idx[sort_order]
+        id_idx_sorted = id_idx[sort_order]
+        signal_sorted = signal[sort_order]
+        vw_sorted = vw[sort_order]
+
+        # Find group boundaries (date, rating_terc, firm)
+        n_obs = len(date_idx_sorted)
+        group_keys = date_idx_sorted * 1000000 + rating_terc_sorted.astype(np.int64) * 10000 + firm_idx_sorted
+        group_changes = np.concatenate([
+            [0],
+            np.where(np.diff(group_keys) != 0)[0] + 1,
+            [n_obs]
+        ])
+        group_starts = group_changes[:-1].astype(np.int64)
+        group_ends = group_changes[1:].astype(np.int64)
+
+        # Step 1: Compute HIGH/LOW assignments at formation dates
+        ptf_rank = compute_withinfirm_assignments_all_dates(
+            signal_sorted, vw_sorted, group_starts, group_ends, min_bonds
+        )
+
+        # Step 2: Build rank lookup table: (formation_date, bond_id) -> (rank, rating_terc, firm_idx)
+        # Lookup shape: (n_dates, n_ids, 3) for [rank, rating_terc, firm_idx]
+        rank_lookup = np.zeros((n_dates, n_ids, 3), dtype=np.float64)
+        for i in range(n_obs):
+            d = date_idx_sorted[i]
+            b = id_idx_sorted[i]
+            rank_lookup[d, b, 0] = ptf_rank[i]  # rank (1=LOW, 2=HIGH, 0=unassigned)
+            rank_lookup[d, b, 1] = rating_terc_sorted[i]  # rating tercile
+            rank_lookup[d, b, 2] = firm_idx_sorted[i]  # firm index
+
+        # Step 3: Build VW lookup for dynamic weights
+        # VW at date d-1 for each bond
+        vw_lookup = np.full((n_dates, n_ids), np.nan, dtype=np.float64)
+        for i in range(len(data)):
+            d = date_idx[i]
+            b = id_idx[i]
+            vw_lookup[d, b] = vw[i]
+
+        # Step 4: Aggregate returns at return dates
+        # For each return date t+1, look up ranks from formation date t
+        (ew_long_short, vw_long_short,
+         ew_high_ret, ew_low_ret,
+         vw_high_ret, vw_low_ret) = compute_within_firm_aggregation_with_lookup(
+            date_idx, id_idx, firm_idx, ret, vw,
+            rank_lookup, vw_lookup, n_dates, n_ids, n_firms
+        )
+
+        # Create result series
+        ewls_series = pd.Series(ew_long_short, index=self.datelist)
+        vwls_series = pd.Series(vw_long_short, index=self.datelist)
+        ew_high_series = pd.Series(ew_high_ret, index=self.datelist)
+        ew_low_series = pd.Series(ew_low_ret, index=self.datelist)
+        vw_high_series = pd.Series(vw_high_ret, index=self.datelist)
+        vw_low_series = pd.Series(vw_low_ret, index=self.datelist)
+
+        # Build result DataFrames
+        sort_var_main, _ = self._get_sort_vars()
+        ptf_labels = ['LOW', 'HIGH']
+
+        # Portfolio returns
+        ew_port = pd.DataFrame(
+            np.column_stack([ew_low_series.values, ew_high_series.values]),
+            index=self.datelist,
+            columns=ptf_labels
+        )
+        vw_port = pd.DataFrame(
+            np.column_stack([vw_low_series.values, vw_high_series.values]),
+            index=self.datelist,
+            columns=ptf_labels
+        )
+
+        # Long-short DataFrames (match format expected by build_strategy_results)
+        prefix = 'EWEP' if self._computing_ep else 'EWEA'
+        vw_prefix = 'VWEP' if self._computing_ep else 'VWEA'
+
+        ewls_df = pd.DataFrame(ewls_series.values, index=self.datelist, columns=[f'{prefix}_{self.name}'])
+        vwls_df = pd.DataFrame(vwls_series.values, index=self.datelist, columns=[f'{vw_prefix}_{self.name}'])
+        ew_long_df = pd.DataFrame(ew_high_series.values, index=self.datelist, columns=[f'LONG_{prefix}_{self.name}'])
+        vw_long_df = pd.DataFrame(vw_high_series.values, index=self.datelist, columns=[f'LONG_{vw_prefix}_{self.name}'])
+        ew_short_df = pd.DataFrame(ew_low_series.values, index=self.datelist, columns=[f'SHORT_{prefix}_{self.name}'])
+        vw_short_df = pd.DataFrame(vw_low_series.values, index=self.datelist, columns=[f'SHORT_{vw_prefix}_{self.name}'])
+
+        # Build results object using same function as other fast paths
+        self.results = build_strategy_results(
+            ewport_df=ew_port,
+            vwport_df=vw_port,
+            ewls_df=ewls_df,
+            vwls_df=vwls_df,
+            ewls_long_df=ew_long_df,
+            vwls_long_df=vw_long_df,
+            ewls_short_df=ew_short_df,
+            vwls_short_df=vw_short_df,
+            turnover_ew_df=None,  # No turnover for fast path
+            turnover_vw_df=None,
+            chars_ew=None,
+            chars_vw=None,
+        )
+
+        return self.results
 
     def _fit_fast_returns_only(self):
         """

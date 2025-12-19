@@ -4856,6 +4856,116 @@ def compute_nonstaggered_full_fast(
 # =============================================================================
 
 @njit(cache=True)
+def compute_withinfirm_assignments_all_dates(
+    signal: np.ndarray,         # Signal values (sorted by date, rating_terc, firm)
+    vw: np.ndarray,             # Value weights (sorted same way)
+    group_starts: np.ndarray,   # Start index for each (date, rating_terc, firm) group
+    group_ends: np.ndarray,     # End index for each group
+    min_bonds: int,             # Minimum bonds required per firm
+) -> np.ndarray:
+    """
+    Compute within-firm HIGH/LOW portfolio assignments for all groups at once.
+
+    This is the fast path version that processes all (date, rating_terc, firm)
+    groups in a single pass through the data.
+
+    Parameters
+    ----------
+    signal : np.ndarray
+        Signal values, sorted by (date, rating_terc, firm)
+    vw : np.ndarray
+        Value weights, sorted same way
+    group_starts : np.ndarray
+        Start indices for each group
+    group_ends : np.ndarray
+        End indices for each group
+    min_bonds : int
+        Minimum bonds required per firm to be included
+
+    Returns
+    -------
+    ptf_rank : np.ndarray
+        Portfolio rank for each observation: 0=unassigned, 1=LOW, 2=HIGH
+    """
+    n_obs = len(signal)
+    n_groups = len(group_starts)
+    ptf_rank = np.zeros(n_obs, dtype=np.float64)
+
+    for g in range(n_groups):
+        start = group_starts[g]
+        end = group_ends[g]
+        n = end - start
+
+        if n < min_bonds:
+            continue
+
+        # Get slice for this group
+        s = signal[start:end]
+        w = vw[start:end]
+
+        # Check for finite values (signal and weight must be valid)
+        finite_count = 0
+        for i in range(n):
+            if np.isfinite(s[i]) and np.isfinite(w[i]) and w[i] > 0:
+                finite_count += 1
+
+        if finite_count < min_bonds:
+            continue
+
+        # Collect finite signal values for percentile computation
+        s_finite = np.empty(finite_count, dtype=np.float64)
+        j = 0
+        for i in range(n):
+            if np.isfinite(s[i]) and np.isfinite(w[i]) and w[i] > 0:
+                s_finite[j] = s[i]
+                j += 1
+
+        # Get UNIQUE values (slow path uses np.unique before percentile)
+        s_sorted = np.sort(s_finite)
+        n_unique = 1
+        for i in range(1, len(s_sorted)):
+            if s_sorted[i] != s_sorted[i-1]:
+                n_unique += 1
+
+        if n_unique < 2:
+            continue
+
+        # Extract unique values (matches slow path behavior)
+        s_uniq = np.empty(n_unique, dtype=np.float64)
+        s_uniq[0] = s_sorted[0]
+        k = 1
+        for i in range(1, len(s_sorted)):
+            if s_sorted[i] != s_sorted[i-1]:
+                s_uniq[k] = s_sorted[i]
+                k += 1
+
+        # Compute percentile thresholds on UNIQUE values (matches slow path)
+        high_bp = np.percentile(s_uniq, 66.66666666666667)
+        low_bp = np.percentile(s_uniq, 33.33333333333333)
+
+        # Assign to HIGH/LOW portfolios
+        has_high = False
+        has_low = False
+
+        for i in range(n):
+            idx = start + i
+            if np.isfinite(s[i]) and np.isfinite(w[i]) and w[i] > 0:
+                if s[i] > high_bp:
+                    ptf_rank[idx] = 2.0  # HIGH
+                    has_high = True
+                elif s[i] < low_bp:
+                    ptf_rank[idx] = 1.0  # LOW
+                    has_low = True
+
+        # If no bonds in either portfolio, reset assignments for this group
+        if not (has_high and has_low):
+            for i in range(n):
+                ptf_rank[start + i] = 0.0
+
+    return ptf_rank
+
+
+@njit(cache=True)
 def compute_within_firm_aggregation_fast(
     date_idx: np.ndarray,       # Date index for each bond-period
     firm_idx: np.ndarray,       # Firm index for each bond-period
@@ -4970,6 +5080,224 @@ def compute_within_firm_aggregation_fast(
     vw_low_ret = np.full(n_dates, np.nan, dtype=np.float64)
 
     # Second pass: compute aggregated returns for each date
+    for d in range(n_dates):
+        # Compute simple returns for reporting (HIGH and LOW portfolios)
+        if simple_count[d, 0] > 0:
+            ew_low_ret[d] = simple_ret_sum[d, 0] / simple_count[d, 0]
+        if simple_count[d, 1] > 0:
+            ew_high_ret[d] = simple_ret_sum[d, 1] / simple_count[d, 1]
+        if simple_vw_sum[d, 0] > 0:
+            vw_low_ret[d] = simple_wret_sum[d, 0] / simple_vw_sum[d, 0]
+        if simple_vw_sum[d, 1] > 0:
+            vw_high_ret[d] = simple_wret_sum[d, 1] / simple_vw_sum[d, 1]
+
+        # Compute EW and VW H-L factors with rating-averaged aggregation
+        ew_rating_factors = np.zeros(3, dtype=np.float64)
+        vw_rating_factors = np.zeros(3, dtype=np.float64)
+        ew_rating_valid = np.zeros(3, dtype=np.bool_)
+        vw_rating_valid = np.zeros(3, dtype=np.bool_)
+
+        for rt_idx in range(3):
+            # EW: equal-weight across firms (simple average of firm H-L factors)
+            ew_firm_hl_sum = 0.0
+            ew_firm_count = 0
+
+            # VW: cap-weight across firms
+            vw_firm_hl_sum = 0.0
+            vw_firm_weight_sum = 0.0
+
+            for f in range(n_firms):
+                # EW within firm
+                low_cnt = count[d, rt_idx, f, 0]
+                high_cnt = count[d, rt_idx, f, 1]
+
+                if low_cnt > 0 and high_cnt > 0:
+                    ew_low_r = ret_sum[d, rt_idx, f, 0] / low_cnt
+                    ew_high_r = ret_sum[d, rt_idx, f, 1] / high_cnt
+                    ew_firm_hl = ew_high_r - ew_low_r
+
+                    # Equal-weight across firms
+                    ew_firm_hl_sum += ew_firm_hl
+                    ew_firm_count += 1
+
+                # VW within firm
+                low_vw = vw_sum[d, rt_idx, f, 0]
+                high_vw = vw_sum[d, rt_idx, f, 1]
+
+                if low_vw > 0 and high_vw > 0:
+                    vw_low_r = wret_sum[d, rt_idx, f, 0] / low_vw
+                    vw_high_r = wret_sum[d, rt_idx, f, 1] / high_vw
+                    vw_firm_hl = vw_high_r - vw_low_r
+                    firm_weight = low_vw + high_vw
+
+                    # Cap-weight across firms
+                    vw_firm_hl_sum += vw_firm_hl * firm_weight
+                    vw_firm_weight_sum += firm_weight
+
+            # Store rating-level factors
+            if ew_firm_count > 0:
+                ew_rating_factors[rt_idx] = ew_firm_hl_sum / ew_firm_count
+                ew_rating_valid[rt_idx] = True
+            if vw_firm_weight_sum > 0:
+                vw_rating_factors[rt_idx] = vw_firm_hl_sum / vw_firm_weight_sum
+                vw_rating_valid[rt_idx] = True
+
+        # Average across valid rating terciles
+        ew_n_valid = 0
+        ew_rating_sum = 0.0
+        vw_n_valid = 0
+        vw_rating_sum = 0.0
+
+        for rt_idx in range(3):
+            if ew_rating_valid[rt_idx]:
+                ew_rating_sum += ew_rating_factors[rt_idx]
+                ew_n_valid += 1
+            if vw_rating_valid[rt_idx]:
+                vw_rating_sum += vw_rating_factors[rt_idx]
+                vw_n_valid += 1
+
+        if ew_n_valid > 0:
+            ew_long_short[d] = ew_rating_sum / ew_n_valid
+        if vw_n_valid > 0:
+            vw_long_short[d] = vw_rating_sum / vw_n_valid
+
+    return ew_long_short, vw_long_short, ew_high_ret, ew_low_ret, vw_high_ret, vw_low_ret
+
+
+@njit(cache=True)
+def compute_within_firm_aggregation_with_lookup(
+    date_idx: np.ndarray,       # Return date index for each observation
+    id_idx: np.ndarray,         # Bond ID index for each observation
+    firm_idx: np.ndarray,       # Firm index for each observation
+    ret: np.ndarray,            # Return for each observation
+    vw: np.ndarray,             # Value weight for each observation
+    rank_lookup: np.ndarray,    # (n_dates, n_ids, 3): [rank, rating_terc, firm_idx] at formation
+    vw_lookup: np.ndarray,      # (n_dates, n_ids): VW at each date for dynamic weights
+    n_dates: int,
+    n_ids: int,
+    n_firms: int,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Within-firm return aggregation using lookup tables for formation/return date separation.
+
+    For HP=1:
+    - Return date = t+1
+    - Formation date = t = return_date - 1
+    - Look up rank, rating_terc, firm_idx from formation date
+
+    Aggregation hierarchy:
+    - EW: EW returns within firm → equal-weight across firms → avg across ratings
+    - VW: VW returns within firm → cap-weight across firms → avg across ratings
+
+    Parameters
+    ----------
+    date_idx : np.ndarray
+        Return date index (0 to n_dates-1) for each observation
+    id_idx : np.ndarray
+        Bond ID index (0 to n_ids-1) for each observation
+    firm_idx : np.ndarray
+        Firm index for each observation (used as fallback)
+    ret : np.ndarray
+        Return for each observation (at return date)
+    vw : np.ndarray
+        Value weight for each observation
+    rank_lookup : np.ndarray
+        Shape (n_dates, n_ids, 3): [rank, rating_terc, firm_idx] at each formation date
+    vw_lookup : np.ndarray
+        Shape (n_dates, n_ids): VW at each date (for dynamic weights)
+    n_dates : int
+        Number of unique dates
+    n_ids : int
+        Number of unique bond IDs
+    n_firms : int
+        Number of unique firms
+
+    Returns
+    -------
+    ew_long_short, vw_long_short : np.ndarray
+        EW and VW long-short factors at each return date
+    ew_high_ret, ew_low_ret : np.ndarray
+        Simple EW portfolio returns (HIGH and LOW)
+    vw_high_ret, vw_low_ret : np.ndarray
+        Simple VW portfolio returns (HIGH and LOW)
+    """
+    n_obs = len(date_idx)
+
+    # Accumulation arrays: (date, rating_terc, firm, portfolio)
+    # portfolio: 0=LOW, 1=HIGH
+    ret_sum = np.zeros((n_dates, 3, n_firms, 2), dtype=np.float64)
+    count = np.zeros((n_dates, 3, n_firms, 2), dtype=np.float64)
+    wret_sum = np.zeros((n_dates, 3, n_firms, 2), dtype=np.float64)
+    vw_sum = np.zeros((n_dates, 3, n_firms, 2), dtype=np.float64)
+
+    # Simple aggregation for reporting (across all firms/ratings)
+    simple_ret_sum = np.zeros((n_dates, 2), dtype=np.float64)
+    simple_count = np.zeros((n_dates, 2), dtype=np.float64)
+    simple_wret_sum = np.zeros((n_dates, 2), dtype=np.float64)
+    simple_vw_sum = np.zeros((n_dates, 2), dtype=np.float64)
+
+    # First pass: accumulate returns using formation date lookup
+    for i in range(n_obs):
+        return_d = date_idx[i]  # Return date
+        form_d = return_d - 1   # Formation date = return_date - 1
+        bond_id = id_idx[i]
+        r = ret[i]
+
+        # Skip if no formation date (first date has no prior formation)
+        if form_d < 0:
+            continue
+
+        # Skip if return is NaN
+        if np.isnan(r):
+            continue
+
+        # Look up rank from formation date
+        rank = rank_lookup[form_d, bond_id, 0]
+        rating_terc_f = rank_lookup[form_d, bond_id, 1]
+        firm_idx_f = rank_lookup[form_d, bond_id, 2]
+
+        # Skip if not assigned to a portfolio
+        if rank < 1 or rank > 2:
+            continue
+
+        # Skip if invalid rating tercile or firm
+        if np.isnan(rating_terc_f) or rating_terc_f < 1 or rating_terc_f > 3:
+            continue
+        if np.isnan(firm_idx_f) or firm_idx_f < 0:
+            continue
+
+        rt_idx = int(rating_terc_f) - 1  # 0, 1, or 2
+        f = int(firm_idx_f)
+        p_idx = int(rank) - 1  # 0=LOW, 1=HIGH
+
+        # Get VW from formation date (d-1) for dynamic weights
+        w = vw_lookup[form_d, bond_id]
+
+        # EW: just sum returns and count
+        ret_sum[return_d, rt_idx, f, p_idx] += r
+        count[return_d, rt_idx, f, p_idx] += 1
+
+        # VW: weighted sum (only if weight is valid)
+        if not np.isnan(w) and w > 0:
+            wret_sum[return_d, rt_idx, f, p_idx] += r * w
+            vw_sum[return_d, rt_idx, f, p_idx] += w
+
+        # Simple aggregation for reporting
+        simple_ret_sum[return_d, p_idx] += r
+        simple_count[return_d, p_idx] += 1
+        if not np.isnan(w) and w > 0:
+            simple_wret_sum[return_d, p_idx] += r * w
+            simple_vw_sum[return_d, p_idx] += w
+
+    # Output arrays (indexed by return date)
+    ew_long_short = np.full(n_dates, np.nan, dtype=np.float64)
+    vw_long_short = np.full(n_dates, np.nan, dtype=np.float64)
+    ew_high_ret = np.full(n_dates, np.nan, dtype=np.float64)
+    ew_low_ret = np.full(n_dates, np.nan, dtype=np.float64)
+    vw_high_ret = np.full(n_dates, np.nan, dtype=np.float64)
+    vw_low_ret = np.full(n_dates, np.nan, dtype=np.float64)
+
+    # Second pass: compute aggregated returns for each return date
     for d in range(n_dates):
         # Compute simple returns for reporting (HIGH and LOW portfolios)
         if simple_count[d, 0] > 0:
