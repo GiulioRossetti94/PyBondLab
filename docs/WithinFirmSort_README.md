@@ -100,6 +100,32 @@ print(f"Mean return: {vw_ls.mean()*100:.3f}% per month")
 | `rebalance_month` | int/list | 6 | Month(s) for non-monthly rebalancing |
 | `verbose` | bool | True | Print initialization details |
 
+## Feature Support
+
+| Feature | Supported | Notes |
+|---------|-----------|-------|
+| **Turnover** | ✅ YES | Uses standard PyBondLab machinery |
+| **HP>1 (Staggered)** | ✅ YES | Cohort averaging works correctly |
+| **Chars** | ⏳ TODO | Will use Option B aggregation |
+| **Banding** | ❌ NO | Not applicable (see below) |
+
+### Why No Banding?
+
+WithinFirmSort only has 2 portfolios (HIGH and LOW). Banding prevents reassignment
+when a bond's rank changes by less than `banding/nport`. With `nport=2` and typical
+`banding=1`, this would require a rank change of 0.5 (i.e., moving from one portfolio
+to the other), which is always the case when rank changes between HIGH and LOW.
+Therefore, banding is meaningless for WithinFirmSort and is not implemented.
+
+### Characteristics Aggregation (Planned)
+
+When implemented, characteristics will use **Option B aggregation** (same as returns):
+1. **Within firm**: Compute VW-average char for HIGH and LOW portfolios
+2. **Across firms**: Cap-weight firm-level chars within each rating tercile
+3. **Across ratings**: Simple average across rating terciles
+
+Output will be a DataFrame with columns `['LOW', 'HIGH']` for each characteristic.
+
 ## Data Requirements
 
 Your data must include:
@@ -166,9 +192,16 @@ PyBondLab/
 
 *Test data: 11,940 rows, 199 bonds, 50 firms, 60 dates*
 
-### Optimization Opportunities (Phase 16)
+### Optimization Targets (Phase 16)
 
-See CLAUDE.md for the Phase 16 optimization plan targeting significant speedups.
+| Configuration | Current | Target | Speedup |
+|---------------|---------|--------|---------|
+| HP=1, no turnover, no chars | ~3.8s | <0.5s | 7x+ |
+| HP=3, no turnover, no chars | ~4.2s | <0.6s | 7x+ |
+| HP=1, with turnover | ~3.7s | <1.0s | 4x+ |
+| HP=1, with chars | TBD | TBD | 5x+ |
+
+See CLAUDE.md for the Phase 16 optimization plan details.
 
 ## Comparison with Standard Sorting
 

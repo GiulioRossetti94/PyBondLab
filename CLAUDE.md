@@ -2040,6 +2040,26 @@ if is_within_firm:
 | HP=3, no turnover | ~4.2s | 60 dates |
 | HP=3, with turnover | ~4.3s | |
 
+### Feature Support
+
+| Feature | Supported | Notes |
+|---------|-----------|-------|
+| **Turnover** | ✅ YES | Uses standard PyBondLab machinery |
+| **HP>1 (Staggered)** | ✅ YES | Cohort averaging works correctly |
+| **Chars** | ⏳ TODO | Will implement with Option B aggregation |
+| **Banding** | ❌ NO | Not applicable - only HIGH/LOW portfolios |
+
+**Why no banding?** WithinFirmSort only has 2 portfolios (HIGH and LOW). Banding prevents
+reassignment when rank changes by less than `banding/nport`. With nport=2, banding=1 would
+require a change of 0.5 (i.e., moving from one portfolio to the other), which is always
+the case when rank changes. Therefore banding is meaningless for WithinFirmSort.
+
+**Chars aggregation (Option B):** For chars, we need to average characteristics at the
+formation month using the same hierarchical aggregation as returns:
+1. Within each firm: Compute VW-average char for HIGH and LOW portfolios
+2. Across firms: Cap-weight the firm-level chars within each rating tercile
+3. Across ratings: Simple average across rating terciles
+
 ### WithinFirmSort Architecture
 
 #### How It Differs from SingleSort
@@ -2105,22 +2125,43 @@ Optimization approach:
 2. Use vectorized aggregation across firms and ratings
 3. Avoid per-date DataFrame operations
 
-#### Phase 16d: Create Fast Path for WithinFirmSort
+#### Phase 16d: Create Ultra-Fast Path for WithinFirmSort
 
 **Status: Pending**
 
-Similar to SingleSort fast path:
-1. Bypass `_precompute_data()` for simple cases
+Similar to SingleSort ultra-fast path (for `turnover=False`, `chars=None`):
+1. Bypass `_precompute_data()` entirely
 2. Convert DataFrame to numpy arrays once
 3. Use parallel numba kernels for all computation
-4. Only fall back to slow path when turnover/banding/chars needed
+4. Vectorize within-firm assignment and hierarchical aggregation
+
+#### Phase 16e: Implement Chars Support
+
+**Status: Pending**
+
+Add characteristics aggregation using Option B (firm-cap-weighted → rating-averaged):
+1. At each formation date, compute VW-average char for HIGH and LOW within each firm
+2. Aggregate across firms using cap-weighting within each rating tercile
+3. Average across rating terciles
+4. Output: DataFrame with columns `['LOW', 'HIGH']` for each characteristic
+
+#### Phase 16f: Fast Path with Turnover/Chars
+
+**Status: Pending**
+
+Create fast path that supports turnover and/or chars:
+1. Use vectorized computation where possible
+2. Maintain exact numerical match with slow path
+3. Target 5-10x speedup over current implementation
 
 ### Target Performance
 
 | Configuration | Current | Target | Target Speedup |
 |---------------|---------|--------|----------------|
-| HP=1, no turnover | ~3.8s | <0.5s | **7x+** |
-| HP=3, no turnover | ~4.2s | <0.6s | **7x+** |
+| HP=1, no turnover, no chars | ~3.8s | <0.5s | **7x+** |
+| HP=3, no turnover, no chars | ~4.2s | <0.6s | **7x+** |
+| HP=1, with turnover | ~3.7s | <1.0s | **4x+** |
+| HP=1, with chars | TBD | TBD | **5x+** |
 
 ### Validation Script
 
