@@ -60,6 +60,7 @@ Dramatically speed up portfolio formation in PyBondLab using numba/prange, while
 | **Phase 15a** | Non-staggered rebalancing fast path | ✅ Complete | **100x speedup** achieved! |
 | **Phase 15** | Non-staggered integration | ✅ Complete | BatchStrategyFormation (~340x), DataUncertaintyAnalysis integrated |
 | **Phase 15b** | Non-staggered with turnover/chars/banding | ✅ Complete | **21-103x speedup**, all 6 tests PASS |
+| **Phase 16** | Optimize WithinFirmSort | ⏳ In Progress | See Phase 16 section below |
 
 ---
 
@@ -2007,5 +2008,138 @@ This validates:
 1. Numba signal computation matches pandas (< 1e-10 tolerance)
 2. Fast path matches slow path for all filter types
 3. Wins filter uses ex-ante thresholds correctly
+
+---
+
+## Phase 16: WithinFirmSort Optimization
+
+### Overview
+
+Optimize the `WithinFirmSort` strategy for faster portfolio formation. This strategy is fundamentally different from SingleSort/DoubleSort because it sorts bonds **within each firm**, isolating within-firm bond dispersion from cross-firm differences.
+
+### Bug Fix (Completed)
+
+**Issue**: WithinFirmSort was incorrectly using the fast path when `turnover=False`.
+
+**Root cause**: `_can_use_fast_path()` only checked for DoubleSort, not WithinFirmSort. Since WithinFirmSort is not a DoubleSort, it passed all checks and incorrectly used `_fit_fast_returns_only()`.
+
+**Fix**: Added check in `_can_use_fast_path()` (PyBondLab.py:1391-1394):
+```python
+# WithinFirmSort requires special handling (within-firm grouping, rating bins, etc.)
+is_within_firm = getattr(self.strategy, "__strategy_name__", "") == "Within-Firm Sort"
+if is_within_firm:
+    return False
+```
+
+### Current Baseline Performance
+
+| Configuration | Time | Notes |
+|---------------|------|-------|
+| HP=1, no turnover | ~3.8s | Test data: 11,940 rows |
+| HP=1, with turnover | ~3.7s | 199 bonds, 50 firms |
+| HP=3, no turnover | ~4.2s | 60 dates |
+| HP=3, with turnover | ~4.3s | |
+
+### WithinFirmSort Architecture
+
+#### How It Differs from SingleSort
+
+| Aspect | SingleSort | WithinFirmSort |
+|--------|-----------|----------------|
+| **Grouping** | None (cross-sectional) | Date × Rating Tercile × Firm |
+| **Percentiles** | Global (20/40/60/80) | Within-firm (33.3/66.7) |
+| **Portfolios** | N portfolios | 2 (high/low only) |
+| **Return Aggregation** | Simple VW average | Firm-cap-weighted → Rating-averaged |
+
+#### Key Files
+
+| File | Purpose |
+|------|---------|
+| `StrategyClass.py` | `WithinFirmSort` class definition |
+| `utils_within_firm.py` | Core computation functions |
+| `precompute.py:370-413` | Integration with precomputation |
+| `PyBondLab.py:2185-2300` | Integration with aggregation |
+
+#### Key Functions
+
+1. **`compute_within_firm_portfolios()`** - Creates rating terciles, groups by (date, rating_terc, firm), assigns bonds to high/low
+2. **`compute_within_firm_assignments_numba()`** - Numba-compiled core for percentile thresholds and assignment
+3. **`compute_within_firm_returns_aggregation()`** - Hierarchical aggregation: firm-cap-weighted → rating-averaged
+
+### Optimization Plan
+
+#### Phase 16a: Profile and Identify Bottlenecks
+
+**Status: Pending**
+
+1. Profile the current slow path to identify where time is spent
+2. Key areas to investigate:
+   - `compute_within_firm_portfolios()` - groupby operations
+   - `compute_within_firm_returns_aggregation()` - per-date looping
+   - Precompute integration overhead
+
+#### Phase 16b: Vectorize Portfolio Assignment
+
+**Status: Pending**
+
+Current bottleneck in `compute_within_firm_portfolios()`:
+- Creates pandas groupby for (date, rating_terc, firm)
+- Calls numba kernel per group
+
+Optimization approach:
+1. Pre-sort data by (date, rating_terc, firm)
+2. Find group boundaries once (similar to Phase 12's `get_bond_boundaries()`)
+3. Process all groups in parallel using `prange`
+
+#### Phase 16c: Vectorize Return Aggregation
+
+**Status: Pending**
+
+Current bottleneck in `compute_within_firm_returns_aggregation()`:
+- Loops through each date
+- For each date, loops through rating terciles
+- For each rating tercile, loops through firms
+
+Optimization approach:
+1. Pre-compute all firm-level returns in parallel
+2. Use vectorized aggregation across firms and ratings
+3. Avoid per-date DataFrame operations
+
+#### Phase 16d: Create Fast Path for WithinFirmSort
+
+**Status: Pending**
+
+Similar to SingleSort fast path:
+1. Bypass `_precompute_data()` for simple cases
+2. Convert DataFrame to numpy arrays once
+3. Use parallel numba kernels for all computation
+4. Only fall back to slow path when turnover/banding/chars needed
+
+### Target Performance
+
+| Configuration | Current | Target | Target Speedup |
+|---------------|---------|--------|----------------|
+| HP=1, no turnover | ~3.8s | <0.5s | **7x+** |
+| HP=3, no turnover | ~4.2s | <0.6s | **7x+** |
+
+### Validation Script
+
+```bash
+python examples/validate_withinfirmsort.py
+```
+
+Tests:
+1. Basic execution
+2. turnover=True vs turnover=False consistency (bug fix validation)
+3. HP=3 staggered rebalancing
+4. Difference from SingleSort (confirms within-firm logic is applied)
+
+### Documentation
+
+See `docs/WithinFirmSort_README.md` for detailed documentation on:
+- Methodology
+- Usage examples
+- Architecture
+- Comparison with standard sorting
 
 ---

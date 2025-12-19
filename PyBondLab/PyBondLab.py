@@ -1388,6 +1388,10 @@ class StrategyFormation:
         is_double = getattr(self.strategy, "double_sort", 0) or getattr(self.strategy, "DoubleSort", 0)
         if is_double:
             return False
+        # WithinFirmSort requires special handling (within-firm grouping, rating bins, etc.)
+        is_within_firm = getattr(self.strategy, "__strategy_name__", "") == "Within-Firm Sort"
+        if is_within_firm:
+            return False
         # Only monthly (staggered) rebalancing for now
         if self.rebalance_frequency != 'monthly':
             return False
