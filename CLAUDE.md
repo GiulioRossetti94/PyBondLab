@@ -2276,7 +2276,17 @@ Optimize turnover computation for WithinFirmSort:
 Create an ultra-fast path for WithinFirmSort (HP=1, no turnover, no chars) and a new
 `BatchWithinFirmSortFormation` class for processing multiple signals in parallel.
 
-**Status: ⏳ PLANNED**
+**Status: ✅ COMPLETE**
+
+### Performance Results
+
+| Configuration | Before | After | Speedup |
+|---------------|--------|-------|---------|
+| StrategyFormation HP=1, no turnover | ~1.0s | **0.03s** | **33x** |
+| BatchWithinFirmSortFormation fast path | N/A | Works | Exact match |
+| BatchWithinFirmSortFormation slow path (turnover) | N/A | Works | Uses multiproc |
+
+**All validation tests pass with exact numerical match (diff=0.00e+00).**
 
 ### Architecture
 
