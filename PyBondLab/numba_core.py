@@ -4849,3 +4849,158 @@ def compute_nonstaggered_full_fast(
             vw_turnover[tau_last, p] = prev_sum_vw[p]
 
     return ew_ret, vw_ret, ew_turnover, vw_turnover, ew_chars, vw_chars
+
+
+# =============================================================================
+# WithinFirmSort Aggregation (Phase 16)
+# =============================================================================
+
+@njit(cache=True)
+def compute_within_firm_aggregation_fast(
+    date_idx: np.ndarray,       # Date index for each bond-period
+    firm_idx: np.ndarray,       # Firm index for each bond-period
+    rating_terc: np.ndarray,    # Rating tercile (1, 2, 3) for each bond-period
+    ptf_rank: np.ndarray,       # Portfolio rank (1=LOW, 2=HIGH) for each bond-period
+    ret: np.ndarray,            # Return for each bond-period
+    vw: np.ndarray,             # Value weight for each bond-period
+    n_dates: int,               # Total number of dates
+    n_firms: int,               # Total number of unique firms
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Fast within-firm return aggregation using numba.
+
+    This replaces the slow pandas-based nested loop aggregation with a vectorized
+    approach that:
+    1. Accumulates returns/weights by (date, rating_terc, firm, ptf_rank) groups
+    2. Computes firm-level VW returns for HIGH and LOW portfolios
+    3. Computes firm-level H-L factors
+    4. Aggregates across firms (cap-weighted) within each rating tercile
+    5. Averages across rating terciles
+
+    Parameters
+    ----------
+    date_idx : np.ndarray
+        Date index (0 to n_dates-1) for each observation
+    firm_idx : np.ndarray
+        Firm index (0 to n_firms-1) for each observation
+    rating_terc : np.ndarray
+        Rating tercile (1, 2, or 3) for each observation
+    ptf_rank : np.ndarray
+        Portfolio rank (1=LOW, 2=HIGH) for each observation
+    ret : np.ndarray
+        Return for each observation
+    vw : np.ndarray
+        Value weight for each observation
+    n_dates : int
+        Number of unique dates
+    n_firms : int
+        Number of unique firms
+
+    Returns
+    -------
+    long_short : np.ndarray
+        Shape (n_dates,) - Firm-cap-weighted → rating-averaged H-L factor
+    high_ret : np.ndarray
+        Shape (n_dates,) - Simple VW return of HIGH portfolio (for reporting)
+    low_ret : np.ndarray
+        Shape (n_dates,) - Simple VW return of LOW portfolio (for reporting)
+    valid_dates : np.ndarray
+        Shape (n_dates,) - Boolean mask for dates with valid data
+    """
+    n_obs = len(date_idx)
+
+    # Accumulators for (date, rating_terc, firm, portfolio)
+    # Shape: (n_dates, 3 rating terciles, n_firms, 2 portfolios)
+    # portfolio: 0=LOW, 1=HIGH
+    ret_sum = np.zeros((n_dates, 3, n_firms, 2), dtype=np.float64)
+    vw_sum = np.zeros((n_dates, 3, n_firms, 2), dtype=np.float64)
+
+    # Simple aggregation for reporting (date, portfolio)
+    simple_ret_sum = np.zeros((n_dates, 2), dtype=np.float64)
+    simple_vw_sum = np.zeros((n_dates, 2), dtype=np.float64)
+
+    # First pass: accumulate returns and weights
+    for i in range(n_obs):
+        d = date_idx[i]
+        f = firm_idx[i]
+        rt = rating_terc[i]
+        p = ptf_rank[i]
+        r = ret[i]
+        w = vw[i]
+
+        # Skip invalid entries
+        if d < 0 or f < 0:
+            continue
+        if np.isnan(r) or np.isnan(w) or w <= 0:
+            continue
+        if np.isnan(rt) or rt < 1 or rt > 3:
+            continue
+        if np.isnan(p) or p < 1 or p > 2:
+            continue
+
+        rt_idx = int(rt) - 1  # 0, 1, or 2
+        p_idx = int(p) - 1    # 0=LOW, 1=HIGH
+
+        ret_sum[d, rt_idx, f, p_idx] += r * w
+        vw_sum[d, rt_idx, f, p_idx] += w
+
+        # Simple aggregation for reporting
+        simple_ret_sum[d, p_idx] += r * w
+        simple_vw_sum[d, p_idx] += w
+
+    # Output arrays
+    long_short = np.full(n_dates, np.nan, dtype=np.float64)
+    high_ret = np.full(n_dates, np.nan, dtype=np.float64)
+    low_ret = np.full(n_dates, np.nan, dtype=np.float64)
+    valid_dates = np.zeros(n_dates, dtype=np.bool_)
+
+    # Second pass: compute aggregated returns for each date
+    for d in range(n_dates):
+        # Compute simple VW returns for reporting (HIGH and LOW portfolios)
+        if simple_vw_sum[d, 0] > 0:
+            low_ret[d] = simple_ret_sum[d, 0] / simple_vw_sum[d, 0]
+        if simple_vw_sum[d, 1] > 0:
+            high_ret[d] = simple_ret_sum[d, 1] / simple_vw_sum[d, 1]
+
+        # Compute firm-cap-weighted → rating-averaged H-L factor
+        rating_factors = np.zeros(3, dtype=np.float64)
+        rating_valid = np.zeros(3, dtype=np.bool_)
+
+        for rt_idx in range(3):
+            # Accumulate firm-level H-L factors for this rating tercile
+            firm_hl_sum = 0.0
+            firm_weight_sum = 0.0
+
+            for f in range(n_firms):
+                low_vw = vw_sum[d, rt_idx, f, 0]
+                high_vw = vw_sum[d, rt_idx, f, 1]
+
+                # Need both high and low bonds for this firm
+                if low_vw > 0 and high_vw > 0:
+                    low_r = ret_sum[d, rt_idx, f, 0] / low_vw
+                    high_r = ret_sum[d, rt_idx, f, 1] / high_vw
+
+                    firm_hl = high_r - low_r
+                    firm_weight = low_vw + high_vw
+
+                    firm_hl_sum += firm_hl * firm_weight
+                    firm_weight_sum += firm_weight
+
+            # Cap-weighted average across firms within this rating tercile
+            if firm_weight_sum > 0:
+                rating_factors[rt_idx] = firm_hl_sum / firm_weight_sum
+                rating_valid[rt_idx] = True
+
+        # Average across valid rating terciles
+        n_valid_ratings = 0
+        rating_sum = 0.0
+        for rt_idx in range(3):
+            if rating_valid[rt_idx]:
+                rating_sum += rating_factors[rt_idx]
+                n_valid_ratings += 1
+
+        if n_valid_ratings > 0:
+            long_short[d] = rating_sum / n_valid_ratings
+            valid_dates[d] = True
+
+    return long_short, high_ret, low_ret, valid_dates
