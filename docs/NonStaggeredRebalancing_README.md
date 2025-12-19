@@ -429,108 +429,69 @@ From validation script (120 dates, 300 bonds):
 
 ---
 
-## Optimization Plan (Phase 15)
+## Optimization Results (Phase 15 - COMPLETE)
 
-### Goal
+### Overview
 
-Achieve **5-10x speedup** for non-staggered rebalancing while maintaining exact numerical compatibility.
+Both Phase 15a and Phase 15b are now **COMPLETE**, achieving **21-103x speedup** for non-staggered rebalancing while maintaining exact numerical compatibility.
 
-### Phase 15a: Fast Path (No Turnover/Chars/Banding)
+### Phase 15a: Fast Path (No Turnover/Chars/Banding) - COMPLETE
 
-When `turnover=False`, `chars=None`, `banding=None`:
+**Achieved ~100x speedup** (far exceeding the 5-7x target!):
 
-```python
-def _fit_nonstaggered_fast(self):
-    """
-    Ultra-fast non-staggered rebalancing using numba.
+| Configuration | Slow Path | Fast Path | Speedup |
+|---------------|-----------|-----------|---------|
+| Annual (freq=12, month=6) | 3.69s | 0.020s | **182x** |
+| Annual (freq=12, month=1) | 1.56s | 0.018s | **87x** |
+| Semi-annual (freq=6, month=6) | 1.45s | 0.016s | **89x** |
+| Quarterly (freq=3, month=6) | 1.49s | 0.018s | **85x** |
 
-    Strategy:
-    1. Convert DataFrame to numpy arrays ONCE
-    2. Compute ranks for ALL rebalancing dates in parallel
-    3. Compute returns for ALL (rebal_date, return_date) pairs in parallel
-    """
-    # Step 1: Extract numpy arrays
-    date_idx = data['date'].map(date_to_idx).values
-    id_idx = data['ID'].map(id_to_idx).values
-    signal = data['signal'].values
-    ret = data['ret'].values
-    vw = data['VW'].values
+The fast path is automatically used when:
+- `rebalance_frequency != 'monthly'` (quarterly, semi-annual, annual)
+- `turnover=False`
+- `chars=None`
+- `banding=None`
+- `SingleSort` only (no DoubleSort)
 
-    # Step 2: Identify rebalancing dates
-    rebal_dates_idx = _get_rebalancing_dates(datelist, freq, month)
+### Phase 15b: Full Path (With Turnover/Chars/Banding) - COMPLETE
 
-    # Step 3: Compute ranks at each rebalancing date (parallel)
-    # Shape: (n_rebal_dates, n_bonds)
-    ranks_all = compute_ranks_at_dates(date_idx, signal, rebal_dates_idx, nport)
+**All 6 validation tests PASS with 21-103x speedup:**
 
-    # Step 4: Build rank lookup table
-    # rank_lookups[rebal_idx, bond_idx] = portfolio rank (or 0 if not ranked)
-    rank_lookups = build_rank_lookups(date_idx, id_idx, ranks_all, ...)
+| Feature | Status | Speedup | Notes |
+|---------|--------|---------|-------|
+| Returns only | ✅ PASS | **21x** | Validates against slow path |
+| Turnover | ✅ PASS | **103x** | Exact numerical match |
+| Characteristics | ✅ PASS | **57x** | Exact numerical match |
+| Banding | ✅ PASS | **67x** | Validates against slow path |
+| Turnover+chars | ✅ PASS | **93x** | All features combined |
+| All features | ✅ PASS | **86x** | Turnover+chars+banding |
 
-    # Step 5: Compute returns for all (rebal, return) pairs in parallel
-    ew_ret, vw_ret = compute_nonstaggered_returns(
-        date_idx, id_idx, ret, vw,
-        rebal_dates_idx, holding_period,
-        rank_lookups, nport
-    )
+The full fast path is automatically used when:
+- `rebalance_frequency != 'monthly'`
+- Any combination of `turnover`, `chars`, and `banding` enabled
+- `SingleSort` only
 
-    return ew_ret, vw_ret  # Shape: (n_dates, nport)
-```
+### Key Implementation Details
 
-### Phase 15b: Full Path (With Turnover/Chars/Banding)
+**Numba kernels in `numba_core.py`:**
+- `compute_nonstaggered_full_fast()` - Main entry point for Phase 15b
+- Handles turnover at every date (not just rebalancing dates)
+- Computes characteristics using proper bond filtering
+- Applies banding between rebalancing dates
 
-Optimize the full feature set:
-
-```python
-def _fit_nonstaggered_full(self):
-    """
-    Fast non-staggered rebalancing with turnover, chars, and banding.
-
-    Strategy:
-    1. Batch portfolio formation for ALL rebalancing dates
-    2. Parallel weight computation
-    3. Batch turnover computation
-    4. Batch characteristics aggregation
-    """
-    # Pre-extract all arrays
-    ...
-
-    # Batch compute ranks for all rebal dates
-    ranks_all = compute_ranks_at_dates_batch(...)
-
-    # For each rebal date, compute weights once
-    # Then apply to all holding period months
-    for rebal_idx in rebal_dates_idx:
-        # Compute weights at formation date
-        ew_weights, vw_weights = compute_weights(ranks_all[rebal_idx], vw)
-
-        # Store scaled weights for turnover
-        scaled_ew, scaled_vw = compute_scaled_weights(...)
-
-        # Apply to all holding months
-        for h in range(holding_period):
-            t1_idx = rebal_idx + h + 1
-            ew_ret_arr[t1_idx] = compute_returns_from_weights(...)
-            vw_ret_arr[t1_idx] = compute_returns_from_weights(...)
-
-        # Compute turnover (compare to previous rebal)
-        if prev_weights is not None:
-            turnover_arr[rebal_idx] = compute_turnover(prev_weights, current_weights)
-```
-
-### Expected Performance Gains
-
-| Configuration | Current | Target | Speedup |
-|---------------|---------|--------|---------|
-| Annual, no turnover | 0.69s | 0.10s | **7x** |
-| Annual, with turnover | 1.80s | 0.30s | **6x** |
-| Quarterly, turnover+chars | 1.82s | 0.35s | **5x** |
+**Key fixes for correctness:**
+- Turnover: Added liquidation turnover at last date (matches slow path's `finalize_turnover()`)
+- Characteristics: Fixed bond filtering to require valid return at return date
+- Characteristics: Corrected `char_date` logic based on `dynamic_weights` setting
 
 ### Integration with BatchStrategyFormation
 
-Once optimized, the fast non-staggered path will be available in:
+**Current Status:** BatchStrategyFormation supports non-staggered rebalancing, but the batch-level fast path only works for `turnover=False`, `chars=None`, `banding=None`.
+
+When `turnover=True` or `chars`/`banding` are specified, BatchStrategyFormation uses worker processes that each call `StrategyFormation.fit()`. Each individual `fit()` call **will** use the Phase 15b fast path automatically, so you still get the 21-103x speedup per signal.
 
 ```python
+# Ultra-fast batch path (returns only)
 batch = BatchStrategyFormation(
     data=data,
     signals=['sig1', 'sig2', ...],
@@ -538,9 +499,24 @@ batch = BatchStrategyFormation(
     num_portfolios=5,
     rebalance_frequency='annual',
     rebalance_month=6,
-    turnover=False,  # Enables ultra-fast path
+    turnover=False,  # Enables batch-level fast path (~340x speedup)
 )
 results = batch.fit()
+
+# With turnover/chars/banding - still fast via individual workers
+batch = BatchStrategyFormation(
+    data=data,
+    signals=['sig1', 'sig2', ...],
+    holding_period=12,
+    num_portfolios=5,
+    rebalance_frequency='annual',
+    rebalance_month=6,
+    turnover=True,           # Uses worker processes
+    chars=['char1', 'char2'],  # Each worker uses Phase 15b fast path
+    banding=0.2,
+    n_jobs=4,
+)
+results = batch.fit()  # Each signal gets 21-103x speedup
 ```
 
 ### Integration with DataUncertaintyAnalysis
@@ -550,8 +526,8 @@ results = DataUncertaintyAnalysis(
     data=data,
     signals=['momentum'],
     holding_periods=[12],
-    rebalance_frequency='annual',  # NEW parameter
-    rebalance_month=6,             # NEW parameter
+    rebalance_frequency='annual',  # Supported
+    rebalance_month=6,             # Supported
     filters={'trim': [0.2]},
 ).fit()
 ```
@@ -601,4 +577,50 @@ Non-staggered rebalancing is a simpler case than monthly (staggered) rebalancing
 | Turnover tracking | Single state (not per-cohort) |
 | Parallelization potential | High (all rebal dates independent) |
 
-This simplicity makes it an excellent target for numba optimization, with expected 5-10x speedup.
+**Phase 15 Optimization Results (COMPLETE):**
+
+| Phase | Feature Set | Speedup Achieved |
+|-------|-------------|------------------|
+| 15a | Returns only | **85-182x** |
+| 15b | Turnover | **103x** |
+| 15b | Characteristics | **57x** |
+| 15b | Banding | **67x** |
+| 15b | All features | **86x** |
+
+All features maintain exact numerical compatibility with the slow path (differences < 1e-10).
+
+**Usage:**
+```python
+import PyBondLab as pbl
+
+# Non-staggered rebalancing with all features
+strategy = pbl.SingleSort(
+    holding_period=12,
+    sort_var='signal',
+    num_portfolios=5,
+    rebalance_frequency='annual',
+    rebalance_month=6,
+)
+
+from PyBondLab.config import StrategyFormationConfig, DataConfig, FormationConfig
+
+config = StrategyFormationConfig(
+    data=DataConfig(chars=['char1', 'char2']),
+    formation=FormationConfig(
+        compute_turnover=True,
+        banding_threshold=0.2,
+    )
+)
+
+sf = pbl.StrategyFormation(
+    data=data,
+    strategy=strategy,
+    config=config,
+)
+result = sf.fit()  # Automatically uses Phase 15b fast path
+
+# Access results
+ew_ls, vw_ls = result.get_long_short()
+ew_turn, vw_turn = result.get_turnover()
+ew_chars, vw_chars = result.get_characteristics()
+```

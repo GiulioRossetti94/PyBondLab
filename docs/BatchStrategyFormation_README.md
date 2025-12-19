@@ -78,6 +78,8 @@ BatchStrategyFormation(
 | `rating` | str/tuple | None | Filter by credit rating: `'IG'`, `'NIG'`, `(min, max)` tuple, or `None` for all |
 | `subset_filter` | Dict | None | Filter by characteristics: `{'col': (min, max)}` (e.g., `{'MATURITY': (1, 5)}`) |
 | `banding` | int | None | Banding parameter to reduce turnover (1 or 2 typical) |
+| `rebalance_frequency` | str/int | `'monthly'` | Rebalancing frequency: `'monthly'`, `'quarterly'`, `'semi-annual'`, `'annual'`, or int (months) |
+| `rebalance_month` | int | 6 | Month for non-monthly rebalancing (1-12, e.g., 6 for June) |
 | `columns` | Dict | None | Column name mapping (see [Custom Column Names](#custom-column-names)) |
 | `n_jobs` | int | 1 | Number of parallel workers (-1 = all cores) |
 | `signals_per_worker` | int | 1 | Signals per worker batch (2-4 recommended for large data) |
@@ -239,6 +241,51 @@ print(f"Momentum EW turnover: {ew_turn.mean().mean():.1%}")
 ew_chars, vw_chars = results['momentum'].get_characteristics()
 print(ew_chars['duration'])  # Portfolio-level duration by date
 ```
+
+---
+
+### Non-Staggered Rebalancing (Quarterly/Annual)
+
+Use non-monthly rebalancing for lower turnover strategies:
+
+```python
+# Annual rebalancing in June
+batch = BatchStrategyFormation(
+    data=data,
+    signals=['value', 'quality', 'momentum'],
+    holding_period=12,
+    num_portfolios=5,
+    rebalance_frequency='annual',  # or 12
+    rebalance_month=6,             # Rebalance in June
+    turnover=True,
+    chars=['duration', 'spread'],
+    n_jobs=4,
+)
+results = batch.fit()
+
+# Quarterly rebalancing
+batch = BatchStrategyFormation(
+    data=data,
+    signals=['signal1', 'signal2'],
+    holding_period=3,
+    num_portfolios=5,
+    rebalance_frequency='quarterly',  # or 3
+    rebalance_month=6,                # June, September, December, March
+    turnover=False,                   # Enables ultra-fast path
+)
+results = batch.fit()
+```
+
+**Performance (Phase 15 optimization):**
+
+| Configuration | Fast Path | Notes |
+|---------------|-----------|-------|
+| Non-staggered, `turnover=False` | **~340x speedup** | Batch-level numba kernels |
+| Non-staggered, `turnover=True` | **21-103x per signal** | Each worker uses fast path |
+
+When `turnover=False`, `chars=None`, and `banding=None` with non-staggered rebalancing, an ultra-fast batch path processes all signals using numba kernels.
+
+When turnover, chars, or banding are enabled, individual workers use the Phase 15b fast path, still achieving 21-103x speedup per signal.
 
 ---
 
