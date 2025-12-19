@@ -2215,19 +2215,33 @@ class StrategyFormation:
 
         # Extract custom returns and align with datelist
         # custom_returns may have fewer dates than datelist
-        vwls_series = custom_returns['long_short'].reindex(self.datelist)
-        vw_long_series = custom_returns['long_leg'].reindex(self.datelist)
-        vw_short_series = custom_returns['short_leg'].reindex(self.datelist)
+        # Now we have both EW and VW properly computed:
+        # - EW: EW within firm → equal-weight across firms → avg across ratings
+        # - VW: VW within firm → cap-weight across firms → avg across ratings
 
+        # Use new keys if available (fast path), fall back to legacy keys (slow path)
+        if 'ew_long_short' in custom_returns:
+            ewls_series = custom_returns['ew_long_short'].reindex(self.datelist)
+            ew_long_series = custom_returns['ew_long_leg'].reindex(self.datelist)
+            ew_short_series = custom_returns['ew_short_leg'].reindex(self.datelist)
+            vwls_series = custom_returns['vw_long_short'].reindex(self.datelist)
+            vw_long_series = custom_returns['vw_long_leg'].reindex(self.datelist)
+            vw_short_series = custom_returns['vw_short_leg'].reindex(self.datelist)
+        else:
+            # Legacy slow path only computes VW
+            vwls_series = custom_returns['long_short'].reindex(self.datelist)
+            vw_long_series = custom_returns['long_leg'].reindex(self.datelist)
+            vw_short_series = custom_returns['short_leg'].reindex(self.datelist)
+            ewls_series = vwls_series
+            ew_long_series = vw_long_series
+            ew_short_series = vw_short_series
+
+        ewls = ewls_series.values
+        ew_long = ew_long_series.values
+        ew_short = ew_short_series.values
         vwls = vwls_series.values
         vw_long = vw_long_series.values
         vw_short = vw_short_series.values
-
-        # For within-firm sort, EW doesn't make sense (we use firm cap-weighting)
-        # So we set EW = VW for consistency
-        ewls = vwls.copy()
-        ew_long = vw_long.copy()
-        ew_short = vw_short.copy()
 
         # Create portfolio labels
         sort_var_main, _ = self._get_sort_vars()

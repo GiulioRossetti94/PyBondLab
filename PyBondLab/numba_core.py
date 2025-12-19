@@ -4865,17 +4865,13 @@ def compute_within_firm_aggregation_fast(
     vw: np.ndarray,             # Value weight for each bond-period
     n_dates: int,               # Total number of dates
     n_firms: int,               # Total number of unique firms
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Fast within-firm return aggregation using numba.
 
-    This replaces the slow pandas-based nested loop aggregation with a vectorized
-    approach that:
-    1. Accumulates returns/weights by (date, rating_terc, firm, ptf_rank) groups
-    2. Computes firm-level VW returns for HIGH and LOW portfolios
-    3. Computes firm-level H-L factors
-    4. Aggregates across firms (cap-weighted) within each rating tercile
-    5. Averages across rating terciles
+    Computes BOTH EW and VW long-short factors:
+    - EW: EW returns within firm → equal-weighted across firms → avg across ratings
+    - VW: VW returns within firm → cap-weighted across firms → avg across ratings
 
     Parameters
     ----------
@@ -4898,26 +4894,34 @@ def compute_within_firm_aggregation_fast(
 
     Returns
     -------
-    long_short : np.ndarray
-        Shape (n_dates,) - Firm-cap-weighted → rating-averaged H-L factor
-    high_ret : np.ndarray
-        Shape (n_dates,) - Simple VW return of HIGH portfolio (for reporting)
-    low_ret : np.ndarray
-        Shape (n_dates,) - Simple VW return of LOW portfolio (for reporting)
-    valid_dates : np.ndarray
-        Shape (n_dates,) - Boolean mask for dates with valid data
+    ew_long_short : np.ndarray
+        Shape (n_dates,) - EW within firm → equal-weight across firms → avg across ratings
+    vw_long_short : np.ndarray
+        Shape (n_dates,) - VW within firm → cap-weight across firms → avg across ratings
+    ew_high_ret : np.ndarray
+        Shape (n_dates,) - Simple EW return of HIGH portfolio
+    ew_low_ret : np.ndarray
+        Shape (n_dates,) - Simple EW return of LOW portfolio
+    vw_high_ret : np.ndarray
+        Shape (n_dates,) - Simple VW return of HIGH portfolio
+    vw_low_ret : np.ndarray
+        Shape (n_dates,) - Simple VW return of LOW portfolio
     """
     n_obs = len(date_idx)
 
     # Accumulators for (date, rating_terc, firm, portfolio)
     # Shape: (n_dates, 3 rating terciles, n_firms, 2 portfolios)
     # portfolio: 0=LOW, 1=HIGH
-    ret_sum = np.zeros((n_dates, 3, n_firms, 2), dtype=np.float64)
-    vw_sum = np.zeros((n_dates, 3, n_firms, 2), dtype=np.float64)
+    ret_sum = np.zeros((n_dates, 3, n_firms, 2), dtype=np.float64)      # sum(ret) for EW
+    wret_sum = np.zeros((n_dates, 3, n_firms, 2), dtype=np.float64)     # sum(ret * w) for VW
+    vw_sum = np.zeros((n_dates, 3, n_firms, 2), dtype=np.float64)       # sum(w) for VW
+    count = np.zeros((n_dates, 3, n_firms, 2), dtype=np.int64)          # count for EW
 
     # Simple aggregation for reporting (date, portfolio)
     simple_ret_sum = np.zeros((n_dates, 2), dtype=np.float64)
+    simple_wret_sum = np.zeros((n_dates, 2), dtype=np.float64)
     simple_vw_sum = np.zeros((n_dates, 2), dtype=np.float64)
+    simple_count = np.zeros((n_dates, 2), dtype=np.int64)
 
     # First pass: accumulate returns and weights
     for i in range(n_obs):
@@ -4931,7 +4935,7 @@ def compute_within_firm_aggregation_fast(
         # Skip invalid entries
         if d < 0 or f < 0:
             continue
-        if np.isnan(r) or np.isnan(w) or w <= 0:
+        if np.isnan(r):
             continue
         if np.isnan(rt) or rt < 1 or rt > 3:
             continue
@@ -4941,66 +4945,110 @@ def compute_within_firm_aggregation_fast(
         rt_idx = int(rt) - 1  # 0, 1, or 2
         p_idx = int(p) - 1    # 0=LOW, 1=HIGH
 
-        ret_sum[d, rt_idx, f, p_idx] += r * w
-        vw_sum[d, rt_idx, f, p_idx] += w
+        # EW: just sum returns and count
+        ret_sum[d, rt_idx, f, p_idx] += r
+        count[d, rt_idx, f, p_idx] += 1
+
+        # VW: weighted sum (only if weight is valid)
+        if not np.isnan(w) and w > 0:
+            wret_sum[d, rt_idx, f, p_idx] += r * w
+            vw_sum[d, rt_idx, f, p_idx] += w
 
         # Simple aggregation for reporting
-        simple_ret_sum[d, p_idx] += r * w
-        simple_vw_sum[d, p_idx] += w
+        simple_ret_sum[d, p_idx] += r
+        simple_count[d, p_idx] += 1
+        if not np.isnan(w) and w > 0:
+            simple_wret_sum[d, p_idx] += r * w
+            simple_vw_sum[d, p_idx] += w
 
     # Output arrays
-    long_short = np.full(n_dates, np.nan, dtype=np.float64)
-    high_ret = np.full(n_dates, np.nan, dtype=np.float64)
-    low_ret = np.full(n_dates, np.nan, dtype=np.float64)
-    valid_dates = np.zeros(n_dates, dtype=np.bool_)
+    ew_long_short = np.full(n_dates, np.nan, dtype=np.float64)
+    vw_long_short = np.full(n_dates, np.nan, dtype=np.float64)
+    ew_high_ret = np.full(n_dates, np.nan, dtype=np.float64)
+    ew_low_ret = np.full(n_dates, np.nan, dtype=np.float64)
+    vw_high_ret = np.full(n_dates, np.nan, dtype=np.float64)
+    vw_low_ret = np.full(n_dates, np.nan, dtype=np.float64)
 
     # Second pass: compute aggregated returns for each date
     for d in range(n_dates):
-        # Compute simple VW returns for reporting (HIGH and LOW portfolios)
+        # Compute simple returns for reporting (HIGH and LOW portfolios)
+        if simple_count[d, 0] > 0:
+            ew_low_ret[d] = simple_ret_sum[d, 0] / simple_count[d, 0]
+        if simple_count[d, 1] > 0:
+            ew_high_ret[d] = simple_ret_sum[d, 1] / simple_count[d, 1]
         if simple_vw_sum[d, 0] > 0:
-            low_ret[d] = simple_ret_sum[d, 0] / simple_vw_sum[d, 0]
+            vw_low_ret[d] = simple_wret_sum[d, 0] / simple_vw_sum[d, 0]
         if simple_vw_sum[d, 1] > 0:
-            high_ret[d] = simple_ret_sum[d, 1] / simple_vw_sum[d, 1]
+            vw_high_ret[d] = simple_wret_sum[d, 1] / simple_vw_sum[d, 1]
 
-        # Compute firm-cap-weighted → rating-averaged H-L factor
-        rating_factors = np.zeros(3, dtype=np.float64)
-        rating_valid = np.zeros(3, dtype=np.bool_)
+        # Compute EW and VW H-L factors with rating-averaged aggregation
+        ew_rating_factors = np.zeros(3, dtype=np.float64)
+        vw_rating_factors = np.zeros(3, dtype=np.float64)
+        ew_rating_valid = np.zeros(3, dtype=np.bool_)
+        vw_rating_valid = np.zeros(3, dtype=np.bool_)
 
         for rt_idx in range(3):
-            # Accumulate firm-level H-L factors for this rating tercile
-            firm_hl_sum = 0.0
-            firm_weight_sum = 0.0
+            # EW: equal-weight across firms (simple average of firm H-L factors)
+            ew_firm_hl_sum = 0.0
+            ew_firm_count = 0
+
+            # VW: cap-weight across firms
+            vw_firm_hl_sum = 0.0
+            vw_firm_weight_sum = 0.0
 
             for f in range(n_firms):
+                # EW within firm
+                low_cnt = count[d, rt_idx, f, 0]
+                high_cnt = count[d, rt_idx, f, 1]
+
+                if low_cnt > 0 and high_cnt > 0:
+                    ew_low_r = ret_sum[d, rt_idx, f, 0] / low_cnt
+                    ew_high_r = ret_sum[d, rt_idx, f, 1] / high_cnt
+                    ew_firm_hl = ew_high_r - ew_low_r
+
+                    # Equal-weight across firms
+                    ew_firm_hl_sum += ew_firm_hl
+                    ew_firm_count += 1
+
+                # VW within firm
                 low_vw = vw_sum[d, rt_idx, f, 0]
                 high_vw = vw_sum[d, rt_idx, f, 1]
 
-                # Need both high and low bonds for this firm
                 if low_vw > 0 and high_vw > 0:
-                    low_r = ret_sum[d, rt_idx, f, 0] / low_vw
-                    high_r = ret_sum[d, rt_idx, f, 1] / high_vw
-
-                    firm_hl = high_r - low_r
+                    vw_low_r = wret_sum[d, rt_idx, f, 0] / low_vw
+                    vw_high_r = wret_sum[d, rt_idx, f, 1] / high_vw
+                    vw_firm_hl = vw_high_r - vw_low_r
                     firm_weight = low_vw + high_vw
 
-                    firm_hl_sum += firm_hl * firm_weight
-                    firm_weight_sum += firm_weight
+                    # Cap-weight across firms
+                    vw_firm_hl_sum += vw_firm_hl * firm_weight
+                    vw_firm_weight_sum += firm_weight
 
-            # Cap-weighted average across firms within this rating tercile
-            if firm_weight_sum > 0:
-                rating_factors[rt_idx] = firm_hl_sum / firm_weight_sum
-                rating_valid[rt_idx] = True
+            # Store rating-level factors
+            if ew_firm_count > 0:
+                ew_rating_factors[rt_idx] = ew_firm_hl_sum / ew_firm_count
+                ew_rating_valid[rt_idx] = True
+            if vw_firm_weight_sum > 0:
+                vw_rating_factors[rt_idx] = vw_firm_hl_sum / vw_firm_weight_sum
+                vw_rating_valid[rt_idx] = True
 
         # Average across valid rating terciles
-        n_valid_ratings = 0
-        rating_sum = 0.0
+        ew_n_valid = 0
+        ew_rating_sum = 0.0
+        vw_n_valid = 0
+        vw_rating_sum = 0.0
+
         for rt_idx in range(3):
-            if rating_valid[rt_idx]:
-                rating_sum += rating_factors[rt_idx]
-                n_valid_ratings += 1
+            if ew_rating_valid[rt_idx]:
+                ew_rating_sum += ew_rating_factors[rt_idx]
+                ew_n_valid += 1
+            if vw_rating_valid[rt_idx]:
+                vw_rating_sum += vw_rating_factors[rt_idx]
+                vw_n_valid += 1
 
-        if n_valid_ratings > 0:
-            long_short[d] = rating_sum / n_valid_ratings
-            valid_dates[d] = True
+        if ew_n_valid > 0:
+            ew_long_short[d] = ew_rating_sum / ew_n_valid
+        if vw_n_valid > 0:
+            vw_long_short[d] = vw_rating_sum / vw_n_valid
 
-    return long_short, high_ret, low_ret, valid_dates
+    return ew_long_short, vw_long_short, ew_high_ret, ew_low_ret, vw_high_ret, vw_low_ret

@@ -243,6 +243,10 @@ def compute_within_firm_returns_aggregation_fast(
 
     This is a drop-in replacement for compute_within_firm_returns_aggregation
     that uses numba kernels for ~350x speedup.
+
+    Returns both EW and VW:
+    - EW: EW returns within firm → equal-weighted across firms → avg across ratings
+    - VW: VW returns within firm → cap-weighted across firms → avg across ratings
     """
     from .numba_core import compute_within_firm_aggregation_fast
 
@@ -262,9 +266,12 @@ def compute_within_firm_returns_aggregation_fast(
 
     if not all_port_dfs:
         return {
-            'long_short': pd.Series(dtype=float),
-            'long_leg': pd.Series(dtype=float),
-            'short_leg': pd.Series(dtype=float),
+            'ew_long_short': pd.Series(dtype=float),
+            'vw_long_short': pd.Series(dtype=float),
+            'ew_long_leg': pd.Series(dtype=float),
+            'ew_short_leg': pd.Series(dtype=float),
+            'vw_long_leg': pd.Series(dtype=float),
+            'vw_short_leg': pd.Series(dtype=float),
         }
 
     # Concatenate all portfolio data
@@ -302,26 +309,41 @@ def compute_within_firm_returns_aggregation_fast(
     ret = combined_df['ret'].values.astype(np.float64)
     vw = combined_df['VW'].values.astype(np.float64)
 
-    # Run fast numba aggregation
-    long_short, high_ret, low_ret, valid_dates = compute_within_firm_aggregation_fast(
+    # Run fast numba aggregation (returns both EW and VW)
+    (ew_long_short, vw_long_short,
+     ew_high_ret, ew_low_ret,
+     vw_high_ret, vw_low_ret) = compute_within_firm_aggregation_fast(
         date_idx, firm_idx, rating_terc, ptf_rank, ret, vw, n_dates, n_firms
     )
 
     # Convert to pandas Series with date index
-    long_short_series = pd.Series(long_short, index=unique_dates)
-    high_returns_series = pd.Series(high_ret, index=unique_dates)
-    low_returns_series = pd.Series(low_ret, index=unique_dates)
+    ew_ls_series = pd.Series(ew_long_short, index=unique_dates)
+    vw_ls_series = pd.Series(vw_long_short, index=unique_dates)
+    ew_high_series = pd.Series(ew_high_ret, index=unique_dates)
+    ew_low_series = pd.Series(ew_low_ret, index=unique_dates)
+    vw_high_series = pd.Series(vw_high_ret, index=unique_dates)
+    vw_low_series = pd.Series(vw_low_ret, index=unique_dates)
 
-    # Filter to valid dates only
-    valid_mask = ~np.isnan(long_short_series.values)
-    long_short_series = long_short_series[valid_mask]
-    high_returns_series = high_returns_series[valid_mask]
-    low_returns_series = low_returns_series[valid_mask]
+    # Filter to valid dates only (use VW long-short as reference)
+    valid_mask = ~np.isnan(vw_ls_series.values)
+    ew_ls_series = ew_ls_series[valid_mask]
+    vw_ls_series = vw_ls_series[valid_mask]
+    ew_high_series = ew_high_series[valid_mask]
+    ew_low_series = ew_low_series[valid_mask]
+    vw_high_series = vw_high_series[valid_mask]
+    vw_low_series = vw_low_series[valid_mask]
 
     return {
-        'long_short': long_short_series,
-        'long_leg': high_returns_series,
-        'short_leg': low_returns_series,
+        'ew_long_short': ew_ls_series,
+        'vw_long_short': vw_ls_series,
+        'ew_long_leg': ew_high_series,
+        'ew_short_leg': ew_low_series,
+        'vw_long_leg': vw_high_series,
+        'vw_short_leg': vw_low_series,
+        # Legacy keys for backwards compatibility
+        'long_short': vw_ls_series,
+        'long_leg': vw_high_series,
+        'short_leg': vw_low_series,
     }
 
 
