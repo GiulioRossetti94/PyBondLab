@@ -497,6 +497,69 @@ StrategyFormation.fit()
 
 ---
 
+## Portfolio Returns and Weights: Complete Equations
+
+### Weight Computation
+
+At each return date, weights are computed from **formation date VW** but normalized for
+bonds present at the return date:
+
+```
+For portfolio p at return date t+1:
+
+Equal-Weight (EW):
+  w_ew[i] = 1 / N_p(t+1)
+
+  where N_p(t+1) = number of bonds in portfolio p present at t+1
+
+Value-Weight (VW):
+  w_vw[i] = VW_t[i] / Σⱼ∈p VW_t[j]
+
+  where:
+    - VW_t[i] = value weight of bond i at FORMATION date t
+    - Σⱼ∈p = sum over bonds j in portfolio p that are PRESENT at t+1
+```
+
+**Key insight**: VW values come from formation date, but normalization uses only bonds
+present at the return date. This is the "renormalization" that happens on pseudo-rebalancing dates.
+
+### Portfolio Return Computation
+
+Returns are computed using **raw weights (w_raw)**, not scaled weights:
+
+```
+Portfolio Return (EW):
+  R_ew,p(t+1) = (1/N_p) × Σᵢ∈p r_i(t+1)
+             = simple average of bond returns
+
+Portfolio Return (VW):
+  R_vw,p(t+1) = Σᵢ∈p w_vw[i] × r_i(t+1)
+             = Σᵢ∈p [VW_t[i] / Σⱼ∈p VW_t[j]] × r_i(t+1)
+
+  where r_i(t+1) = return of bond i from t to t+1
+```
+
+### Scaled Weights (for Turnover)
+
+After computing returns, we compute **scaled weights** for the NEXT period's turnover:
+
+```
+Scaled Weight:
+  w_scaled[i] = w_raw[i] × (1 + r_i) / (1 + R_p)
+
+  where:
+    - w_raw[i] = current raw weight of bond i
+    - r_i = bond i's return this period
+    - R_p = portfolio p's return this period
+
+Interpretation:
+  - If bond i outperforms the portfolio: w_scaled[i] > w_raw[i]
+  - If bond i underperforms: w_scaled[i] < w_raw[i]
+  - Sum of scaled weights ≈ 1 (exactly 1 if no rounding)
+```
+
+---
+
 ## Turnover Pipeline
 
 ### Code Reuse
@@ -515,7 +578,8 @@ _fit_nonstaggered()
         └── For each rebalancing date:
               └── _form_nonstaggered_portfolio()
                     └── For each month until next rebalancing:
-                          ├── _form_single_period() → computes weights
+                          ├── _form_single_period() → computes w_raw, returns
+                          ├── compute_scaled_weights_single() → computes w_scaled
                           └── turnover_manager.compute() → computes turnover
 ```
 
@@ -527,28 +591,122 @@ _fit_nonstaggered_fast()
         └── compute_nonstaggered_full_fast()  ← Single numba kernel
               │
               └── For each date d:
-                    ├── Compute returns (ew_ret, vw_ret)
-                    ├── Compute characteristics (if enabled)
-                    └── Compute turnover (if enabled)
-                          │
-                          ├── Track current weights: curr_ew, curr_vw
-                          ├── Track previous scaled weights: prev_ew, prev_vw
-                          └── turnover = prev_sum + curr_sum - 2 * sum_min
+                    ├── Compute w_raw (current weights)
+                    ├── Compute returns using w_raw
+                    ├── Compute turnover: compare w_raw vs prev_scaled
+                    ├── Compute w_scaled for next period
+                    └── Store w_scaled as prev_scaled for d+1
+```
+
+### Turnover Computation Timeline
+
+```
+TURNOVER CALCULATION FLOW
+=========================
+
+At return date t+1, we have:
+
+  ┌─────────────────────────────────────────────────────────────────┐
+  │                     PREVIOUS PERIOD (t)                         │
+  │                                                                 │
+  │  w_raw(t) ──► Returns r_i(t) ──► w_scaled(t)                   │
+  │                                      │                          │
+  │                                      │ stored as prev_scaled    │
+  │                                      ▼                          │
+  └──────────────────────────────────────┼──────────────────────────┘
+                                         │
+  ┌──────────────────────────────────────┼──────────────────────────┐
+  │                     CURRENT PERIOD (t+1)                        │
+  │                                      │                          │
+  │                                      ▼                          │
+  │  w_raw(t+1) ◄─── VW from formation, renormalized for t+1       │
+  │      │                               │                          │
+  │      │                               │                          │
+  │      ▼                               ▼                          │
+  │  ┌───────────────────────────────────────────┐                  │
+  │  │  TURNOVER = |w_raw(t+1) - w_scaled(t)|    │                  │
+  │  │           = trading needed to rebalance   │                  │
+  │  └───────────────────────────────────────────┘                  │
+  │      │                                                          │
+  │      ▼                                                          │
+  │  Returns R_p(t+1) computed using w_raw(t+1)                     │
+  │      │                                                          │
+  │      ▼                                                          │
+  │  w_scaled(t+1) = w_raw(t+1) × (1+r_i)/(1+R_p) ──► stored       │
+  │                                                                 │
+  └─────────────────────────────────────────────────────────────────┘
 ```
 
 ### Turnover Formula
 
-At each return date `d`, for each portfolio `p`:
+```
+Turnover at t+1 for portfolio p:
+
+  T_p(t+1) = ½ × Σᵢ |w_raw[i](t+1) - w_scaled[i](t)|
+
+Efficient computation (avoiding per-bond iteration):
+
+  T_p(t+1) = ½ × (prev_sum + curr_sum - 2 × sum_min)
+
+  where:
+    - prev_sum = Σᵢ w_scaled[i](t)     (previous scaled weights sum)
+    - curr_sum = Σᵢ w_raw[i](t+1)      (current raw weights sum, ≈1)
+    - sum_min = Σᵢ min(w_scaled[i](t), w_raw[i](t+1))
+```
+
+### Complete Timeline Example
 
 ```
-1. Current weights: curr_weight[bond] = VW[bond] / sum(VW in portfolio)
-2. Previous scaled: prev_scaled[bond] = prev_weight[bond] × (1 + bond_ret) / (1 + ptf_ret)
-3. Turnover = sum(|curr_weight - prev_scaled|) / 2
-            = (prev_sum + curr_sum - 2 × sum_min) / 2
+QUARTERLY REBALANCING: RETURNS, WEIGHTS, AND TURNOVER
+======================================================
+
+                 JANUARY        FEBRUARY         MARCH           APRIL
+                 (t=0)          (t=1)            (t=2)           (t=3)
+                 TRUE REBAL     pseudo           pseudo          TRUE REBAL
+─────────────────────────────────────────────────────────────────────────────
+
+1. WEIGHTS:
+   VW Source:    VW_Jan         VW_Jan           VW_Jan          VW_Apr
+   Bonds used:   at Jan         at Feb           at Mar          at Apr
+   Formula:      VW_Jan[i]/Σ    VW_Jan[i]/Σ'     VW_Jan[i]/Σ''   VW_Apr[i]/Σ
+                 (Σ=bonds@Jan)  (Σ'=bonds@Feb)   (Σ''=bonds@Mar)
+                     │              │                │               │
+                     ▼              ▼                ▼               ▼
+2. RAW WEIGHTS: w_raw(0)       w_raw(1)         w_raw(2)        w_raw(3)
+                     │              │                │               │
+                     │              │                │               │
+3. RETURNS:         N/A        R(1)=Σw·r        R(2)=Σw·r       R(3)=Σw·r
+   (computed        first      using w_raw(1)   using w_raw(2)  using w_raw(3)
+    with w_raw)     period          │                │               │
+                                    │                │               │
+4. SCALED:     w_scaled(0)     w_scaled(1)      w_scaled(2)     w_scaled(3)
+               =w_raw(0)×      =w_raw(1)×       =w_raw(2)×      =w_raw(3)×
+               (1+r)/(1+R)     (1+r)/(1+R)      (1+r)/(1+R)     (1+r)/(1+R)
+                    │               │                │               │
+                    │               │                │               │
+                    └───────────────┤                │               │
+                                    ▼                │               │
+5. TURNOVER:       N/A         T(1)=compare     T(2)=compare    T(3)=compare
+                   first       w_raw(1) vs      w_raw(2) vs     w_raw(3) vs
+                   period      w_scaled(0)      w_scaled(1)     w_scaled(2)
+                                    │                │               │
+                                    ▼                ▼               ▼
+6. OUTPUT          N/A         Index: Feb       Index: Mar      Index: Apr
+   (all indexed                Return: R(1)     Return: R(2)    Return: R(3)
+    at return                  Turnover: T(1)   Turnover: T(2)  Turnover: T(3)
+    date t+1)                  Chars: from Jan  Chars: from Jan Chars: from Apr
 ```
 
-**Key insight**: Turnover is computed at EVERY date, including pseudo-rebalancing dates.
-If bonds drop out between rebalancing dates, this creates "latent turnover" from weight renormalization.
+### What Turnover Measures
+
+| At Return Date | Turnover Measures | Caused By |
+|----------------|-------------------|-----------|
+| Feb (after Jan rebal) | First period | N/A (no previous) |
+| Mar (pseudo-rebal) | Feb→Mar change | Bonds dropping out, weight renormalization |
+| Apr (TRUE rebal) | Mar→Apr change | New rankings + bonds dropping out |
+
+**Latent turnover** on pseudo-rebalancing dates: Even without re-ranking, if bonds drop out,
+weights must be renormalized → this creates turnover from the "drift" in portfolio composition.
 
 ---
 
@@ -658,42 +816,53 @@ batch = pbl.BatchStrategyFormation(
 
 All outputs are indexed by **RETURN date** (t+1), not formation date (t):
 
-| Output | Index Date | Value Source Date |
-|--------|------------|-------------------|
-| **Returns** | Return date (t+1) | Return date (t+1) |
-| **Turnover** | Return date (t+1) | Weights at return date |
-| **Characteristics** | Return date (t+1) | Formation date (t) |
+| Output | Index Date | Computed From |
+|--------|------------|---------------|
+| **Returns** | Return date (t+1) | w_raw × r at t+1 |
+| **Turnover** | Return date (t+1) | w_raw(t+1) vs w_scaled(t) |
+| **Weights** | Return date (t+1) | VW from formation, renormalized for t+1 |
+| **Characteristics** | Return date (t+1) | Char values from formation date |
 
 ### Why Return Date Indexing?
 
-This matches standard factor return conventions:
-- Factor return for "January" = return earned FROM January TO February
-- Index = February (when return is realized)
+This is logically consistent:
 
-### Timeline Example
+```
+At index t+1:
+  ┌────────────────────────────────────────────────────────────┐
+  │  Return[t+1]   = return earned holding the t+1 portfolio   │
+  │  Turnover[t+1] = trading done to GET TO the t+1 portfolio  │
+  │  Weights[t+1]  = the weights used to compute Return[t+1]   │
+  │  Chars[t+1]    = characteristics of what we're holding     │
+  └────────────────────────────────────────────────────────────┘
+
+Everything describes the SAME portfolio period.
+```
+
+### Timeline with Indexing
 
 ```
 Quarterly Rebalancing (rebalance_month=1):
 
-Formation    Return      Output Index
-(ranks)      (collected)
-─────────────────────────────────────
-Jan          Feb         Feb
-             Mar         Mar
-             Apr         Apr
-Apr          May         May
-             Jun         Jun
-             Jul         Jul
+Event                    Index in Output
+─────────────────────────────────────────
+Formation at Jan         (no output)
+Return Jan→Feb          Index = Feb
+Return Feb→Mar          Index = Mar
+Return Mar→Apr          Index = Apr
+Formation at Apr         (no output)
+Return Apr→May          Index = May
 ...
 
 Output DataFrames:
-  Date (Index)  | Return  | Turnover | Char
-  ─────────────────────────────────────────
-  2024-02-01    | 0.012   | 0.15     | 5.2
-  2024-03-01    | -0.005  | 0.03     | 5.1
-  2024-04-01    | 0.008   | 0.02     | 5.0
-  2024-05-01    | 0.015   | 0.18     | 4.8  ← New rebalancing
-  ...
+  Date (Index)  │ Return  │ Turnover │ Weights Source  │ Char Source
+  ──────────────┼─────────┼──────────┼─────────────────┼─────────────
+  2024-02-01    │ R(Feb)  │ T(Feb)   │ VW from Jan     │ Chars from Jan
+  2024-03-01    │ R(Mar)  │ T(Mar)   │ VW from Jan*    │ Chars from Jan
+  2024-04-01    │ R(Apr)  │ T(Apr)   │ VW from Jan*    │ Chars from Jan
+  2024-05-01    │ R(May)  │ T(May)   │ VW from Apr     │ Chars from Apr
+
+  * Renormalized for bonds present at that date
 ```
 
 ### Characteristics: Special Case
@@ -701,8 +870,8 @@ Output DataFrames:
 Characteristics are indexed by return date but **values come from formation date**:
 
 ```python
-# At return date Feb (d=1), characteristics come from formation date Jan (d=0)
-# This is because characteristics describe the portfolio at formation
+# At return date Feb (index=1), characteristics come from formation date Jan
+# This is because characteristics describe the portfolio as formed
 
 # For non-staggered with dynamic_weights=False (always):
 char_date = formation_date  # NOT d-1
