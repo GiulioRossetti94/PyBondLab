@@ -4609,8 +4609,18 @@ def compute_nonstaggered_full_fast(
         if form_d < 0:
             continue
 
-        # Check if this return date is within holding period
-        if d > form_d + hp:
+        # Phase 17 fix: Find next rebalancing date to determine valid return period
+        # Instead of using hp (which is wrong for non-staggered), we collect returns
+        # until the next rebalancing date
+        next_rebal_d = n_dates  # default: no more rebalancing (collect until end)
+        for r in range(n_rebal):
+            if rebal_date_indices[r] > form_d:
+                next_rebal_d = rebal_date_indices[r]
+                break
+
+        # Skip if return date is past next rebalancing (belongs to next period)
+        # Note: d == next_rebal_d still belongs to current period (returns collected at rebal date)
+        if d > next_rebal_d:
             continue
 
         # Get bonds at this return date

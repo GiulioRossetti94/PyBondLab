@@ -119,24 +119,13 @@ def test_nonstaggered_monthly_returns(data, rebalance_frequency='quarterly', ver
     n_return_dates = ew_ls.notna().sum()
     n_total_dates = len(ew_ls)
 
-    # Calculate expected number of return dates
-    # For quarterly rebalancing with 12 months:
-    # - Rebal at month 0: returns for months 1, 2, 3
-    # - Rebal at month 3: returns for months 4, 5, 6
-    # - Rebal at month 6: returns for months 7, 8, 9
-    # - Rebal at month 9: returns for months 10, 11
-    # Total expected: 11 months (all except month 0)
-
-    if rebalance_frequency == 'quarterly':
-        freq = 3
-    elif rebalance_frequency == 'semi-annual':
-        freq = 6
-    elif rebalance_frequency == 'annual':
-        freq = 12
-    else:
-        freq = 1
-
-    n_expected = n_total_dates - 1  # All months except first formation
+    # Calculate expected number of return dates based on actual rebalancing schedule
+    # Expected = all dates after first rebalancing date
+    from PyBondLab.utils_optimized import _get_rebalancing_dates
+    datelist = list(ew_ls.index)
+    rebal_idx = _get_rebalancing_dates(datelist, rebalance_frequency, 6)  # Default rebal_month=6
+    first_rebal_idx = rebal_idx[0] if rebal_idx else 0
+    n_expected = n_total_dates - first_rebal_idx - 1  # All dates after first rebal
 
     has_bug = n_return_dates < n_expected
 
@@ -189,10 +178,18 @@ def test_with_turnover(data, rebalance_frequency='quarterly', verbose=True):
     turn_ew, turn_vw = result.get_turnover()
 
     # Count non-NaN dates
-    # Turnover should have all dates except first
-    n_turn_dates = turn_ew.iloc[:, 0].notna().sum()
-    n_expected = len(turn_ew) - 1  # Skip first rebalancing
+    # Turnover computed at all dates after first rebalancing, EXCEPT the first return date
+    # (first return date has no previous period to compare with)
+    from PyBondLab.utils_optimized import _get_rebalancing_dates
+    datelist = list(turn_ew.index)
+    # Note: turn_ew already skips first date, so indices are shifted
+    full_datelist = pd.date_range(start=datelist[0] - pd.DateOffset(months=1), periods=len(datelist)+1, freq='ME')
+    rebal_idx = _get_rebalancing_dates(list(full_datelist), rebalance_frequency, 6)
+    first_rebal_idx = rebal_idx[0] if rebal_idx else 0
+    # Turnover starts at SECOND return date (first has no previous to compare)
+    n_expected = len(turn_ew) - first_rebal_idx - 1  # -1 for first return date
 
+    n_turn_dates = turn_ew.iloc[:, 0].notna().sum()
     has_bug = n_turn_dates < n_expected
 
     if verbose:
@@ -244,10 +241,15 @@ def test_with_chars(data, rebalance_frequency='quarterly', verbose=True):
     chars_ew, chars_vw = result.get_characteristics()
 
     # Count non-NaN dates for first characteristic
+    # Expected = all dates after first rebalancing date
+    from PyBondLab.utils_optimized import _get_rebalancing_dates
     char_df = chars_ew['char1']
-    n_char_dates = char_df.iloc[:, 0].notna().sum()
-    n_expected = len(char_df) - 1  # All except first formation
+    datelist = list(char_df.index)
+    rebal_idx = _get_rebalancing_dates(datelist, rebalance_frequency, 6)
+    first_rebal_idx = rebal_idx[0] if rebal_idx else 0
+    n_expected = len(char_df) - first_rebal_idx - 1  # All dates after first rebal
 
+    n_char_dates = char_df.iloc[:, 0].notna().sum()
     has_bug = n_char_dates < n_expected
 
     if verbose:
