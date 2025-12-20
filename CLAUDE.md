@@ -59,7 +59,7 @@ Dramatically speed up portfolio formation in PyBondLab using numba/prange, while
 | **Phase 15a** | Non-staggered rebalancing fast path | ✅ Complete | **100x speedup** achieved! |
 | **Phase 15** | Non-staggered integration | ✅ Complete | BatchStrategyFormation (~340x), DataUncertaintyAnalysis integrated |
 | **Phase 15b** | Non-staggered with turnover/chars/banding | ✅ Complete | **21-103x speedup**, all 6 tests PASS |
-| **Phase 16** | Optimize WithinFirmSort | ⏳ In Progress | 16g (33x speedup) + 16h (chars) ✅, 16i pending |
+| **Phase 16** | Optimize WithinFirmSort | ⏳ In Progress | 16g (33x speedup) + 16h (chars) ✅, 16i ✅, 16j pending |
 
 ---
 
@@ -2622,5 +2622,100 @@ See `docs/WithinFirmSort_README.md` for detailed documentation on:
 - Usage examples
 - Architecture
 - Comparison with standard sorting
+
+---
+
+## Phase 16j: Align BatchWithinFirmSortFormation with BatchStrategyFormation
+
+### Overview
+
+Align `BatchWithinFirmSortFormation` with `BatchStrategyFormation` to provide consistent
+user experience: column mapping, progress bars, memory optimization, and summary output.
+
+**Status: ⏳ In Progress**
+
+### Target Output
+
+```
+Columns renamed: cusip->ID, ret_vwx_bgn->ret, mcap_e->VW, spc_rat->RATING_NUM
+Processing 11 signals with 10 worker(s)...
+  Platform: Windows, using 'spawn' start method
+  Running first signal (warmup)...
+  First signal done: 9.74s
+  Processing 10 remaining signals in parallel...
+  Data size: 1247.8MB → 48.1MB per worker (96% reduction)
+Parallel processing: 100%|██████████| 10/10 [00:13<00:00,  1.37s/it]
+
+============================================================
+BATCH PROCESSING COMPLETE
+============================================================
+Total signals:    11
+Successful:       11
+Failed:           0
+Workers used:     10
+Total time:       25.04s
+Avg time/signal:  9.46s
+Effective speedup: 4.2x
+============================================================
+```
+
+### Implementation Phases
+
+#### Phase 16j.1: Column Mapping
+- Add `columns` parameter to `BatchWithinFirmSortFormation.__init__`
+- Rename columns at start (same logic as `BatchStrategyFormation`)
+- Report: `Columns renamed: cusip->ID, ...`
+
+#### Phase 16j.2: Warmup + Progress
+- Run first signal sequentially (warmup JIT compilation)
+- Add tqdm progress bar for remaining signals
+- Track timing per signal
+
+#### Phase 16j.3: Memory Optimization
+- Implement `_get_minimal_data()` for WithinFirmSort
+- Required columns: `date`, `ID`, `ret`, `VW`, `RATING_NUM`, `PERMNO` (firm ID), + signals + chars
+- Report data size reduction: `Data size: X MB → Y MB per worker (Z% reduction)`
+
+#### Phase 16j.4: Platform-Aware Start Method
+- Use `spawn` on Windows, `fork` on Linux/macOS
+- Report: `Platform: Windows, using 'spawn' start method`
+
+#### Phase 16j.5: Summary Output
+- Match summary format from `BatchStrategyFormation`
+- Include: total signals, success/fail, workers, time, speedup
+
+#### Phase 16j.6: Shared Base Class
+- Extract common functionality into `BaseBatchFormation`
+- Both `BatchStrategyFormation` and `BatchWithinFirmSortFormation` inherit from it
+- Common code: column mapping, warmup, progress, memory optimization, summary output
+
+### Key Constraint
+
+**Keep numba fast path** for `turnover=False` in `BatchWithinFirmSortFormation`:
+- Fast path: numba vectorized processing when `turnover=False` and `chars=None`
+- Slow path: multiprocessing when `turnover=True` or `chars` is set
+
+### Files to Modify
+
+| File | Changes |
+|------|---------|
+| `PyBondLab/batch_base.py` | **NEW** - `BaseBatchFormation` class with shared functionality |
+| `PyBondLab/batch.py` | Inherit from `BaseBatchFormation`, remove duplicated code |
+| `PyBondLab/batch_withinfirm.py` | Inherit from `BaseBatchFormation`, add new features |
+| `PyBondLab/__init__.py` | Export `BaseBatchFormation` (optional) |
+
+### Validation
+
+After implementation, both classes should produce identical output format:
+
+```python
+# BatchStrategyFormation
+batch1 = BatchStrategyFormation(data, columns={...}, signals=[...], n_jobs=4)
+results1 = batch1.fit()  # Shows progress, summary
+
+# BatchWithinFirmSortFormation
+batch2 = BatchWithinFirmSortFormation(data, columns={...}, signals=[...], n_jobs=4)
+results2 = batch2.fit()  # Shows SAME progress format, summary format
+```
 
 ---
