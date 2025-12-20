@@ -48,6 +48,22 @@
     - [ID Intersection Logic](#id-intersection-logic)
     - [Cohort Handling for HP=1](#cohort-handling-for-hp1)
     - [Summary Table](#summary-table-hp1)
+11. [Detailed Timing and Mechanics (HP=3, Staggered Rebalancing)](#detailed-timing-and-mechanics-hp3-staggered-rebalancing)
+    - [What is Staggered Rebalancing?](#what-is-staggered-rebalancing)
+    - [Timeline Overview (HP=3)](#timeline-overview-hp3)
+    - [Cohort Assignment](#cohort-assignment)
+    - [Holding Period Loop](#holding-period-loop)
+    - [Results Array Structure](#results-array-structure)
+    - [dynamic_weights Parameter](#dynamic_weights-parameter-critical-for-hp1)
+    - [Cohort Averaging](#cohort-averaging)
+    - [Weight Computation for HP>1](#weight-computation-for-hp1)
+    - [Turnover for HP>1](#turnover-for-hp1-staggered)
+    - [Characteristics for HP>1](#characteristics-for-hp1)
+    - [Complete Example (HP=3)](#complete-example-hp3)
+    - [ID Intersection for HP>1](#id-intersection-for-hp1)
+    - [Summary Table (HP=3)](#summary-table-hp3)
+    - [Key Differences: HP=1 vs HP=3](#key-differences-hp1-vs-hp3)
+    - [Turnover Interpretation for HP>1](#turnover-interpretation-for-hp1)
 
 ---
 
@@ -1911,3 +1927,398 @@ vw_returns_final = vw_ret_arr[:, 0, :]  # Just take cohort 0
 2. Turnover compares consecutive formations and is indexed at formation time (τ)
 3. For HP=1, `dynamic_weights=True` and `=False` produce identical results
 4. Only bonds in the intersection of formation and return dates are included
+
+---
+
+## Detailed Timing and Mechanics (HP=3, Staggered Rebalancing)
+
+This section provides a precise specification of how portfolio returns, weights, turnover, and characteristics are computed for `holding_period=3` (staggered rebalancing). The key distinction from HP=1 is the presence of **overlapping cohorts**.
+
+### What is Staggered Rebalancing?
+
+With `holding_period > 1`, portfolios are rebalanced in a staggered fashion:
+- **3 overlapping cohorts** exist simultaneously (for HP=3)
+- Each month, **1 cohort rebalances** while **2 cohorts hold** their existing positions
+- Final returns are **averaged across all active cohorts** at each date
+
+**Why stagger?** Staggering reduces the impact of formation timing on factor returns and provides smoother portfolio transitions.
+
+---
+
+### Timeline Overview (HP=3)
+
+```
+Staggered Rebalancing Timeline (HP=3):
+======================================
+
+Month:    0         1         2         3         4         5         6         7         8
+          |         |         |         |         |         |         |         |         |
+Time:  ───┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼───
+          │         │         │         │         │         │         │         │         │
+Cohort 0: [F₀]─────R₀₁───────R₀₂───────R₀₃       [F₃]─────R₃₁───────R₃₂───────R₃₃
+              held 1     held 2     held 3           held 1     held 2     held 3
+          │         │         │         │         │         │         │         │         │
+Cohort 1:           [F₁]─────R₁₁───────R₁₂───────R₁₃       [F₄]─────R₄₁───────R₄₂───────R₄₃
+                        held 1     held 2     held 3           held 1     held 2     held 3
+          │         │         │         │         │         │         │         │         │
+Cohort 2:                     [F₂]─────R₂₁───────R₂₂───────R₂₃       [F₅]─────R₅₁───────R₅₂
+                                  held 1     held 2     held 3           held 1     held 2
+
+Final:    NaN       NaN       NaN      R̄₃        R̄₄        R̄₅        R̄₆        R̄₇        R̄₈
+Return                              =avg(R₀₃, =avg(R₀₃, =avg(R₁₃, =avg(R₃₁, =avg(R₃₂, =avg(R₃₃,
+                                     R₁₂,      R₁₃,      R₂₃,      R₄₁,      R₄₂,      R₄₃,
+                                     R₂₁)      R₂₂)      R₃₁)      R₅₁)      R₅₂)      R₅₃)
+
+Legend:
+  [Fₜ] = Formation date t (cohort formed, ranks assigned)
+  Rₜₕ  = Return for cohort formed at t, holding period h (h = 1, 2, or 3)
+  R̄ₜ   = Final return at date t = average across active cohorts
+```
+
+**Key Insight:**
+- At any given return date, up to 3 cohorts contribute returns (one at each holding horizon)
+- Cohort index = `formation_date % 3`
+- The first non-NaN final return is at t=3 (first time all 3 cohorts have contributed)
+
+---
+
+### Cohort Assignment
+
+Each formation date is assigned to a cohort based on modulo arithmetic:
+
+```
+Cohort = formation_date_index % holding_period
+
+Example for HP=3:
+  Formation date 0 → Cohort 0 (0 % 3 = 0)
+  Formation date 1 → Cohort 1 (1 % 3 = 1)
+  Formation date 2 → Cohort 2 (2 % 3 = 2)
+  Formation date 3 → Cohort 0 (3 % 3 = 0)  ← Cohort 0 rebalances
+  Formation date 4 → Cohort 1 (4 % 3 = 1)  ← Cohort 1 rebalances
+  Formation date 5 → Cohort 2 (5 % 3 = 2)  ← Cohort 2 rebalances
+  ...
+```
+
+---
+
+### Holding Period Loop
+
+For each formation date t (assigned to cohort c), we compute returns for h = 1, 2, ..., HP:
+
+```
+Formation date: t
+Cohort:        c = t % HP
+
+For h in range(HP):  # h = 0, 1, 2 for HP=3
+    return_date = t + h + 1
+
+    # Compute returns for this (formation, return_date) pair
+    R[return_date, cohort, portfolio] = compute_return(...)
+
+Example for t=1, HP=3, c=1:
+  h=0: return_date = 1+0+1 = 2  → Store at ret_arr[2, 1, :]
+  h=1: return_date = 1+1+1 = 3  → Store at ret_arr[3, 1, :]
+  h=2: return_date = 1+2+1 = 4  → Store at ret_arr[4, 1, :]
+```
+
+---
+
+### Results Array Structure
+
+```
+Array Shape: (n_dates, n_cohorts, n_portfolios) = (TM, HP, nport)
+
+For HP=3 and 5 portfolios:
+  ew_ret_arr.shape = (TM, 3, 5)
+
+  ret_arr[t, c, p] = Return at date t for cohort c, portfolio p
+
+  Example contents at return date t=5:
+    ret_arr[5, 0, :] = Returns from cohort 0 (formed at t=3, held for 2 months)
+    ret_arr[5, 1, :] = Returns from cohort 1 (formed at t=4, held for 1 month)
+    ret_arr[5, 2, :] = Returns from cohort 2 (formed at t=2, held for 3 months)
+```
+
+---
+
+### dynamic_weights Parameter (Critical for HP>1)
+
+For `holding_period > 1`, the `dynamic_weights` parameter controls which date's VW is used:
+
+| Setting | VW Source Date | Description |
+|---------|---------------|-------------|
+| `dynamic_weights=True` | t+h = return_date - 1 | VW from "day before return" |
+| `dynamic_weights=False` | t = formation_date | VW from when portfolio was formed |
+
+**Why This Matters:**
+
+For HP=3, cohort formed at t=0 has returns at t=1, t=2, and t=3:
+
+```
+Cohort formed at t=0:
+==============================
+
+                                        dynamic_weights=True   dynamic_weights=False
+                                        ─────────────────────  ──────────────────────
+Return at t=1 (h=0): Uses VW from date  t+0 = 0                0
+Return at t=2 (h=1): Uses VW from date  t+1 = 1                0
+Return at t=3 (h=2): Uses VW from date  t+2 = 2                0
+
+With dynamic_weights=True:
+  - VW is updated each month based on most recent available data
+  - Bonds that grew in value get higher VW weight
+
+With dynamic_weights=False:
+  - VW is fixed at formation date
+  - Portfolio composition is "frozen" at formation
+```
+
+**Code Reference:**
+```python
+# In _form_cohort_portfolios():
+date_t1_minus1 = None
+if self.dynamic_weights and t1_idx > 0:
+    date_t1_minus1 = self.datelist[t1_idx - 1]  # VW from return_date - 1
+
+# If dynamic_weights=False, date_t1_minus1 stays None
+# → VW comes from formation date (date_t)
+```
+
+---
+
+### Cohort Averaging
+
+Final returns are computed by averaging across all active cohorts:
+
+```python
+# Aggregation
+ew_ret_final = np.nanmean(ew_ret_arr, axis=1)  # Average over cohort dimension
+
+# Result shape: (TM, nport) - cohort dimension is collapsed
+```
+
+**Example at return date t=5:**
+```
+ret_arr[5, 0, p] = R from cohort 0 (formation=3, h=2)
+ret_arr[5, 1, p] = R from cohort 1 (formation=4, h=1)
+ret_arr[5, 2, p] = R from cohort 2 (formation=2, h=3)
+
+final_ret[5, p] = (ret_arr[5, 0, p] + ret_arr[5, 1, p] + ret_arr[5, 2, p]) / 3
+```
+
+**NaN Handling:**
+- During initialization (first HP-1 dates), not all cohorts have returns
+- `np.nanmean` ignores NaN values, averaging only available cohorts
+- First complete average is at t = HP (when all cohorts have contributed)
+
+---
+
+### Weight Computation for HP>1
+
+Same formulas as HP=1, but VW source date differs based on `dynamic_weights`:
+
+**Equal Weights (EW):**
+```
+w_ew[i] = 1 / n_p  (same as HP=1)
+```
+
+**Value Weights (VW):**
+```
+              VW_source[i]
+w_vw[i] = ─────────────────────
+           Σⱼ∈p VW_source[j]
+
+where VW_source depends on dynamic_weights:
+  - dynamic_weights=True:  VW from date (return_date - 1) = t + h
+  - dynamic_weights=False: VW from formation date t
+```
+
+---
+
+### Turnover for HP>1 (Staggered)
+
+Turnover is tracked **per cohort** and then averaged:
+
+**Per-Cohort Tracking:**
+```
+turnover_arr.shape = (TM, HP, nport)
+
+At each formation date τ:
+  - Cohort c = τ % HP rebalances → compute turnover from scaled weights
+  - Other cohorts (c ≠ τ % HP) are holding → turnover = 0.0 (NOT NaN)
+```
+
+**Cohort States:**
+| State | Turnover Value | Meaning |
+|-------|---------------|---------|
+| Not yet formed | NaN | Cohort doesn't exist |
+| Holding (not rebalancing) | 0.0 | Cohort exists but isn't trading |
+| Rebalancing | Computed value | Active weight changes |
+
+**Timeline Example (HP=3):**
+```
+Turnover per Cohort:
+====================
+
+Formation τ:  0      1      2      3      4      5      6
+              │      │      │      │      │      │      │
+Cohort 0:    NaN*  hold=0 hold=0  T₃    hold=0 hold=0  T₆
+Cohort 1:    NaN*   NaN*  hold=0 hold=0  T₄    hold=0 hold=0
+Cohort 2:    NaN*   NaN*   NaN*  hold=0 hold=0  T₅    hold=0
+
+Final avg:   NaN    NaN    NaN   T̄₃     T̄₄     T̄₅     T̄₆
+                             =avg  =avg  =avg  =avg
+                             (T₃,  (T₄,  (T₅,  (T₆,
+                              0,0)  0,0)  0,0)  0,0)
+
+* First time seeing cohort → NaN
+```
+
+**Turnover Formula (same as HP=1):**
+```
+T_c,p(τ) = ½ × (prev_sum_c + curr_sum_c - 2 × sum_min_c)
+
+where subscript c indicates cohort-specific state
+```
+
+**Final Turnover:**
+```python
+# Average turnover across cohorts (ignoring NaN for non-existent cohorts)
+turnover_final = np.nanmean(turnover_arr, axis=1)
+
+# Typical result for HP=3:
+# turnover_final[τ] ≈ (1/3) × T_c(τ) + (2/3) × 0.0 = T_c(τ) / 3
+# Because only 1 cohort rebalances, 2 cohorts hold (turnover=0)
+```
+
+---
+
+### Characteristics for HP>1
+
+Characteristics are aggregated exactly like returns:
+
+```
+chars_arr.shape = (TM, HP, nport)
+
+# Per cohort: compute chars at each (formation, return_date) pair
+# Final: average across cohorts
+chars_final = np.nanmean(chars_arr, axis=1)
+```
+
+**Data Source:**
+- Characteristics come from **formation date** (It1m at date_t)
+- NOT from the return date
+- This is consistent with HP=1 behavior
+
+---
+
+### Complete Example (HP=3)
+
+```
+Example: HP=3, 5 Portfolios, dynamic_weights=True
+=================================================
+
+Formation at t=1 (Cohort 1):
+----------------------------
+  Signal data at t=1 → Assign bonds to portfolios P1-P5
+  Ranks fixed for this cohort for 3 months
+
+  Holding Period 1 (h=0):
+    Return date = t + 1 = 2
+    VW source = return_date - 1 = 1 (formation date, same as h=0)
+    Compute: ret_arr[2, 1, :] = portfolio returns
+
+  Holding Period 2 (h=1):
+    Return date = t + 2 = 3
+    VW source = return_date - 1 = 2
+    Note: VW updated to date 2 (more recent than formation!)
+    Compute: ret_arr[3, 1, :] = portfolio returns
+
+  Holding Period 3 (h=2):
+    Return date = t + 3 = 4
+    VW source = return_date - 1 = 3
+    Note: VW updated to date 3
+    Compute: ret_arr[4, 1, :] = portfolio returns
+
+What happens at return date t=4:
+--------------------------------
+  ret_arr[4, 0, :] = Cohort 0, formed at t=3, holding for 1 month (h=0)
+  ret_arr[4, 1, :] = Cohort 1, formed at t=1, holding for 3 months (h=2)
+  ret_arr[4, 2, :] = Cohort 2, formed at t=2, holding for 2 months (h=1)
+
+  final_ret[4, :] = average of the three cohort returns
+```
+
+---
+
+### ID Intersection for HP>1
+
+Same logic as HP=1, applied at each (formation, return_date) pair:
+
+```python
+# For each holding period h:
+return_date = formation_date + h + 1
+
+# Intersection:
+common = set(It0['ID']) & set(It1['ID'])  # formation ∩ return
+
+if dynamic_weights:
+    # Also need VW at (return_date - 1)
+    common &= set(It1m['ID'])
+```
+
+**Important:** The intersection is computed **independently for each (formation, holding_h) pair**. A bond may:
+- Be included at h=0 (exists at formation and return_date_1)
+- Be excluded at h=1 (dropped by return_date_2)
+- Be included at h=2 (returns by return_date_3)
+
+---
+
+### Summary Table (HP=3)
+
+| Output | Indexed At | Computed From | VW Source | Cohort Handling |
+|--------|------------|---------------|-----------|-----------------|
+| Per-Cohort Returns | [return_date, cohort, ptf] | r(return_date), w(formation or VW_date) | dynamic_weights dependent | One value per cohort |
+| Final Returns | [return_date, ptf] | nanmean across cohorts | N/A | Average of 3 cohorts |
+| Per-Cohort Turnover | [formation_τ, cohort, ptf] | w_raw(τ+1) vs w_scaled(τ) | N/A | Rebalancing cohort only |
+| Final Turnover | [formation_τ, ptf] | nanmean across cohorts | N/A | ~1/3 of rebalancing turnover |
+| Per-Cohort Chars | [return_date, cohort, ptf] | char(formation), w(formation or VW_date) | dynamic_weights dependent | One value per cohort |
+| Final Chars | [return_date, ptf] | nanmean across cohorts | N/A | Average of 3 cohorts |
+
+---
+
+### Key Differences: HP=1 vs HP=3
+
+| Aspect | HP=1 | HP=3 |
+|--------|------|------|
+| Cohorts | 1 (trivial) | 3 (overlapping) |
+| Cohort averaging | None needed | nanmean across axis=1 |
+| `dynamic_weights` effect | None (both same) | Significant (VW date differs by h) |
+| Turnover per period | All cohorts rebalance | 1 rebalances, 2 hold (turnover=0) |
+| First valid return | t=1 | t=3 (first complete average) |
+| Rebalancing frequency | Every month | Each cohort every 3 months |
+
+---
+
+### Turnover Interpretation for HP>1
+
+For HP=3, the final turnover is approximately **1/3 of a single cohort's turnover**:
+
+```
+At any formation τ:
+  - 1 cohort rebalances: turnover = T_c
+  - 2 cohorts hold: turnover = 0.0 each
+
+  final_turnover[τ] = (T_c + 0 + 0) / 3 = T_c / 3
+```
+
+**Interpretation:**
+- Final turnover reflects the **fraction of the portfolio being traded**
+- With HP=3, only 1/3 of the portfolio is rebalanced each month
+- This is the **expected reduction in turnover** from staggered rebalancing
+
+**To get "full portfolio" turnover:**
+```
+full_portfolio_turnover = final_turnover × holding_period
+                        = final_turnover × 3
+```
