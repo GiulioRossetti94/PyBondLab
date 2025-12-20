@@ -3860,13 +3860,21 @@ def compute_nonstaggered_returns_fast(
     for i in range(n_rebal):
         date_to_rebal_idx[rebal_date_indices[i]] = i
 
-    # For each return date, find which rebal date it belongs to
-    # return_date belongs to rebal_date if: rebal_date < return_date <= rebal_date + hp
+    # Phase 17 fix: For each return date, find which rebal date it belongs to
+    # return_date belongs to rebal_date if: rebal_date < return_date <= next_rebal_date
+    # We iterate until the next rebalancing date (not just holding_period months)
     return_date_to_rebal = np.full(n_dates, -1, dtype=np.int64)
     for rebal_i in range(n_rebal):
         rebal_d = rebal_date_indices[rebal_i]
-        for h in range(holding_period):
-            ret_d = rebal_d + h + 1
+
+        # Find next rebalancing date to determine valid return period
+        if rebal_i + 1 < n_rebal:
+            next_rebal_d = rebal_date_indices[rebal_i + 1]
+        else:
+            next_rebal_d = n_dates  # No more rebalancing, collect until end
+
+        # All return dates from rebal_d+1 to next_rebal_d (inclusive) belong to this rebal
+        for ret_d in range(rebal_d + 1, next_rebal_d + 1):
             if ret_d < n_dates:
                 return_date_to_rebal[ret_d] = rebal_i
 
