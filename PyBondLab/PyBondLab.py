@@ -1170,7 +1170,8 @@ class StrategyFormation:
             self._form_nonstaggered_portfolio(
                 rebal_idx, precomp,
                 ew_ret_arr, vw_ret_arr,
-                ew_chars_arr, vw_chars_arr
+                ew_chars_arr, vw_chars_arr,
+                rebal_dates_idx  # Phase 17: pass rebalancing dates for proper iteration
             )
 
         # Aggregate results
@@ -2025,13 +2026,33 @@ class StrategyFormation:
                 )
 
     def _form_nonstaggered_portfolio(self, rebal_idx, precomp,
-                                    ew_ret_arr, vw_ret_arr, ew_chars_arr, vw_chars_arr):
-        """Form portfolio for one rebalancing period (non-staggered)."""
+                                    ew_ret_arr, vw_ret_arr, ew_chars_arr, vw_chars_arr,
+                                    rebal_dates_idx=None):
+        """Form portfolio for one rebalancing period (non-staggered).
+
+        Phase 17 fix: Now iterates through ALL months until next rebalancing,
+        not just holding_period months.
+        """
         tot_nport = self._get_total_portfolios()
         date_t = self.datelist[rebal_idx]
 
-        # Loop over holding period
-        for h in range(self.hor):
+        # Phase 17: Find next rebalancing date to determine how many months to iterate
+        if rebal_dates_idx is not None:
+            # Find next rebalancing date
+            next_rebal_idx = len(self.datelist)  # default: end of data
+            for idx in rebal_dates_idx:
+                if idx > rebal_idx:
+                    next_rebal_idx = idx
+                    break
+            # Iterate from rebal_idx+1 to next_rebal_idx (inclusive)
+            # This gives us all return dates until (and including) the next rebalancing date
+            n_months = next_rebal_idx - rebal_idx
+        else:
+            # Fallback to old behavior for backward compatibility
+            n_months = self.hor
+
+        # Loop over all months until next rebalancing
+        for h in range(n_months):
             t1_idx = rebal_idx + h + 1
 
             if t1_idx >= len(self.datelist):
