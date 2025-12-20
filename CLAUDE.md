@@ -60,7 +60,7 @@ Dramatically speed up portfolio formation in PyBondLab using numba/prange, while
 | **Phase 15** | Non-staggered integration | ✅ Complete | BatchStrategyFormation (~340x), DataUncertaintyAnalysis integrated |
 | **Phase 15b** | Non-staggered with turnover/chars/banding | ✅ Complete | **21-103x speedup**, all 6 tests PASS |
 | **Phase 16** | Optimize WithinFirmSort | ✅ Complete | 16g (33x speedup) + 16h (chars) + 16i + 16j ✅ |
-| **Phase 17** | Non-staggered rebalancing bug fix | 🔴 Pending | **CRITICAL**: Returns only at rebal dates, not every month |
+| **Phase 17** | Non-staggered rebalancing bug fix | ✅ Complete | Fixed: Returns now computed EVERY month |
 
 ---
 
@@ -2725,10 +2725,26 @@ results2 = batch2.fit()  # Shows SAME progress format, summary format
 
 ### Overview
 
-**CRITICAL BUG**: When using non-staggered rebalancing (`rebalance_frequency != 'monthly'`),
-returns/turnover/chars are only computed at rebalancing dates + 1, instead of EVERY month.
+**CRITICAL BUG (FIXED)**: When using non-staggered rebalancing (`rebalance_frequency != 'monthly'`),
+returns/turnover/chars were only computed at rebalancing dates + 1, instead of EVERY month.
 
-**Status: 🔴 Pending**
+**Status: ✅ Complete**
+
+### Fix Summary
+
+**Phase 17a (Fast Path)**: Fixed `compute_nonstaggered_full_fast()` in `numba_core.py`
+- Changed from limiting to `hp` months to iterating until next rebalancing date
+- Now properly collects returns for ALL months between rebalancing dates
+
+**Phase 17b (Slow Path)**: Fixed `_form_nonstaggered_portfolio()` in `PyBondLab.py`
+- Passes `rebal_dates_idx` to function
+- Iterates through ALL months until next rebalancing (not just `self.hor` times)
+- Fixes DoubleSort with non-staggered rebalancing
+
+**Validation Results:**
+- SingleSort quarterly: 9/9 expected dates ✅
+- DoubleSort quarterly: 9/9 expected dates ✅
+- All 12 baseline tests pass ✅
 
 ### Bug Description
 
