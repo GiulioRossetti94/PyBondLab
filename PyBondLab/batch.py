@@ -86,7 +86,7 @@ def _process_single_signal(args: Tuple) -> Tuple[str, Any, float, Optional[str]]
     args : tuple
         (signal, data, holding_period, num_portfolios, turnover,
          chars, rating, subset_filter, banding_threshold,
-         rebalance_frequency, rebalance_month)
+         dynamic_weights, rebalance_frequency, rebalance_month)
 
         NOTE: shared_precomp is NOT passed to avoid pickle overhead.
         Each worker computes its own precompute data.
@@ -98,7 +98,7 @@ def _process_single_signal(args: Tuple) -> Tuple[str, Any, float, Optional[str]]
     """
     (signal, data, holding_period, num_portfolios, turnover,
      chars, rating, subset_filter, banding_threshold,
-     rebalance_frequency, rebalance_month) = args
+     dynamic_weights, rebalance_frequency, rebalance_month) = args
 
     t_start = time.time()
 
@@ -125,7 +125,7 @@ def _process_single_signal(args: Tuple) -> Tuple[str, Any, float, Optional[str]]
                     chars=chars,
                 ),
                 formation=FormationConfig(
-                    dynamic_weights=True,
+                    dynamic_weights=dynamic_weights,
                     compute_turnover=turnover,
                     banding_threshold=banding_threshold,
                     verbose=False,
@@ -159,7 +159,7 @@ def _process_signal_batch(args: Tuple) -> List[Tuple[str, Any, float, Optional[s
     args : tuple
         (signals_list, data, holding_period, num_portfolios, turnover,
          chars, rating, subset_filter, banding_threshold,
-         rebalance_frequency, rebalance_month)
+         dynamic_weights, rebalance_frequency, rebalance_month)
 
     Returns
     -------
@@ -168,7 +168,7 @@ def _process_signal_batch(args: Tuple) -> List[Tuple[str, Any, float, Optional[s
     """
     (signals_list, data, holding_period, num_portfolios, turnover,
      chars, rating, subset_filter, banding_threshold,
-     rebalance_frequency, rebalance_month) = args
+     dynamic_weights, rebalance_frequency, rebalance_month) = args
 
     results = []
     for signal in signals_list:
@@ -189,7 +189,7 @@ def _process_signal_batch(args: Tuple) -> List[Tuple[str, Any, float, Optional[s
                 sf_config = StrategyFormationConfig(
                     data=DataConfig(rating=rating, subset_filter=subset_filter, chars=chars),
                     formation=FormationConfig(
-                        dynamic_weights=True,
+                        dynamic_weights=dynamic_weights,
                         compute_turnover=turnover,
                         banding_threshold=banding_threshold,
                         verbose=False,
@@ -443,6 +443,12 @@ class BatchStrategyFormation:
         Filters are applied at formation date only (no look-ahead bias).
     banding : int, optional
         Banding parameter
+    dynamic_weights : bool, default=True
+        Controls which date's value weights (VW) are used for VW portfolio returns:
+        - True: VW from return_date - 1 (day before return)
+        - False: VW from formation_date
+        For HP=1, both settings produce identical results.
+        For HP>1, the settings differ significantly. See documentation for details.
     rebalance_frequency : str or int, default='monthly'
         Rebalancing frequency:
         - 'monthly': Rebalance every month (staggered portfolios)
@@ -510,6 +516,7 @@ class BatchStrategyFormation:
         rating: Optional[Union[str, tuple]] = None,
         subset_filter: Optional[SubsetFilter] = None,
         banding: Optional[int] = None,
+        dynamic_weights: bool = True,
         rebalance_frequency: Union[str, int] = 'monthly',
         rebalance_month: Union[int, List[int]] = 6,
         columns: Optional[Dict[str, str]] = None,
@@ -540,6 +547,7 @@ class BatchStrategyFormation:
         self.rating = rating
         self.subset_filter = subset_filter
         self.banding = banding
+        self.dynamic_weights = dynamic_weights
         self.rebalance_frequency = rebalance_frequency
         self.rebalance_month = rebalance_month
         self.n_jobs = n_jobs
@@ -561,6 +569,7 @@ class BatchStrategyFormation:
             'rating': rating,
             'subset_filter': subset_filter,
             'banding': banding,
+            'dynamic_weights': dynamic_weights,
             'rebalance_frequency': rebalance_frequency,
             'rebalance_month': rebalance_month,
             'n_jobs': n_jobs,
@@ -671,6 +680,11 @@ class BatchStrategyFormation:
         if self.chars is not None and len(self.chars) > 0:
             return False
         if self.banding_threshold is not None:
+            return False
+        # For HP>1 with dynamic_weights=False, fall back to slow path
+        # (fast path kernel currently only supports dynamic_weights=True for HP>1)
+        # Note: HP=1 is unaffected - both settings produce identical results
+        if not self.dynamic_weights and self.holding_period > 1:
             return False
         # rating and subset_filter are now supported in fast path
         # Non-staggered rebalancing is now supported in fast path
@@ -1120,7 +1134,7 @@ class BatchStrategyFormation:
                         chars=self.chars
                     ),
                     formation=FormationConfig(
-                        dynamic_weights=True,
+                        dynamic_weights=self.dynamic_weights,
                         compute_turnover=self.turnover,
                         banding_threshold=self.banding_threshold,
                         verbose=False,
@@ -1252,7 +1266,7 @@ class BatchStrategyFormation:
                     chars=self.chars
                 ),
                 formation=FormationConfig(
-                    dynamic_weights=True,
+                    dynamic_weights=self.dynamic_weights,
                     compute_turnover=self.turnover,
                     banding_threshold=self.banding_threshold,
                     verbose=False,
@@ -1325,7 +1339,8 @@ class BatchStrategyFormation:
                 worker_args.append((
                     batch, batch_data, self.holding_period, self.num_portfolios,
                     self.turnover, self.chars, self.rating, self.subset_filter,
-                    self.banding_threshold, self.rebalance_frequency, self.rebalance_month
+                    self.banding_threshold, self.dynamic_weights,
+                    self.rebalance_frequency, self.rebalance_month
                 ))
 
             if self.verbose and offset == 0:
@@ -1374,7 +1389,8 @@ class BatchStrategyFormation:
                 worker_args.append((
                     signal, minimal_data, self.holding_period, self.num_portfolios,
                     self.turnover, self.chars, self.rating, self.subset_filter,
-                    self.banding_threshold, self.rebalance_frequency, self.rebalance_month
+                    self.banding_threshold, self.dynamic_weights,
+                    self.rebalance_frequency, self.rebalance_month
                 ))
 
             if self.verbose and offset == 0:

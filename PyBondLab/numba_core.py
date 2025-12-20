@@ -3643,6 +3643,8 @@ def compute_ls_returns_all_signals_staggered(
         if not np.isnan(avg_vw[nport - 1]) and not np.isnan(avg_vw[0]):
             vw_ls[d, s] = avg_vw[nport - 1] - avg_vw[0]
 
+    return ew_ls, vw_ls
+
 
 # =============================================================================
 # Non-Staggered Rebalancing Optimization (Phase 15)
