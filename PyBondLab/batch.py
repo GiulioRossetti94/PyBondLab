@@ -1019,10 +1019,12 @@ class BatchStrategyFormation:
                 )
 
                 # Step 5: Compute returns
+                # Note: For non-staggered rebalancing, always use dynamic_weights=False
+                # (VW from formation date, not d-1) per PyBondLab specification
                 ew_ptf, vw_ptf = compute_nonstaggered_returns_fast(
                     date_idx, id_idx, ret, vw, rebal_date_indices,
                     self.holding_period, rank_lookup, n_dates, n_ids,
-                    self.num_portfolios, True, vw_lookup
+                    self.num_portfolios, False, vw_lookup  # dynamic_weights=False
                 )
 
                 # Compute long-short returns

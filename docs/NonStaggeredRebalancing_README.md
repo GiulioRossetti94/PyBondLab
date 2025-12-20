@@ -588,69 +588,73 @@ pbl.StrategyFormation(
 
 ---
 
-## Important: `dynamic_weights` Setting
+## Important: `dynamic_weights` Does NOT Apply to Non-Staggered
 
-### BatchStrategyFormation vs SingleSort
+### Key Design Principle
 
-When comparing results between `BatchStrategyFormation` and `SingleSort` with non-staggered
-rebalancing, be aware of the `dynamic_weights` setting:
+For non-staggered (non-monthly) rebalancing, the `dynamic_weights` parameter **does not apply**.
+VW always comes from the **formation date** (true rebalancing date), regardless of the
+`dynamic_weights` setting.
 
-| Class | `dynamic_weights` | VW Source | Behavior |
-|-------|-------------------|-----------|----------|
-| `BatchStrategyFormation` | **Hardcoded `True`** | VW from d-1 | More bonds may be excluded |
-| `SingleSort` | Defaults to `False` | VW from formation date | More bonds may be included |
+This ensures:
+1. Consistent behavior across `SingleSort` and `BatchStrategyFormation`
+2. Weights are determined at portfolio formation, then renormalized if bonds drop out
+3. Results match exactly between different APIs
 
-### What `dynamic_weights` Controls
+### How Weights Work for Non-Staggered
 
-- **`True`**: VW comes from day before return (d-1). Bonds must have valid VW at d-1.
-- **`False`**: VW comes from formation date. Bonds must have valid VW at formation.
+**On TRUE rebalancing dates (e.g., Jan for quarterly):**
+- Portfolio is formed based on signal
+- VW comes from formation date (that month)
+- Weights computed as: `VW_i / sum(VW_j for j in portfolio)`
 
-In unbalanced panels (bonds entering/exiting), this affects which bonds are included:
+**On PSEUDO-rebalancing dates (e.g., Feb, Mar for quarterly):**
+- Portfolio composition stays fixed from true rebalancing
+- Check which bonds are still available
+- Weights **renormalized** for remaining bonds using formation-date VW values
 
 ```
 Example: Quarterly rebalancing, formation in January
 
-                 VW at         VW at        Included with
-Bond             Formation     d-1 (Feb)    dynamic_weights=
-─────────────────────────────────────────────────────────────
-Bond A           Valid         Valid        True ✓  False ✓
-Bond B           Valid         Missing      True ✗  False ✓
-Bond C           Missing       Valid        True ✗  False ✗
+January (TRUE rebalancing):
+  Portfolio 1: Bond A (40%), Bond B (30%), Bond C (30%)
+  VW values from January
+
+February (PSEUDO-rebalancing, Bond B drops out):
+  Portfolio 1: Bond A (40%/70% = 57.1%), Bond C (30%/70% = 42.9%)
+  VW values still from January, but renormalized for remaining bonds
+
+March (PSEUDO-rebalancing, all bonds present again):
+  Portfolio 1: Bond A (40%), Bond B (30%), Bond C (30%)
+  VW values from January (original weights restored)
 ```
 
-### Aligning Results
+### Validation
 
-To get identical results between `BatchStrategyFormation` and `SingleSort`:
+Both `SingleSort` and `BatchStrategyFormation` now produce **identical results** for all
+non-staggered rebalancing configurations:
 
 ```python
-from PyBondLab.config import StrategyFormationConfig, FormationConfig, DataConfig
-
-# Match BatchStrategyFormation behavior (dynamic_weights=True)
-config = StrategyFormationConfig(
-    data=DataConfig(),
-    formation=FormationConfig(dynamic_weights=True)  # Match BatchStrategyFormation
-)
-
+# These produce identical results:
 sf = pbl.StrategyFormation(
     data=data,
     strategy=pbl.SingleSort(
         holding_period=1,
         sort_var='signal',
         num_portfolios=5,
-        rebalance_frequency='quarterly',  # Must be on Strategy
+        rebalance_frequency='quarterly',
     ),
-    config=config,
     verbose=False,
 )
-result = sf.fit()
+
+batch = pbl.BatchStrategyFormation(
+    data=data,
+    signals=['signal'],
+    holding_period=1,
+    num_portfolios=5,
+    rebalance_frequency='quarterly',
+)
 ```
-
-### Why This Matters
-
-For most balanced panels (all bonds present at all dates), the results are identical.
-The difference only appears when:
-1. Bonds enter or exit the sample between dates
-2. Some bonds have missing VW observations
 
 ---
 
