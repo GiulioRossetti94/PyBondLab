@@ -6,22 +6,184 @@ Provides fast batch processing of multiple signals using:
 - Ultra-fast numba path when turnover=False and chars=None
 - Multiprocessing slow path when turnover=True or chars is set
 
-Author: Claude
+Aligned with BatchStrategyFormation for consistent user experience:
+- Column mapping with verbose output
+- Warmup run for JIT compilation
+- tqdm progress bars
+- Memory optimization
+- Summary output with timing statistics
+
+Author: PyBondLab Team
 Date: 2024
 """
 
+import gc
+import platform
+import time
+import warnings
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from typing import List, Dict, Optional, Union, Tuple, Any
+from dataclasses import dataclass, field
+from collections import OrderedDict
+
 import numpy as np
 import pandas as pd
-from typing import List, Dict, Optional, Union, Tuple
-from concurrent.futures import ProcessPoolExecutor
-import gc
 
+from .batch_base import (
+    BaseBatchFormation,
+    _get_start_method,
+    TQDM_AVAILABLE,
+    tqdm,
+    REQUIRED_COLUMNS,
+    DEFAULT_COLUMNS
+)
 from .StrategyClass import WithinFirmSort
 from .PyBondLab import StrategyFormation
+from .config import StrategyFormationConfig, DataConfig, FormationConfig
 from .constants import ColumnNames
 
 
-class BatchWithinFirmSortFormation:
+# =============================================================================
+# Worker function for parallel processing (must be at module level for pickle)
+# =============================================================================
+
+def _process_withinfirm_signal(args: Tuple) -> Tuple[str, Any, float, Optional[str]]:
+    """
+    Process a single WithinFirmSort signal - worker function for parallel execution.
+
+    Parameters
+    ----------
+    args : tuple
+        (signal, data, firm_id_col, rating_bins, min_bonds_per_firm,
+         turnover, chars, rating)
+
+    Returns
+    -------
+    tuple
+        (signal_name, result_or_none, elapsed_time, error_or_none)
+    """
+    (signal, data, firm_id_col, rating_bins, min_bonds_per_firm,
+     turnover, chars, rating) = args
+
+    t_start = time.time()
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+
+            strategy = WithinFirmSort(
+                holding_period=1,
+                sort_var=signal,
+                firm_id_col=firm_id_col,
+                min_bonds_per_firm=min_bonds_per_firm,
+                rating_bins=rating_bins,
+                num_portfolios=2,
+                verbose=False
+            )
+
+            sf_config = StrategyFormationConfig(
+                data=DataConfig(rating=rating, chars=chars),
+                formation=FormationConfig(
+                    dynamic_weights=True,
+                    compute_turnover=turnover,
+                    verbose=False,
+                )
+            )
+
+            sf = StrategyFormation(data=data, strategy=strategy, config=sf_config)
+            result = sf.fit()
+
+            elapsed = time.time() - t_start
+            return (signal, result, elapsed, None)
+
+    except Exception as e:
+        elapsed = time.time() - t_start
+        return (signal, None, elapsed, str(e))
+
+
+# =============================================================================
+# Batch Results Container
+# =============================================================================
+
+@dataclass
+class BatchWithinFirmResults:
+    """
+    Container for batch WithinFirmSort results.
+
+    Provides dictionary-like access to individual signal results.
+    """
+
+    results: OrderedDict = field(default_factory=OrderedDict)
+    signals: List[str] = field(default_factory=list)
+    config: Dict[str, Any] = field(default_factory=dict)
+    timings: Dict[str, float] = field(default_factory=dict)
+    errors: Dict[str, str] = field(default_factory=dict)
+
+    def __getitem__(self, signal: str):
+        """Get results for a specific signal."""
+        if signal not in self.results:
+            raise KeyError(f"Signal '{signal}' not found. Available: {list(self.results.keys())}")
+        return self.results[signal]
+
+    def __contains__(self, signal: str) -> bool:
+        return signal in self.results
+
+    def __len__(self) -> int:
+        return len(self.results)
+
+    def __iter__(self):
+        return iter(self.results)
+
+    def keys(self):
+        return self.results.keys()
+
+    def values(self):
+        return self.results.values()
+
+    def items(self):
+        return self.results.items()
+
+    @property
+    def successful_signals(self) -> List[str]:
+        return list(self.results.keys())
+
+    @property
+    def failed_signals(self) -> List[str]:
+        return list(self.errors.keys())
+
+    @property
+    def summary_df(self) -> pd.DataFrame:
+        """Summary DataFrame with key statistics for all signals."""
+        rows = []
+        for signal, result in self.results.items():
+            try:
+                ew_ls, vw_ls = result.get_long_short()
+                row = {
+                    'signal': signal,
+                    'ew_mean': ew_ls.mean() * 12,
+                    'vw_mean': vw_ls.mean() * 12,
+                    'ew_std': ew_ls.std() * np.sqrt(12),
+                    'vw_std': vw_ls.std() * np.sqrt(12),
+                    'ew_sharpe': (ew_ls.mean() / ew_ls.std()) * np.sqrt(12) if ew_ls.std() > 0 else np.nan,
+                    'vw_sharpe': (vw_ls.mean() / vw_ls.std()) * np.sqrt(12) if vw_ls.std() > 0 else np.nan,
+                    'n_periods': len(ew_ls),
+                }
+                rows.append(row)
+            except Exception:
+                continue
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame(rows)
+        df = df.set_index('signal')
+        return df
+
+
+# =============================================================================
+# Batch WithinFirmSort Formation
+# =============================================================================
+
+class BatchWithinFirmSortFormation(BaseBatchFormation):
     """
     Batch processing for WithinFirmSort with multiple signals.
 
@@ -34,7 +196,7 @@ class BatchWithinFirmSortFormation:
     Parameters
     ----------
     data : pd.DataFrame
-        Bond panel data with columns: date, ID, ret, VW, RATING_NUM, and signal columns
+        Bond panel data with columns: date, ID, ret, VW, RATING_NUM, PERMNO, and signal columns
     signals : List[str]
         Column names to use as sorting signals
     firm_id_col : str, default='PERMNO'
@@ -53,9 +215,14 @@ class BatchWithinFirmSortFormation:
     subset_filter : Dict[str, Tuple[float, float]], optional
         Characteristic-based filters: {col_name: (min, max)}
     columns : Dict[str, str], optional
-        Column name mapping: {'expected_name': 'actual_name'}
+        Column name mapping: {'pbl_name': 'your_col_name'}
+        Example: {'ID': 'cusip', 'ret': 'ret_vw', 'VW': 'mcap_e', 'RATING_NUM': 'spc_rat'}
     n_jobs : int, default=1
         Number of parallel workers (for slow path)
+    signals_per_worker : int, default=1
+        Number of signals per worker (reduces overhead)
+    chunk_size : int, optional
+        Process in chunks to limit memory
     verbose : bool, default=True
         Show progress output
 
@@ -64,8 +231,10 @@ class BatchWithinFirmSortFormation:
     >>> batch = BatchWithinFirmSortFormation(
     ...     data=data,
     ...     signals=['signal1', 'signal2', 'signal3'],
+    ...     columns={'ID': 'cusip', 'ret': 'ret_vw', 'VW': 'mcap_e'},
     ...     firm_id_col='PERMNO',
     ...     turnover=False,
+    ...     n_jobs=4,
     ...     verbose=True
     ... )
     >>> results = batch.fit()
@@ -85,10 +254,11 @@ class BatchWithinFirmSortFormation:
         subset_filter: Optional[Dict[str, Tuple[float, float]]] = None,
         columns: Optional[Dict[str, str]] = None,
         n_jobs: int = 1,
+        signals_per_worker: int = 1,
+        chunk_size: Optional[int] = None,
         verbose: bool = True,
     ):
-        self.data = data
-        self.signals = signals
+        # WithinFirmSort-specific parameters
         self.firm_id_col = firm_id_col
         self.rating_bins = rating_bins if rating_bins is not None else [-np.inf, 7, 10, np.inf]
         self.min_bonds_per_firm = min_bonds_per_firm
@@ -96,30 +266,38 @@ class BatchWithinFirmSortFormation:
         self.chars = chars
         self.rating = rating
         self.subset_filter = subset_filter
-        self.columns = columns or {}
-        self.n_jobs = n_jobs
-        self.verbose = verbose
 
-        # Apply column mapping
-        self._apply_column_mapping()
+        # Initialize base class
+        super().__init__(
+            data=data,
+            signals=signals,
+            columns=columns,
+            n_jobs=n_jobs,
+            signals_per_worker=signals_per_worker,
+            chunk_size=chunk_size,
+            verbose=verbose,
+        )
 
-        # Validate signals exist
-        for sig in signals:
-            if sig not in self.data.columns:
-                raise ValueError(f"Signal '{sig}' not found in data columns")
+        # Store config
+        self.config = {
+            'firm_id_col': firm_id_col,
+            'rating_bins': self.rating_bins,
+            'min_bonds_per_firm': min_bonds_per_firm,
+            'turnover': turnover,
+            'chars': chars,
+            'rating': rating,
+            'subset_filter': subset_filter,
+            'n_jobs': n_jobs,
+            'signals_per_worker': signals_per_worker,
+            'chunk_size': chunk_size,
+        }
 
-    def _apply_column_mapping(self):
-        """Apply column name mapping if provided."""
-        if not self.columns:
-            return
-
-        rename_map = {}
-        for expected, actual in self.columns.items():
-            if actual in self.data.columns and expected != actual:
-                rename_map[actual] = expected
-
-        if rename_map:
-            self.data = self.data.rename(columns=rename_map)
+    def _get_required_columns(self) -> List[str]:
+        """Get required columns including firm ID."""
+        cols = REQUIRED_COLUMNS.copy()
+        if self.firm_id_col not in cols:
+            cols.append(self.firm_id_col)
+        return cols
 
     def _can_use_fast_path(self) -> bool:
         """Check if fast batch path can be used."""
@@ -129,21 +307,82 @@ class BatchWithinFirmSortFormation:
             return False
         return True
 
-    def fit(self) -> Dict[str, 'StrategyFormation']:
+    def _get_minimal_data(self, signal: str) -> pd.DataFrame:
+        """Extract minimal columns for a single signal."""
+        cols = self._get_required_columns()
+        if signal not in cols:
+            cols.append(signal)
+        if self.chars:
+            for char in self.chars:
+                if char not in cols and char in self.data.columns:
+                    cols.append(char)
+        if self.subset_filter:
+            for col in self.subset_filter.keys():
+                if col not in cols and col in self.data.columns:
+                    cols.append(col)
+        cols = [c for c in cols if c in self.data.columns]
+        return self.data[cols].copy()
+
+    def _get_minimal_data_batch(self, signals: List[str]) -> pd.DataFrame:
+        """Extract minimal columns for a batch of signals."""
+        cols = self._get_required_columns()
+        for signal in signals:
+            if signal not in cols:
+                cols.append(signal)
+        if self.chars:
+            for char in self.chars:
+                if char not in cols and char in self.data.columns:
+                    cols.append(char)
+        if self.subset_filter:
+            for col in self.subset_filter.keys():
+                if col not in cols and col in self.data.columns:
+                    cols.append(col)
+        cols = [c for c in cols if c in self.data.columns]
+        return self.data[cols].copy()
+
+    def fit(self) -> BatchWithinFirmResults:
         """
         Run batch portfolio formation for all signals.
 
         Returns
         -------
-        Dict[str, StrategyFormation]
-            Dictionary mapping signal names to StrategyFormation results
+        BatchWithinFirmResults
+            Container with results for all signals
         """
+        # Check if fast batch path can be used
         if self._can_use_fast_path():
             return self._fit_fast_batch()
-        else:
-            return self._fit_slow_batch()
 
-    def _fit_fast_batch(self) -> Dict[str, 'StrategyFormation']:
+        # Reset timing
+        self.timings = {}
+        self.errors = {}
+
+        t_start = time.time()
+        n_workers = self._get_n_workers()
+
+        if self.verbose:
+            print(f"Processing {len(self.signals)} signals with {n_workers} worker(s)...")
+            if self.turnover:
+                print("  (turnover=True requires slow path)")
+            if self.chars:
+                print(f"  (chars={self.chars} requires slow path)")
+
+        if n_workers == 1:
+            results = self._fit_sequential()
+        else:
+            results = self._fit_parallel(n_workers)
+
+        total_time = time.time() - t_start
+        results.timings['total'] = total_time
+
+        if self.verbose:
+            n_success = len(results.results)
+            n_failed = len(results.errors)
+            self._print_summary(results, n_success, n_failed, total_time)
+
+        return results
+
+    def _fit_fast_batch(self) -> BatchWithinFirmResults:
         """
         Ultra-fast batch processing using vectorized numba kernels.
 
@@ -158,6 +397,13 @@ class BatchWithinFirmSortFormation:
             compute_within_firm_aggregation_with_lookup
         )
         from .PyBondLab import build_strategy_results
+
+        t_start = time.time()
+
+        results = BatchWithinFirmResults(
+            signals=self.signals.copy(),
+            config=self.config.copy(),
+        )
 
         if self.verbose:
             print(f"FAST BATCH PATH: Processing {len(self.signals)} signals...")
@@ -174,7 +420,7 @@ class BatchWithinFirmSortFormation:
         if data.empty:
             if self.verbose:
                 print("No valid data - returning empty results")
-            return {sig: None for sig in self.signals}
+            return results
 
         # Apply rating filter if specified
         if self.rating is not None:
@@ -196,7 +442,7 @@ class BatchWithinFirmSortFormation:
         if data.empty:
             if self.verbose:
                 print("No data after filtering - returning empty results")
-            return {sig: None for sig in self.signals}
+            return results
 
         # Create ID mapping
         unique_ids = data[ColumnNames.ID].unique()
@@ -249,158 +495,268 @@ class BatchWithinFirmSortFormation:
             b = id_idx[i]
             vw_lookup[d, b] = vw[i]
 
-        results = {}
-
-        # Process each signal
-        for sig_idx, signal_name in enumerate(self.signals):
-            if self.verbose:
-                print(f"  [{sig_idx+1}/{len(self.signals)}] Processing {signal_name}...")
-
-            # Get signal values (apply sort order)
-            signal_raw = data[signal_name].values.astype(np.float64)
-            signal_sorted = signal_raw[sort_order]
-
-            # Compute HIGH/LOW assignments for this signal
-            ptf_rank = compute_withinfirm_assignments_all_dates(
-                signal_sorted, vw_sorted, group_starts, group_ends, self.min_bonds_per_firm
-            )
-
-            # Build rank lookup table
-            rank_lookup = np.zeros((n_dates, n_ids, 3), dtype=np.float64)
-            for i in range(n_obs):
-                d = date_idx_sorted[i]
-                b = id_idx_sorted[i]
-                rank_lookup[d, b, 0] = ptf_rank[i]
-                rank_lookup[d, b, 1] = rating_terc_sorted[i]
-                rank_lookup[d, b, 2] = firm_idx_sorted[i]
-
-            # Aggregate returns
-            (ew_long_short, vw_long_short,
-             ew_high_ret, ew_low_ret,
-             vw_high_ret, vw_low_ret) = compute_within_firm_aggregation_with_lookup(
-                date_idx, id_idx, firm_idx, ret, vw,
-                rank_lookup, vw_lookup, n_dates, n_ids, n_firms
-            )
-
-            # Build result DataFrames
-            ptf_labels = ['LOW', 'HIGH']
-
-            ew_port = pd.DataFrame(
-                np.column_stack([ew_low_ret, ew_high_ret]),
-                index=datelist,
-                columns=ptf_labels
-            )
-            vw_port = pd.DataFrame(
-                np.column_stack([vw_low_ret, vw_high_ret]),
-                index=datelist,
-                columns=ptf_labels
-            )
-
-            prefix = 'EWEA'
-            vw_prefix = 'VWEA'
-
-            ewls_df = pd.DataFrame(ew_long_short, index=datelist, columns=[f'{prefix}_{signal_name}'])
-            vwls_df = pd.DataFrame(vw_long_short, index=datelist, columns=[f'{vw_prefix}_{signal_name}'])
-            ew_long_df = pd.DataFrame(ew_high_ret, index=datelist, columns=[f'LONG_{prefix}_{signal_name}'])
-            vw_long_df = pd.DataFrame(vw_high_ret, index=datelist, columns=[f'LONG_{vw_prefix}_{signal_name}'])
-            ew_short_df = pd.DataFrame(ew_low_ret, index=datelist, columns=[f'SHORT_{prefix}_{signal_name}'])
-            vw_short_df = pd.DataFrame(vw_low_ret, index=datelist, columns=[f'SHORT_{vw_prefix}_{signal_name}'])
-
-            # Build StrategyResults
-            result = build_strategy_results(
-                ewport_df=ew_port,
-                vwport_df=vw_port,
-                ewls_df=ewls_df,
-                vwls_df=vwls_df,
-                ewls_long_df=ew_long_df,
-                vwls_long_df=vw_long_df,
-                ewls_short_df=ew_short_df,
-                vwls_short_df=vw_short_df,
-                turnover_ew_df=None,
-                turnover_vw_df=None,
-                chars_ew=None,
-                chars_vw=None,
-            )
-
-            # Create a mock StrategyFormation-like result
-            results[signal_name] = _BatchResult(result, datelist, signal_name)
-
         if self.verbose:
-            print(f"Batch processing complete: {len(results)} signals processed")
+            print(f"  Data preparation: {time.time() - t_start:.2f}s")
 
-        return results
+        t_signals = time.time()
 
-    def _fit_slow_batch(self) -> Dict[str, 'StrategyFormation']:
-        """
-        Slow batch processing using multiprocessing.
-
-        Used when turnover=True or chars is set.
-        Each worker runs a complete StrategyFormation for one signal.
-        """
-        if self.verbose:
-            print(f"SLOW BATCH PATH: Processing {len(self.signals)} signals with {self.n_jobs} workers...")
-            if self.turnover:
-                print("  (turnover=True requires slow path)")
-            if self.chars:
-                print(f"  (chars={self.chars} requires slow path)")
-
-        results = {}
-
-        if self.n_jobs == 1:
-            # Sequential processing
-            for sig_idx, signal_name in enumerate(self.signals):
-                if self.verbose:
-                    print(f"  [{sig_idx+1}/{len(self.signals)}] Processing {signal_name}...")
-
-                result = self._process_single_signal(signal_name)
-                results[signal_name] = result
-
-                gc.collect()
+        # Process each signal with progress bar
+        if self.verbose and TQDM_AVAILABLE:
+            signal_iter = tqdm(enumerate(self.signals), total=len(self.signals), desc="Processing signals")
         else:
-            # Parallel processing
-            with ProcessPoolExecutor(max_workers=self.n_jobs) as executor:
-                futures = {
-                    executor.submit(self._process_single_signal, sig): sig
-                    for sig in self.signals
-                }
+            signal_iter = enumerate(self.signals)
 
-                for future in futures:
-                    signal_name = futures[future]
-                    try:
-                        result = future.result()
-                        results[signal_name] = result
-                    except Exception as e:
-                        if self.verbose:
-                            print(f"  Error processing {signal_name}: {e}")
-                        results[signal_name] = None
+        for sig_idx, signal_name in signal_iter:
+            t_sig_start = time.time()
+
+            try:
+                # Get signal values (apply sort order)
+                signal_raw = data[signal_name].values.astype(np.float64)
+                signal_sorted = signal_raw[sort_order]
+
+                # Compute HIGH/LOW assignments for this signal
+                ptf_rank = compute_withinfirm_assignments_all_dates(
+                    signal_sorted, vw_sorted, group_starts, group_ends, self.min_bonds_per_firm
+                )
+
+                # Build rank lookup table
+                rank_lookup = np.zeros((n_dates, n_ids, 3), dtype=np.float64)
+                for i in range(n_obs):
+                    d = date_idx_sorted[i]
+                    b = id_idx_sorted[i]
+                    rank_lookup[d, b, 0] = ptf_rank[i]
+                    rank_lookup[d, b, 1] = rating_terc_sorted[i]
+                    rank_lookup[d, b, 2] = firm_idx_sorted[i]
+
+                # Aggregate returns
+                (ew_long_short, vw_long_short,
+                 ew_high_ret, ew_low_ret,
+                 vw_high_ret, vw_low_ret) = compute_within_firm_aggregation_with_lookup(
+                    date_idx, id_idx, firm_idx, ret, vw,
+                    rank_lookup, vw_lookup, n_dates, n_ids, n_firms
+                )
+
+                # Build result DataFrames
+                ptf_labels = ['LOW', 'HIGH']
+
+                ew_port = pd.DataFrame(
+                    np.column_stack([ew_low_ret, ew_high_ret]),
+                    index=datelist,
+                    columns=ptf_labels
+                )
+                vw_port = pd.DataFrame(
+                    np.column_stack([vw_low_ret, vw_high_ret]),
+                    index=datelist,
+                    columns=ptf_labels
+                )
+
+                prefix = 'EWEA'
+                vw_prefix = 'VWEA'
+
+                ewls_df = pd.DataFrame(ew_long_short, index=datelist, columns=[f'{prefix}_{signal_name}'])
+                vwls_df = pd.DataFrame(vw_long_short, index=datelist, columns=[f'{vw_prefix}_{signal_name}'])
+                ew_long_df = pd.DataFrame(ew_high_ret, index=datelist, columns=[f'LONG_{prefix}_{signal_name}'])
+                vw_long_df = pd.DataFrame(vw_high_ret, index=datelist, columns=[f'LONG_{vw_prefix}_{signal_name}'])
+                ew_short_df = pd.DataFrame(ew_low_ret, index=datelist, columns=[f'SHORT_{prefix}_{signal_name}'])
+                vw_short_df = pd.DataFrame(vw_low_ret, index=datelist, columns=[f'SHORT_{vw_prefix}_{signal_name}'])
+
+                # Build StrategyResults
+                result = build_strategy_results(
+                    ewport_df=ew_port,
+                    vwport_df=vw_port,
+                    ewls_df=ewls_df,
+                    vwls_df=vwls_df,
+                    ewls_long_df=ew_long_df,
+                    vwls_long_df=vw_long_df,
+                    ewls_short_df=ew_short_df,
+                    vwls_short_df=vw_short_df,
+                    turnover_ew_df=None,
+                    turnover_vw_df=None,
+                    chars_ew=None,
+                    chars_vw=None,
+                )
+
+                # Create result wrapper
+                results.results[signal_name] = _BatchResult(result, datelist, signal_name)
+                results.timings[signal_name] = time.time() - t_sig_start
+
+            except Exception as e:
+                results.errors[signal_name] = str(e)
+                if self.verbose and not TQDM_AVAILABLE:
+                    print(f"  Error processing {signal_name}: {e}")
 
         if self.verbose:
-            print(f"Batch processing complete: {len(results)} signals processed")
+            print(f"  Signal processing: {time.time() - t_signals:.2f}s")
+
+        total_time = time.time() - t_start
+        results.timings['total'] = total_time
+
+        if self.verbose:
+            n_success = len(results.results)
+            n_failed = len(results.errors)
+            self._print_summary(results, n_success, n_failed, total_time)
 
         return results
 
-    def _process_single_signal(self, signal_name: str):
-        """Process a single signal using StrategyFormation."""
-        strategy = WithinFirmSort(
-            holding_period=1,
-            sort_var=signal_name,
-            firm_id_col=self.firm_id_col,
-            min_bonds_per_firm=self.min_bonds_per_firm,
-            rating_bins=self.rating_bins,
-            num_portfolios=2,
-            verbose=False
+    def _fit_slow_batch(self) -> BatchWithinFirmResults:
+        """Slow batch - called by _fit_sequential and _fit_parallel."""
+        # This is handled by _fit_sequential and _fit_parallel
+        pass
+
+    def _fit_sequential(self) -> BatchWithinFirmResults:
+        """Sequential processing of signals with warmup."""
+        results = BatchWithinFirmResults(
+            signals=self.signals.copy(),
+            config=self.config.copy(),
         )
 
-        sf = StrategyFormation(
-            data=self.data,
-            strategy=strategy,
-            turnover=self.turnover,
-            chars=self.chars,
-            rating=self.rating,
-            verbose=False
+        if self.verbose and TQDM_AVAILABLE:
+            signal_iter = tqdm(self.signals, desc="Processing", unit="signal")
+        else:
+            signal_iter = self.signals
+
+        for i, signal in enumerate(signal_iter):
+            t_signal_start = time.time()
+
+            try:
+                strategy = WithinFirmSort(
+                    holding_period=1,
+                    sort_var=signal,
+                    firm_id_col=self.firm_id_col,
+                    min_bonds_per_firm=self.min_bonds_per_firm,
+                    rating_bins=self.rating_bins,
+                    num_portfolios=2,
+                    verbose=False
+                )
+
+                sf_config = StrategyFormationConfig(
+                    data=DataConfig(rating=self.rating, chars=self.chars),
+                    formation=FormationConfig(
+                        dynamic_weights=True,
+                        compute_turnover=self.turnover,
+                        verbose=False,
+                    )
+                )
+
+                sf = StrategyFormation(data=self.data, strategy=strategy, config=sf_config)
+                result = sf.fit()
+
+                results.results[signal] = result
+                results.timings[signal] = time.time() - t_signal_start
+
+                if self.verbose and not TQDM_AVAILABLE:
+                    print(f"  [{i+1}/{len(self.signals)}] {signal}: {results.timings[signal]:.2f}s")
+
+            except Exception as e:
+                results.errors[signal] = str(e)
+                if self.verbose:
+                    print(f"  [{i+1}/{len(self.signals)}] {signal}: ERROR - {e}")
+
+            gc.collect()
+
+        return results
+
+    def _fit_parallel(self, n_workers: int) -> BatchWithinFirmResults:
+        """Parallel processing of signals with warmup."""
+        results = BatchWithinFirmResults(
+            signals=self.signals.copy(),
+            config=self.config.copy(),
         )
 
-        return sf.fit()
+        # Platform-aware start method
+        start_method = _get_start_method()
+        if self.verbose:
+            print(f"  Platform: {platform.system()}, using '{start_method}' start method")
+
+        # Warmup: run first signal sequentially
+        first_signal = self.signals[0]
+        remaining_signals = self.signals[1:]
+
+        if self.verbose:
+            print(f"  Running first signal (warmup)...")
+
+        t0 = time.time()
+        try:
+            strategy = WithinFirmSort(
+                holding_period=1,
+                sort_var=first_signal,
+                firm_id_col=self.firm_id_col,
+                min_bonds_per_firm=self.min_bonds_per_firm,
+                rating_bins=self.rating_bins,
+                num_portfolios=2,
+                verbose=False
+            )
+            sf_config = StrategyFormationConfig(
+                data=DataConfig(rating=self.rating, chars=self.chars),
+                formation=FormationConfig(
+                    dynamic_weights=True,
+                    compute_turnover=self.turnover,
+                    verbose=False,
+                )
+            )
+            sf = StrategyFormation(data=self.data, strategy=strategy, config=sf_config)
+            first_result = sf.fit()
+
+            results.results[first_signal] = first_result
+            results.timings[first_signal] = time.time() - t0
+
+            if self.verbose:
+                print(f"  First signal done: {results.timings[first_signal]:.2f}s")
+
+        except Exception as e:
+            results.errors[first_signal] = str(e)
+            if self.verbose:
+                print(f"  First signal FAILED: {e}")
+
+        if not remaining_signals:
+            return results
+
+        if self.verbose:
+            print(f"  Processing {len(remaining_signals)} remaining signals in parallel...")
+
+        # Prepare worker args with minimal data
+        worker_args = []
+        for signal in remaining_signals:
+            minimal_data = self._get_minimal_data(signal)
+            worker_args.append((
+                signal, minimal_data, self.firm_id_col, self.rating_bins,
+                self.min_bonds_per_firm, self.turnover, self.chars, self.rating
+            ))
+
+        # Show data reduction stats
+        if self.verbose and worker_args:
+            self._print_data_size_stats(worker_args[0][1])
+
+        # Execute in parallel
+        mp_context = mp.get_context(start_method)
+        with ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_context) as executor:
+            future_to_signal = {
+                executor.submit(_process_withinfirm_signal, args): args[0]
+                for args in worker_args
+            }
+
+            if self.verbose and TQDM_AVAILABLE:
+                futures_iter = tqdm(
+                    as_completed(future_to_signal),
+                    total=len(remaining_signals),
+                    desc="Parallel processing"
+                )
+            else:
+                futures_iter = as_completed(future_to_signal)
+
+            for future in futures_iter:
+                signal = future_to_signal[future]
+                try:
+                    sig_name, result, elapsed, error = future.result()
+                    if error is None:
+                        results.results[sig_name] = result
+                        results.timings[sig_name] = elapsed
+                    else:
+                        results.errors[sig_name] = error
+                except Exception as e:
+                    results.errors[signal] = str(e)
+
+        return results
 
 
 class _BatchResult:

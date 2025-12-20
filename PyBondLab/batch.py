@@ -55,41 +55,16 @@ import numpy as np
 import pandas as pd
 
 # =============================================================================
-# Platform-specific multiprocessing setup
+# Shared utilities from batch_base
 # =============================================================================
 
-def _get_start_method() -> str:
-    """
-    Determine the best multiprocessing start method for the current platform.
-
-    - Linux/macOS: Use 'fork' for copy-on-write memory sharing (fastest)
-    - Windows: Use 'spawn' (only option, requires pickle)
-    """
-    if platform.system() == 'Windows':
-        return 'spawn'
-    else:
-        # Linux and macOS support fork
-        return 'fork'
-
-# Required columns that must always be present (PyBondLab internal names)
-REQUIRED_COLUMNS = ['date', 'ID', 'ret', 'VW', 'RATING_NUM']
-
-# Default column name mapping (PyBondLab name -> default user name)
-DEFAULT_COLUMNS = {
-    'date': 'date',
-    'ID': 'ID',
-    'ret': 'ret',
-    'VW': 'VW',
-    'RATING_NUM': 'RATING_NUM',
-}
-
-# Try to import tqdm for progress bars
-try:
-    from tqdm import tqdm
-    TQDM_AVAILABLE = True
-except ImportError:
-    TQDM_AVAILABLE = False
-    tqdm = None
+from .batch_base import (
+    _get_start_method,
+    TQDM_AVAILABLE,
+    tqdm,
+    REQUIRED_COLUMNS,
+    DEFAULT_COLUMNS,
+)
 
 # Import PyBondLab components
 from .PyBondLab import StrategyFormation
