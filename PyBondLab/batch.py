@@ -681,13 +681,9 @@ class BatchStrategyFormation:
             return False
         if self.banding_threshold is not None:
             return False
-        # For HP>1 with dynamic_weights=False, fall back to slow path
-        # (fast path kernel currently only supports dynamic_weights=True for HP>1)
-        # Note: HP=1 is unaffected - both settings produce identical results
-        if not self.dynamic_weights and self.holding_period > 1:
-            return False
         # rating and subset_filter are now supported in fast path
         # Non-staggered rebalancing is now supported in fast path
+        # dynamic_weights=True and False are both supported for HP=1 and HP>1
         return True
 
     def _fit_fast_batch(self) -> BatchResults:
@@ -715,8 +711,9 @@ class BatchStrategyFormation:
             compute_ranks_all_signals,
             build_rank_lookups_all_signals,
             compute_ls_returns_all_signals_hp1,
-            compute_ls_returns_all_signals_staggered,
-            build_vw_lookup_and_dynamic_weights
+            compute_ls_returns_all_signals_staggered_v2,
+            build_vw_lookup_and_dynamic_weights,
+            build_vw_lookup
         )
         from .constants import RatingBounds
 
@@ -801,11 +798,19 @@ class BatchStrategyFormation:
             sig_vals[~filter_mask] = np.nan
             signals_matrix[:, s_idx] = sig_vals
 
-        # Build VW from d-1 (dynamic weights) - use existing numba function
+        # Build VW lookup table
         # Note: VW is NOT filtered - we use VW from ALL observations
-        vw_lag = build_vw_lookup_and_dynamic_weights(
+        # For HP=1: we use vw_lag (VW from d-1) - both dynamic_weights settings same
+        # For HP>1: we use vw_lookup table and let kernel choose VW date
+        vw_lookup = build_vw_lookup(
             date_idx, id_idx, vw, n_dates, n_ids
         )
+
+        # For HP=1, also build vw_lag for the existing kernel
+        if self.holding_period == 1:
+            vw_lag = build_vw_lookup_and_dynamic_weights(
+                date_idx, id_idx, vw, n_dates, n_ids
+            )
 
         if self.verbose:
             print(f"    Data extracted in {time.time() - t_extract:.2f}s")
@@ -835,15 +840,18 @@ class BatchStrategyFormation:
         # =====================================================================
         t_returns = time.time()
         if self.holding_period == 1:
+            # For HP=1, both dynamic_weights settings produce identical results
+            # (formation date = d-1 = return date - 1)
             ew_ls, vw_ls = compute_ls_returns_all_signals_hp1(
                 date_idx, id_idx, ret, vw_lag, rank_lookups,
                 n_dates, n_ids, self.num_portfolios, n_signals
             )
         else:
-            ew_ls, vw_ls = compute_ls_returns_all_signals_staggered(
-                date_idx, id_idx, ret, vw_lag, rank_lookups,
+            # For HP>1 (staggered), use v2 kernel that supports both settings
+            ew_ls, vw_ls = compute_ls_returns_all_signals_staggered_v2(
+                date_idx, id_idx, ret, vw_lookup, rank_lookups,
                 n_dates, n_ids, self.num_portfolios, n_signals,
-                self.holding_period
+                self.holding_period, self.dynamic_weights
             )
         if self.verbose:
             print(f"    Returns computed in {time.time() - t_returns:.2f}s")

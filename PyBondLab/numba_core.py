@@ -3646,6 +3646,158 @@ def compute_ls_returns_all_signals_staggered(
     return ew_ls, vw_ls
 
 
+@njit(parallel=True, cache=True)
+def compute_ls_returns_all_signals_staggered_v2(
+    ret_date_idx: np.ndarray,
+    ret_id_idx: np.ndarray,
+    returns: np.ndarray,
+    vw_lookup: np.ndarray,
+    rank_lookups: np.ndarray,
+    n_dates: int,
+    n_ids: int,
+    nport: int,
+    n_signals: int,
+    holding_period: int,
+    dynamic_weights: bool
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Compute long-short returns for ALL signals with staggered rebalancing (HP > 1).
+
+    This version supports both dynamic_weights=True and dynamic_weights=False.
+
+    Parameters
+    ----------
+    vw_lookup : np.ndarray
+        VW lookup table with shape (n_dates * n_ids,). Access with:
+        vw_lookup[date * n_ids + bond_id]
+    dynamic_weights : bool
+        If True: use VW from d-1 (return date - 1)
+        If False: use VW from formation date for each cohort
+
+    Returns
+    -------
+    Tuple of 2 arrays:
+        ew_ls: (n_dates, n_signals) - EW long-short per signal
+        vw_ls: (n_dates, n_signals) - VW long-short per signal
+    """
+    n_ret = len(ret_date_idx)
+
+    # Output: long-short returns per date per signal
+    ew_ls = np.full((n_dates, n_signals), np.nan, dtype=np.float64)
+    vw_ls = np.full((n_dates, n_signals), np.nan, dtype=np.float64)
+
+    # Process in parallel over (date, signal) combinations
+    n_combos = n_dates * n_signals
+
+    for combo in prange(n_combos):
+        d = combo // n_signals
+        s = combo % n_signals
+
+        if d < holding_period:
+            continue
+
+        # Store portfolio returns per cohort for each portfolio
+        # Shape: (holding_period, nport)
+        cohort_ew = np.full((holding_period, nport), np.nan, dtype=np.float64)
+        cohort_vw = np.full((holding_period, nport), np.nan, dtype=np.float64)
+
+        for cohort in range(holding_period):
+            form_d = d - 1 - cohort
+
+            if form_d < 0:
+                continue
+
+            # Determine VW date based on dynamic_weights setting
+            # True: VW from d-1 (return date - 1)
+            # False: VW from form_d (formation date for this cohort)
+            if dynamic_weights:
+                vw_date = d - 1
+            else:
+                vw_date = form_d
+
+            # Accumulators for this cohort
+            sum_ret = np.zeros(nport, dtype=np.float64)
+            sum_wret = np.zeros(nport, dtype=np.float64)
+            sum_weight = np.zeros(nport, dtype=np.float64)
+            count = np.zeros(nport, dtype=np.int64)
+
+            # Process return observations for this date
+            for i in range(n_ret):
+                if ret_date_idx[i] != d:
+                    continue
+
+                bond_id = ret_id_idx[i]
+                ret_val = returns[i]
+
+                if np.isnan(ret_val):
+                    continue
+
+                # Look up VW from the appropriate date
+                vw_lookup_idx = vw_date * n_ids + bond_id
+                if vw_lookup_idx < 0 or vw_lookup_idx >= n_dates * n_ids:
+                    continue
+                weight = vw_lookup[vw_lookup_idx]
+
+                if np.isnan(weight):
+                    continue
+
+                # Look up rank from formation date
+                rank_lookup_idx = form_d * n_ids + bond_id
+                if rank_lookup_idx < 0 or rank_lookup_idx >= n_dates * n_ids:
+                    continue
+
+                rank = rank_lookups[rank_lookup_idx, s]
+                if np.isnan(rank):
+                    continue
+
+                p = int(rank) - 1
+                if p < 0 or p >= nport:
+                    continue
+
+                sum_ret[p] += ret_val
+                sum_wret[p] += ret_val * weight
+                sum_weight[p] += weight
+                count[p] += 1
+
+            # Compute portfolio returns for this cohort (each portfolio independently)
+            for p in range(nport):
+                if count[p] > 0:
+                    cohort_ew[cohort, p] = sum_ret[p] / count[p]
+                if sum_weight[p] > 0:
+                    cohort_vw[cohort, p] = sum_wret[p] / sum_weight[p]
+
+        # Average each portfolio across cohorts independently
+        avg_ew = np.full(nport, np.nan, dtype=np.float64)
+        avg_vw = np.full(nport, np.nan, dtype=np.float64)
+
+        for p in range(nport):
+            ew_sum = 0.0
+            vw_sum = 0.0
+            ew_count = 0
+            vw_count = 0
+
+            for cohort in range(holding_period):
+                if not np.isnan(cohort_ew[cohort, p]):
+                    ew_sum += cohort_ew[cohort, p]
+                    ew_count += 1
+                if not np.isnan(cohort_vw[cohort, p]):
+                    vw_sum += cohort_vw[cohort, p]
+                    vw_count += 1
+
+            if ew_count > 0:
+                avg_ew[p] = ew_sum / ew_count
+            if vw_count > 0:
+                avg_vw[p] = vw_sum / vw_count
+
+        # Compute L-S from averaged portfolio returns
+        if not np.isnan(avg_ew[nport - 1]) and not np.isnan(avg_ew[0]):
+            ew_ls[d, s] = avg_ew[nport - 1] - avg_ew[0]
+        if not np.isnan(avg_vw[nport - 1]) and not np.isnan(avg_vw[0]):
+            vw_ls[d, s] = avg_vw[nport - 1] - avg_vw[0]
+
+    return ew_ls, vw_ls
+
+
 # =============================================================================
 # Non-Staggered Rebalancing Optimization (Phase 15)
 # =============================================================================

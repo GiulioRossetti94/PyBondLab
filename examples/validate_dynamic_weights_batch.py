@@ -236,18 +236,11 @@ def run_validation():
         status = "PASS" if ew_diff < 1e-10 and vw_diff < 1e-10 else "FAIL"
         test_name = "C" if hp == 1 else "D"
 
-        # For HP>1 with dynamic_weights=False, fast path falls back to slow path
-        if hp > 1:
-            print(f"\n    Test {test_name} (HP={hp}, dynamic_weights=False):")
-            print(f"      Note: Fast path falls back to slow path for HP>1 with dynamic_weights=False")
-            print(f"      EW diff: {ew_diff:.2e}")
-            print(f"      VW diff: {vw_diff:.2e}")
-            print(f"      Status: {status} (expected - using slow path)")
-        else:
-            print(f"\n    Test {test_name} (fast vs slow, HP={hp}):")
-            print(f"      EW diff: {ew_diff:.2e}")
-            print(f"      VW diff: {vw_diff:.2e}")
-            print(f"      Status: {status}")
+        # Now using fast path with v2 kernel for HP>1 with dynamic_weights=False
+        print(f"\n    Test {test_name} (fast vs slow, HP={hp}, dynamic_weights=False):")
+        print(f"      EW diff: {ew_diff:.2e}")
+        print(f"      VW diff: {vw_diff:.2e}")
+        print(f"      Status: {status}")
 
     # =========================================================================
     # Summary
@@ -263,7 +256,7 @@ def run_validation():
     print("  Test A (HP=1, fast vs slow, dw=True): MATCH")
     print("  Test B (HP=3, fast vs slow, dw=True): MATCH")
     print("  Test C (HP=1, fast vs slow, dw=False): MATCH")
-    print("  Test D (HP=3, fast vs slow, dw=False): MATCH (falls back to slow path)")
+    print("  Test D (HP=3, fast vs slow, dw=False): MATCH (uses fast path v2 kernel)")
     print()
 
 
