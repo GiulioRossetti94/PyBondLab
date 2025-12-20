@@ -59,7 +59,7 @@ Dramatically speed up portfolio formation in PyBondLab using numba/prange, while
 | **Phase 15a** | Non-staggered rebalancing fast path | ✅ Complete | **100x speedup** achieved! |
 | **Phase 15** | Non-staggered integration | ✅ Complete | BatchStrategyFormation (~340x), DataUncertaintyAnalysis integrated |
 | **Phase 15b** | Non-staggered with turnover/chars/banding | ✅ Complete | **21-103x speedup**, all 6 tests PASS |
-| **Phase 16** | Optimize WithinFirmSort | ⏳ In Progress | 16g (33x speedup) + 16h (chars) ✅, 16i ✅, 16j pending |
+| **Phase 16** | Optimize WithinFirmSort | ✅ Complete | 16g (33x speedup) + 16h (chars) + 16i + 16j ✅ |
 
 ---
 
@@ -2632,7 +2632,7 @@ See `docs/WithinFirmSort_README.md` for detailed documentation on:
 Align `BatchWithinFirmSortFormation` with `BatchStrategyFormation` to provide consistent
 user experience: column mapping, progress bars, memory optimization, and summary output.
 
-**Status: ⏳ In Progress**
+**Status: ✅ Complete**
 
 ### Target Output
 
