@@ -588,6 +588,72 @@ pbl.StrategyFormation(
 
 ---
 
+## Important: `dynamic_weights` Setting
+
+### BatchStrategyFormation vs SingleSort
+
+When comparing results between `BatchStrategyFormation` and `SingleSort` with non-staggered
+rebalancing, be aware of the `dynamic_weights` setting:
+
+| Class | `dynamic_weights` | VW Source | Behavior |
+|-------|-------------------|-----------|----------|
+| `BatchStrategyFormation` | **Hardcoded `True`** | VW from d-1 | More bonds may be excluded |
+| `SingleSort` | Defaults to `False` | VW from formation date | More bonds may be included |
+
+### What `dynamic_weights` Controls
+
+- **`True`**: VW comes from day before return (d-1). Bonds must have valid VW at d-1.
+- **`False`**: VW comes from formation date. Bonds must have valid VW at formation.
+
+In unbalanced panels (bonds entering/exiting), this affects which bonds are included:
+
+```
+Example: Quarterly rebalancing, formation in January
+
+                 VW at         VW at        Included with
+Bond             Formation     d-1 (Feb)    dynamic_weights=
+─────────────────────────────────────────────────────────────
+Bond A           Valid         Valid        True ✓  False ✓
+Bond B           Valid         Missing      True ✗  False ✓
+Bond C           Missing       Valid        True ✗  False ✗
+```
+
+### Aligning Results
+
+To get identical results between `BatchStrategyFormation` and `SingleSort`:
+
+```python
+from PyBondLab.config import StrategyFormationConfig, FormationConfig, DataConfig
+
+# Match BatchStrategyFormation behavior (dynamic_weights=True)
+config = StrategyFormationConfig(
+    data=DataConfig(),
+    formation=FormationConfig(dynamic_weights=True)  # Match BatchStrategyFormation
+)
+
+sf = pbl.StrategyFormation(
+    data=data,
+    strategy=pbl.SingleSort(
+        holding_period=1,
+        sort_var='signal',
+        num_portfolios=5,
+        rebalance_frequency='quarterly',  # Must be on Strategy
+    ),
+    config=config,
+    verbose=False,
+)
+result = sf.fit()
+```
+
+### Why This Matters
+
+For most balanced panels (all bonds present at all dates), the results are identical.
+The difference only appears when:
+1. Bonds enter or exit the sample between dates
+2. Some bonds have missing VW observations
+
+---
+
 ## Appendix: Complete Timeline Example
 
 ```
