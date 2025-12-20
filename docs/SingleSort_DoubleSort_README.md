@@ -36,6 +36,18 @@
 7. [Accessing Results](#accessing-results)
 8. [Advanced Options](#advanced-options)
 9. [Troubleshooting](#troubleshooting)
+10. [Detailed Timing and Mechanics (HP=1)](#detailed-timing-and-mechanics-hp1)
+    - [Timeline Overview](#timeline-overview-hp1)
+    - [Data Flow Diagram](#data-flow-diagram)
+    - [Weight Computation](#weight-computation)
+    - [Return Computation](#return-computation)
+    - [Scaled Weights](#scaled-weights-for-turnover)
+    - [Turnover Computation](#turnover-computation)
+    - [Characteristics Computation](#characteristics-computation)
+    - [Complete Example](#complete-example-hp1)
+    - [ID Intersection Logic](#id-intersection-logic)
+    - [Cohort Handling for HP=1](#cohort-handling-for-hp1)
+    - [Summary Table](#summary-table-hp1)
 
 ---
 
@@ -1455,3 +1467,447 @@ print(f"NaN values: {returns.isna().sum().sum()}")
 - Combined with rating: `rating='IG', subset_filter={'MATURITY': (1, 5)}`
 
 Start with `SingleSort` for simple factor analysis, use `DoubleSort` when you need to control for another variable or study interactions.
+
+---
+
+## Detailed Timing and Mechanics (HP=1)
+
+This section provides a precise specification of how portfolio returns, weights, turnover, and characteristics are computed for `holding_period=1` (monthly rebalancing). Understanding these mechanics is essential for interpreting results correctly.
+
+### Timeline Overview (HP=1)
+
+```
+Monthly Rebalancing Timeline (HP=1):
+====================================
+
+Month:   0         1         2         3         4         5
+         |         |         |         |         |         |
+Time: ───┼─────────┼─────────┼─────────┼─────────┼─────────┼───
+         │         │         │         │         │         │
+         [F₀]──R₀──[F₁]──R₁──[F₂]──R₂──[F₃]──R₃──[F₄]──R₄──[F₅]
+               ↑         ↑         ↑         ↑         ↑
+            return    return    return    return    return
+            at t=1    at t=2    at t=3    at t=4    at t=5
+
+Legend:
+  [Fₜ] = Formation date t (portfolio formed, ranks assigned)
+  Rₜ   = Return over period t → t+1 (collected at t+1)
+```
+
+**Key Insight for HP=1:**
+- Each formation date t creates a portfolio held for exactly 1 month
+- Return over period [t, t+1] is collected at date t+1
+- Only one cohort exists (cohort 0), so no cohort averaging is needed
+- Results are indexed by **return date (t+1)**, not formation date (t)
+
+---
+
+### Data Flow Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        FORMATION DATE t                                 │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  INPUT DATA:                                                            │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐              │
+│  │     It0      │    │    It1m      │    │  ranks_map   │              │
+│  │  (date = t)  │    │  (date = t)  │    │  (date = t)  │              │
+│  │              │    │              │    │              │              │
+│  │ - Bond IDs   │    │ - Bond IDs   │    │ - Bond → Ptf │              │
+│  │ - Signal     │    │ - VW         │    │   rank map   │              │
+│  │ - VW         │    │ - Chars      │    │              │              │
+│  └──────────────┘    └──────────────┘    └──────────────┘              │
+│                                                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│                        RETURN DATE t+1                                  │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  INPUT DATA:                                                            │
+│  ┌──────────────┐                                                       │
+│  │     It1      │                                                       │
+│  │ (date = t+1) │                                                       │
+│  │              │                                                       │
+│  │ - Bond IDs   │                                                       │
+│  │ - Returns    │                                                       │
+│  │ - VW         │                                                       │
+│  └──────────────┘                                                       │
+│                                                                         │
+│  PROCESSING (intersect_id):                                             │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │ Intersection = Bonds in BOTH It0 AND It1                          │  │
+│  │                                                                   │  │
+│  │ If dynamic_weights=True:                                          │  │
+│  │   Also require bond in It1m (for VW at t)                         │  │
+│  │                                                                   │  │
+│  │ Result: Only bonds present at BOTH formation (t) and return (t+1) │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                                                                         │
+│  COMPUTATION:                                                           │
+│  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐               │
+│  │    Weights    │  │   Returns     │  │    Chars      │               │
+│  │               │  │               │  │               │               │
+│  │ w_raw[i]      │  │ R_p = Σ w×r   │  │ C_p = Σ w×c   │               │
+│  └───────────────┘  └───────────────┘  └───────────────┘               │
+│          │                  │                  │                        │
+│          │                  │                  │                        │
+│          ▼                  ▼                  ▼                        │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │                   OUTPUTS (indexed at t+1)                        │  │
+│  │                                                                   │  │
+│  │  - ew_ret_arr[t+1]     = EW portfolio returns                     │  │
+│  │  - vw_ret_arr[t+1]     = VW portfolio returns                     │  │
+│  │  - chars_arr[t+1]      = Portfolio characteristics                │  │
+│  │  - port_idx[t+1]       = Bond weights (for turnover)              │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                                                                         │
+│  TURNOVER (computed at formation time τ = t):                           │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │                                                                   │  │
+│  │  turnover[τ] = compare w_raw(t+1) vs w_scaled(t)                  │  │
+│  │                                                                   │  │
+│  │  Note: Turnover at τ measures weight changes from the PREVIOUS   │  │
+│  │        period's scaled weights to CURRENT period's raw weights   │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Weight Computation
+
+#### Raw Weights (w_raw)
+
+Raw weights are computed at each formation date for bonds in the intersection:
+
+**Equal Weights (EW):**
+```
+w_ew[i] = 1 / n_p
+
+where:
+  n_p = number of bonds in portfolio p
+
+Note: All bonds in portfolio p have equal weight summing to 1.
+```
+
+**Value Weights (VW):**
+```
+              VW_t[i]
+w_vw[i] = ─────────────
+           Σⱼ∈p VW_t[j]
+
+where:
+  VW_t[i] = Value weight of bond i at formation date t
+  p = portfolio containing bond i
+  Σⱼ∈p = sum over all bonds j in portfolio p
+
+Note: Weights sum to 1 within each portfolio.
+```
+
+**VW Source Date for HP=1:**
+
+For `holding_period=1`, the VW source date is the same regardless of `dynamic_weights`:
+
+| Setting | VW Source | Reasoning |
+|---------|-----------|-----------|
+| `dynamic_weights=True` | t+1-1 = t (formation date) | Use VW from "day before return" |
+| `dynamic_weights=False` | t (formation date) | Use VW from formation date |
+
+**Important:** For HP=1, both settings produce identical VW because the "day before return" (t+1-1) equals the formation date (t). The distinction only matters for HP>1.
+
+---
+
+### Return Computation
+
+Portfolio returns are computed for each portfolio p at return date t+1:
+
+**Equal-Weighted Return:**
+```
+                1
+R_ew,p(t+1) = ───── × Σᵢ∈p r_i(t+1)
+               n_p
+
+            = mean(r_i) for bonds i in portfolio p
+```
+
+**Value-Weighted Return:**
+```
+R_vw,p(t+1) = Σᵢ∈p w_vw[i] × r_i(t+1)
+
+where:
+  w_vw[i] = VW weight (computed at formation date t)
+  r_i(t+1) = Return of bond i over period [t, t+1]
+```
+
+**Return Indexing:**
+- Returns are stored at index `t+1` (the return date)
+- This matches the convention that `R(t+1)` is the return realized at date t+1
+
+---
+
+### Scaled Weights (for Turnover)
+
+After computing returns, scaled weights are calculated for turnover tracking:
+
+```
+                      w_raw[i] × (1 + r_i(t+1))
+w_scaled[i](t+1) = ──────────────────────────────
+                        (1 + R_p(t+1))
+
+where:
+  w_raw[i] = Raw weight at formation
+  r_i(t+1) = Bond i's return over [t, t+1]
+  R_p(t+1) = Portfolio p's return over [t, t+1]
+```
+
+**Purpose:** Scaled weights represent what the portfolio weights would be at the END of the holding period if no rebalancing occurred. They are compared with the NEXT period's raw weights to compute turnover.
+
+**Important:** Returns are computed with `w_raw`, NOT `w_scaled`. Scaled weights are only used for turnover computation.
+
+---
+
+### Turnover Computation
+
+Turnover measures how much the portfolio composition changes between periods.
+
+**Turnover Formula:**
+```
+T_p(t+1) = ½ × (prev_sum + curr_sum - 2 × sum_min)
+
+where:
+  prev_sum = Σ w_scaled[i](t)   [sum of previous period's scaled weights]
+  curr_sum = Σ w_raw[i](t+1)    [sum of current period's raw weights]
+  sum_min  = Σ min(w_scaled[i](t), w_raw[i](t+1))  [for matching bonds]
+```
+
+**Turnover Timeline for HP=1:**
+
+```
+Turnover Timeline:
+==================
+
+Formation:  τ=0       τ=1       τ=2       τ=3       τ=4
+            │         │         │         │         │
+Time:    ───┼─────────┼─────────┼─────────┼─────────┼───
+            │         │         │         │         │
+        [Form₀]   [Form₁]   [Form₂]   [Form₃]   [Form₄]
+            │         │         │         │         │
+Weights:  w_raw₀    w_raw₁    w_raw₂    w_raw₃    w_raw₄
+            │         │         │         │         │
+After     w_scaled₀ w_scaled₁ w_scaled₂ w_scaled₃ w_scaled₄
+returns:    │         │         │         │         │
+            │         │         │         │         │
+Turnover:  NaN*     T(τ=1)    T(τ=2)    T(τ=3)    T(τ=4)
+                    compare:  compare:  compare:  compare:
+                    w_raw₁    w_raw₂    w_raw₃    w_raw₄
+                    vs        vs        vs        vs
+                    w_scaled₀ w_scaled₁ w_scaled₂ w_scaled₃
+
+* First formation has no previous period → NaN turnover
+```
+
+**First Period Handling:**
+- At τ=0, there is no previous period's weights
+- `prev_seen=False`, so turnover is NaN
+- After τ=0, `prev_seen=True` and turnover is computed
+
+**Last Period Liquidation:**
+- At the final date τ_last, assume complete liquidation
+- Turnover = prev_sum (all positions sold, no new positions)
+
+**Turnover Indexing:**
+- Turnover is computed at formation time τ
+- Stored at index τ in the turnover array
+- The value T(τ) reflects weight changes when rebalancing at time τ
+
+---
+
+### Characteristics Computation
+
+Portfolio-level characteristics are aggregated from bond-level data:
+
+**Data Source:**
+```
+Characteristics come from It1m (data at formation date t, NOT return date t+1)
+```
+
+**Equal-Weighted Characteristic:**
+```
+                1
+C_ew,p = ───── × Σᵢ∈p char[i]
+          n_p
+
+       = mean(char[i]) for bonds i in portfolio p
+```
+
+**Value-Weighted Characteristic:**
+```
+C_vw,p = Σᵢ∈p w_vw[i] × char[i]
+
+where:
+  w_vw[i] = VW weight (from return computation)
+  char[i] = Characteristic value at formation date
+```
+
+**Characteristic Indexing:**
+- Like returns, characteristics are indexed by return date t+1
+- However, the VALUES come from formation date t
+- This maintains alignment: chars at formation → return at realization
+
+---
+
+### Complete Example (HP=1)
+
+```
+Example: 5 Portfolios, Formation at t=2, Return at t=3
+======================================================
+
+STEP 1: Formation Date (t=2)
+----------------------------
+It0 (signal data at t=2):
+  Bond A: signal=0.95 (high)
+  Bond B: signal=0.85 (high)
+  Bond C: signal=0.45 (mid)
+  Bond D: signal=0.15 (low)
+  Bond E: signal=0.05 (low)
+
+Ranking: Assign to quintiles based on signal percentiles
+  P1 (low):  Bond D, E
+  P2:        (empty in this example)
+  P3 (mid):  Bond C
+  P4:        (empty in this example)
+  P5 (high): Bond A, B
+
+STEP 2: Intersection Check (t=2 → t=3)
+--------------------------------------
+It1 (return data at t=3):
+  Bond A: ret=2.0%, VW=100M   ✓ in intersection
+  Bond B: ret=1.5%, VW=50M    ✓ in intersection
+  Bond C: ret=0.5%, VW=80M    ✓ in intersection
+  Bond D: ret=-1.0%, VW=30M   ✓ in intersection
+  Bond E: MISSING             ✗ dropped from intersection
+
+After intersection:
+  P1: Bond D only (E dropped)
+  P5: Bond A, B
+
+STEP 3: Weight Computation
+--------------------------
+P5 (high quintile):
+  n_p = 2 (bonds A, B)
+
+  EW weights:
+    w_ew[A] = 1/2 = 0.50
+    w_ew[B] = 1/2 = 0.50
+
+  VW weights (VW from t=2):
+    VW_A = 100M, VW_B = 50M, total = 150M
+    w_vw[A] = 100/150 = 0.667
+    w_vw[B] = 50/150  = 0.333
+
+STEP 4: Return Computation
+--------------------------
+P5 returns at t=3:
+  R_ew,P5 = 0.50 × 2.0% + 0.50 × 1.5% = 1.75%
+  R_vw,P5 = 0.667 × 2.0% + 0.333 × 1.5% = 1.833%
+
+STEP 5: Scaled Weight Computation (for turnover)
+------------------------------------------------
+P5 scaled weights (end of t=3):
+  w_scaled[A] = 0.667 × (1 + 0.02) / (1 + 0.01833) = 0.668
+  w_scaled[B] = 0.333 × (1 + 0.015) / (1 + 0.01833) = 0.332
+
+STEP 6: Output Indexing
+-----------------------
+All stored at index t+1 = 3:
+  ew_ret_arr[3, P5] = 1.75%
+  vw_ret_arr[3, P5] = 1.833%
+  port_idx[3] = {A: {rank=5, ew=0.50, vw=0.667}, B: {rank=5, ew=0.50, vw=0.333}}
+
+Turnover stored at τ=2 (formation time):
+  Compare w_raw(t=3) vs w_scaled(t=2)
+```
+
+---
+
+### ID Intersection Logic
+
+A critical step is the intersection of bond IDs across dates:
+
+```python
+# From utils.py: intersect_id()
+def intersect_id(It0, It1, It1m, dynamic_weights):
+    """
+    Find bonds present at both formation and return dates.
+
+    Parameters
+    ----------
+    It0 : DataFrame
+        Signal data at formation date t
+    It1 : DataFrame
+        Return data at return date t+1
+    It1m : DataFrame
+        VW data at VW source date (t for HP=1)
+    dynamic_weights : bool
+        If True, also require bond in It1m
+
+    Returns
+    -------
+    Filtered It0, It1, It1m with only common bonds
+    """
+    common = set(It0['ID']) & set(It1['ID'])
+    if dynamic_weights:
+        common &= set(It1m['ID'])
+
+    It0 = It0[It0['ID'].isin(common)]
+    It1 = It1[It1['ID'].isin(common)]
+    It1m = It1m[It1m['ID'].isin(common)]
+
+    return It0, It1, It1m
+```
+
+**Why Intersection Matters:**
+- A bond ranked at formation may not have return data at realization
+- Including such bonds would bias returns (missing returns ≠ zero returns)
+- The intersection ensures we only use bonds with valid data at BOTH dates
+
+---
+
+### Cohort Handling for HP=1
+
+For `holding_period=1`, the cohort dimension is trivial:
+
+```
+Cohort Index = t % holding_period = t % 1 = 0 (always)
+
+Therefore:
+  - Only cohort 0 exists
+  - No cohort averaging is performed
+  - Results shape: (n_dates,) not (n_dates, n_cohorts)
+```
+
+**Aggregation for HP=1:**
+```python
+# No averaging needed - direct assignment
+ew_returns_final = ew_ret_arr[:, 0, :]  # Just take cohort 0
+vw_returns_final = vw_ret_arr[:, 0, :]  # Just take cohort 0
+```
+
+---
+
+### Summary Table (HP=1)
+
+| Output | Indexed At | Computed From | VW Source |
+|--------|------------|---------------|-----------|
+| Portfolio Returns | t+1 (return date) | r(t+1), w_raw(t) | t (formation) |
+| Portfolio Weights (port_idx) | t+1 (return date) | VW(t), ranks(t) | t (formation) |
+| Scaled Weights | t+1 (return date) | w_raw(t+1), r(t+1), R_p(t+1) | N/A |
+| Turnover | τ=t (formation time) | w_raw(t+1) vs w_scaled(t) | N/A |
+| Characteristics | t+1 (return date) | char(t), w(t) | t (formation) |
+
+**Key Points:**
+1. Returns and chars use data from formation (t) but are indexed at return date (t+1)
+2. Turnover compares consecutive formations and is indexed at formation time (τ)
+3. For HP=1, `dynamic_weights=True` and `=False` produce identical results
+4. Only bonds in the intersection of formation and return dates are included
