@@ -523,6 +523,56 @@ Value-Weight (VW):
 **Key insight**: VW values come from formation date, but normalization uses only bonds
 present at the return date. This is the "renormalization" that happens on pseudo-rebalancing dates.
 
+### Weight Renormalization Between Rebalancing Dates
+
+On **TRUE rebalancing dates**, weights are computed fresh:
+
+```
+At TRUE rebalancing (e.g., January for quarterly):
+
+  w_raw[i] = VW_Jan[i] / Σⱼ∈p VW_Jan[j]
+
+  where:
+    - VW_Jan[i] = value weight of bond i at January
+    - Σⱼ∈p = sum over ALL bonds j assigned to portfolio p at January
+```
+
+On **PSEUDO-rebalancing dates** (months between true rebalancing), weights are
+renormalized using the SAME VW values but a DIFFERENT bond universe:
+
+```
+At PSEUDO-rebalancing (e.g., March, after January formation):
+
+  w_raw[i](Mar) = VW_Jan[i] / Σⱼ∈p∩M VW_Jan[j]
+
+  where:
+    - VW_Jan[i] = value weight of bond i at January (UNCHANGED)
+    - p∩M = bonds in portfolio p that are PRESENT at March
+    - Σⱼ∈p∩M = sum only over bonds still available
+
+  If bond k dropped out between Feb and Mar:
+    - Bond k is excluded from the sum
+    - Remaining bonds' weights increase proportionally
+```
+
+**Example of renormalization**:
+
+```
+January (TRUE rebalancing):
+  Portfolio 1 bonds: A, B, C
+  VW: A=100, B=60, C=40 → Total=200
+  Weights: w_A=0.50, w_B=0.30, w_C=0.20
+
+February (bonds A, B, C all present):
+  Same VW values from Jan, same bonds present
+  Weights: w_A=0.50, w_B=0.30, w_C=0.20 (unchanged)
+
+March (bond B drops out):
+  VW from Jan: A=100, C=40 → New Total=140
+  Renormalized: w_A=100/140=0.714, w_C=40/140=0.286
+  (B's weight redistributed proportionally)
+```
+
 ### Portfolio Return Computation
 
 Returns are computed using **raw weights (w_raw)**, not scaled weights:
