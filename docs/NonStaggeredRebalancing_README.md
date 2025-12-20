@@ -497,6 +497,219 @@ StrategyFormation.fit()
 
 ---
 
+## Turnover Pipeline
+
+### Code Reuse
+
+Non-staggered rebalancing **reuses the same turnover code** as staggered (monthly) rebalancing.
+The key difference is that turnover is computed at **every date** (not just rebalancing dates).
+
+### Slow Path Pipeline
+
+```
+_fit_nonstaggered()
+        │
+        ├── Initialize TurnoverManager (same class as staggered)
+        │   self.turnover_manager = TurnoverManager(...)
+        │
+        └── For each rebalancing date:
+              └── _form_nonstaggered_portfolio()
+                    └── For each month until next rebalancing:
+                          ├── _form_single_period() → computes weights
+                          └── turnover_manager.compute() → computes turnover
+```
+
+### Fast Path Pipeline (Numba)
+
+```
+_fit_nonstaggered_fast()
+        │
+        └── compute_nonstaggered_full_fast()  ← Single numba kernel
+              │
+              └── For each date d:
+                    ├── Compute returns (ew_ret, vw_ret)
+                    ├── Compute characteristics (if enabled)
+                    └── Compute turnover (if enabled)
+                          │
+                          ├── Track current weights: curr_ew, curr_vw
+                          ├── Track previous scaled weights: prev_ew, prev_vw
+                          └── turnover = prev_sum + curr_sum - 2 * sum_min
+```
+
+### Turnover Formula
+
+At each return date `d`, for each portfolio `p`:
+
+```
+1. Current weights: curr_weight[bond] = VW[bond] / sum(VW in portfolio)
+2. Previous scaled: prev_scaled[bond] = prev_weight[bond] × (1 + bond_ret) / (1 + ptf_ret)
+3. Turnover = sum(|curr_weight - prev_scaled|) / 2
+            = (prev_sum + curr_sum - 2 × sum_min) / 2
+```
+
+**Key insight**: Turnover is computed at EVERY date, including pseudo-rebalancing dates.
+If bonds drop out between rebalancing dates, this creates "latent turnover" from weight renormalization.
+
+---
+
+## Filters: `rating` and `subset_filter`
+
+### How Filters Are Applied
+
+Filters are applied at **formation date only** (no look-ahead bias):
+
+| Filter Type | When Applied | Effect |
+|-------------|--------------|--------|
+| `rating` | Formation date | Exclude bonds outside rating range from ranking |
+| `subset_filter` | Formation date | Exclude bonds outside characteristic range from ranking |
+
+### Slow Path (StrategyFormation)
+
+```python
+# In _precompute_data() → filter_by_rating() and filter_by_char()
+# Filters applied during precomputation
+if self.rating is not None:
+    sub = sub[(sub['RATING_NUM'] >= min_r) & (sub['RATING_NUM'] <= max_r)]
+
+if self.subset_filter is not None:
+    for col, (min_val, max_val) in self.subset_filter.items():
+        sub = sub[(sub[col] >= min_val) & (sub[col] <= max_val)]
+```
+
+### Fast Path (BatchStrategyFormation)
+
+```python
+# In _fit_fast_batch_nonstaggered()
+# Build filter mask (True = passes filter)
+filter_mask = np.ones(len(data), dtype=np.bool_)
+
+if self.rating is not None:
+    if self.rating == 'IG':
+        filter_mask &= (rating_vals <= 10)
+    elif self.rating == 'NIG':
+        filter_mask &= (rating_vals > 10)
+    elif isinstance(self.rating, tuple):
+        min_r, max_r = self.rating
+        filter_mask &= (rating_vals >= min_r) & (rating_vals <= max_r)
+
+if self.subset_filter is not None:
+    for col, (min_val, max_val) in self.subset_filter.items():
+        filter_mask &= (col_vals >= min_val) & (col_vals <= max_val)
+
+# Set signal to NaN for filtered observations → excluded from ranking
+signals_matrix[~filter_mask] = np.nan
+```
+
+### No Look-Ahead Bias
+
+Filters are applied at formation, but returns are collected regardless of filter status:
+
+```
+Formation (Jan): Bond rated IG → included in portfolio ranking
+Return (Feb):    Bond downgraded to NIG → return STILL collected!
+                 (We don't use future rating information)
+```
+
+### Example Usage
+
+```python
+import PyBondLab as pbl
+
+# With rating filter
+sf = pbl.StrategyFormation(
+    data=data,
+    strategy=pbl.SingleSort(
+        holding_period=1,
+        sort_var='signal',
+        num_portfolios=5,
+        rebalance_frequency='quarterly',
+    ),
+    rating='IG',  # Only investment grade bonds
+    # OR rating=(1, 10)  # Explicit rating range
+)
+
+# With subset_filter
+sf = pbl.StrategyFormation(
+    data=data,
+    strategy=pbl.SingleSort(..., rebalance_frequency='quarterly'),
+    subset_filter={
+        'MATURITY': (1, 5),     # Maturity 1-5 years
+        'DURATION': (2, 8),    # Duration 2-8 years
+    },
+)
+
+# BatchStrategyFormation also supports these
+batch = pbl.BatchStrategyFormation(
+    data=data,
+    signals=['signal1', 'signal2'],
+    holding_period=1,
+    num_portfolios=5,
+    rebalance_frequency='quarterly',
+    rating='IG',
+    subset_filter={'MATURITY': (1, 5)},
+)
+```
+
+---
+
+## Date Indexing
+
+### Critical Concept: Return Date vs Formation Date
+
+All outputs are indexed by **RETURN date** (t+1), not formation date (t):
+
+| Output | Index Date | Value Source Date |
+|--------|------------|-------------------|
+| **Returns** | Return date (t+1) | Return date (t+1) |
+| **Turnover** | Return date (t+1) | Weights at return date |
+| **Characteristics** | Return date (t+1) | Formation date (t) |
+
+### Why Return Date Indexing?
+
+This matches standard factor return conventions:
+- Factor return for "January" = return earned FROM January TO February
+- Index = February (when return is realized)
+
+### Timeline Example
+
+```
+Quarterly Rebalancing (rebalance_month=1):
+
+Formation    Return      Output Index
+(ranks)      (collected)
+─────────────────────────────────────
+Jan          Feb         Feb
+             Mar         Mar
+             Apr         Apr
+Apr          May         May
+             Jun         Jun
+             Jul         Jul
+...
+
+Output DataFrames:
+  Date (Index)  | Return  | Turnover | Char
+  ─────────────────────────────────────────
+  2024-02-01    | 0.012   | 0.15     | 5.2
+  2024-03-01    | -0.005  | 0.03     | 5.1
+  2024-04-01    | 0.008   | 0.02     | 5.0
+  2024-05-01    | 0.015   | 0.18     | 4.8  ← New rebalancing
+  ...
+```
+
+### Characteristics: Special Case
+
+Characteristics are indexed by return date but **values come from formation date**:
+
+```python
+# At return date Feb (d=1), characteristics come from formation date Jan (d=0)
+# This is because characteristics describe the portfolio at formation
+
+# For non-staggered with dynamic_weights=False (always):
+char_date = formation_date  # NOT d-1
+```
+
+---
+
 ## Performance
 
 ### Speedup Achieved
