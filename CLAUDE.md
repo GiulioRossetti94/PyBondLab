@@ -60,6 +60,7 @@ Dramatically speed up portfolio formation in PyBondLab using numba/prange, while
 | **Phase 15** | Non-staggered integration | ✅ Complete | BatchStrategyFormation (~340x), DataUncertaintyAnalysis integrated |
 | **Phase 15b** | Non-staggered with turnover/chars/banding | ✅ Complete | **21-103x speedup**, all 6 tests PASS |
 | **Phase 16** | Optimize WithinFirmSort | ✅ Complete | 16g (33x speedup) + 16h (chars) + 16i + 16j ✅ |
+| **Phase 17** | Non-staggered rebalancing bug fix | 🔴 Pending | **CRITICAL**: Returns only at rebal dates, not every month |
 
 ---
 
@@ -2717,5 +2718,340 @@ results1 = batch1.fit()  # Shows progress, summary
 batch2 = BatchWithinFirmSortFormation(data, columns={...}, signals=[...], n_jobs=4)
 results2 = batch2.fit()  # Shows SAME progress format, summary format
 ```
+
+---
+
+## Phase 17: Non-Staggered Rebalancing Bug Fix
+
+### Overview
+
+**CRITICAL BUG**: When using non-staggered rebalancing (`rebalance_frequency != 'monthly'`),
+returns/turnover/chars are only computed at rebalancing dates + 1, instead of EVERY month.
+
+**Status: 🔴 Pending**
+
+### Bug Description
+
+With quarterly rebalancing (rebalance_frequency='quarterly') and HP=1:
+- **Expected**: Returns for ALL 11 months (months 2-12)
+- **Actual**: Returns only for 3 months (months 4, 7, 10) - only at rebalancing dates + 1
+
+```
+Quarterly Rebalancing Timeline (BUG):
+=====================================
+
+Month:   1     2     3     4     5     6     7     8     9    10    11    12
+         |                 |                 |                 |
+         [R1]              [R2]              [R3]              [R4]
+               X     X     ✓     X     X     ✓     X     X     ✓     X     X
+
+Where:
+  [Rn] = Rebalancing date (portfolio formed)
+  ✓    = Return computed (BUG: only one per quarter)
+  X    = Return MISSING (should be computed!)
+```
+
+**Expected Behavior:**
+```
+Month:   1     2     3     4     5     6     7     8     9    10    11    12
+         |                 |                 |                 |
+         [R1]              [R2]              [R3]              [R4]
+               ✓     ✓     ✓     ✓     ✓     ✓     ✓     ✓     ✓     ✓     ✓
+
+All months should have returns. Portfolio composition stays fixed between
+rebalancing dates. Weights renormalized if bonds drop out.
+```
+
+### Root Cause
+
+**Fast Path (`compute_nonstaggered_full_fast` in `numba_core.py`):**
+```python
+# Line 4612-4614 - BUG: hp limits return collection
+if d > form_d + hp:
+    continue
+```
+With `hp=1`, this only collects 1 month of returns per rebalancing date.
+
+**Slow Path (`_form_nonstaggered_portfolio` in `PyBondLab.py`):**
+```python
+# Line 2034 - BUG: hor (holding_period) limits return collection
+for h in range(self.hor):
+    t1_idx = rebal_idx + h + 1
+```
+With `hor=1`, this loop only runs once per rebalancing.
+
+### Correct Behavior
+
+1. **Returns computed EVERY month** after first rebalancing date
+   - At each month (rebalancing OR non-rebalancing), treat it as a pseudo-formation period
+   - Check intersection of valid bonds at pseudo-formation date (t) and return date (t+1)
+   - Only include bonds that exist at BOTH dates in return calculation
+   - This matches the monthly rebalancing `intersect_id()` logic
+
+2. **Portfolio composition fixed** until next rebalancing (ranks stay the same)
+   - Ranks assigned at rebalancing date persist until next rebalancing
+   - We do NOT add new bonds between rebalancing dates
+   - But the set of bonds in each portfolio can SHRINK if bonds drop out
+
+3. **Weights renormalized** when bonds drop out
+   - At each month, renormalize weights based on which bonds are still present
+   - EW: weight = 1/n_remaining_bonds (not original n_bonds)
+   - VW: weight = VW_i / sum(VW_j for remaining bonds)
+   - Weights always sum to 1 within each portfolio
+
+4. **Turnover between rebalancing dates**
+   - **NOT always 0!**
+   - If bonds drop out, there IS "latent turnover" from weight renormalization
+   - Only 0 for perfectly balanced panels with no dropouts
+   - This matches real-world behavior: dropping a position induces turnover
+
+5. **Chars computed** using current bond universe (renormalized like weights)
+
+### Pseudo-Formation Logic (Critical)
+
+```
+Quarterly Rebalancing Example:
+==============================
+
+December (REAL rebalancing):
+  1. Compute ranks from signal
+  2. Assign bonds to portfolios 1-5
+  3. Check intersection with January returns
+  4. Compute weights for bonds in intersection
+  5. Collect January returns
+
+January (PSEUDO-formation, no rebalancing):
+  1. Ranks stay fixed from December
+  2. Check intersection: bonds at Jan with valid Feb returns
+  3. Some bonds may have dropped out!
+  4. Renormalize weights for remaining bonds
+  5. Collect February returns
+  6. Turnover from weight changes (if any bonds dropped)
+
+February (PSEUDO-formation, no rebalancing):
+  1. Ranks stay fixed from December
+  2. Check intersection: bonds at Feb with valid Mar returns
+  3. Renormalize weights
+  4. Collect March returns
+  5. Turnover from weight changes
+
+March (REAL rebalancing):
+  1. Compute NEW ranks from signal
+  2. Assign bonds to portfolios (may differ from December)
+  3. Check intersection with April returns
+  4. Compute weights
+  5. Collect April returns
+  6. Turnover from rank changes + weight changes
+```
+
+### Implementation Plan
+
+#### Phase 17a: Fix Fast Path (numba kernel)
+
+**File**: `numba_core.py`
+
+**Changes to `compute_nonstaggered_full_fast()`:**
+
+1. Replace `hp` check with next-rebalancing check:
+   ```python
+   # OLD (BUG):
+   if d > form_d + hp:
+       continue
+
+   # NEW (FIX):
+   # Find next rebalancing date
+   next_rebal_d = n_dates  # default: no more rebalancing
+   for r in range(n_rebal):
+       if rebal_date_indices[r] > form_d:
+           next_rebal_d = rebal_date_indices[r]
+           break
+
+   # Skip if return date is at or after next rebalancing
+   if d >= next_rebal_d:
+       continue
+   ```
+
+2. Add pseudo-formation intersection logic:
+   ```python
+   # For each return date d, treat (d-1) as pseudo-formation date
+   # Check intersection: bonds with valid data at (d-1) AND valid returns at d
+   # This matches the monthly rebalancing intersect_id() behavior
+   for i in range(n_obs):
+       if date_idx[i] == d:
+           bond = id_idx[i]
+           rank = rank_lookup[form_d, bond]  # Rank from REAL formation date
+           if np.isnan(rank):
+               continue
+           # Bond must have valid VW at pseudo-formation (d-1)
+           if dynamic_weights:
+               weight = vw_lookup[d - 1, bond]
+           else:
+               weight = vw_lookup[form_d, bond]
+           if np.isnan(weight):
+               continue
+           # Include this bond in return calculation
+   ```
+
+3. Renormalize weights for bond dropouts:
+   ```python
+   # After collecting bonds for return date d:
+   # - Some bonds from formation may be missing at d (dropped out)
+   # - Renormalize weights so they sum to 1 within each portfolio
+   for p in range(nport):
+       if ptf_vw_sum[p] > 0:
+           # EW: already handled by counting remaining bonds
+           # VW: divide by sum of VW for remaining bonds
+   ```
+
+4. Compute turnover at EVERY date (not just rebalancing):
+   ```python
+   # Turnover occurs even between rebalancing dates if bonds drop out
+   # The weight renormalization induces "latent turnover"
+   # Use same turnover logic as monthly rebalancing
+   ```
+
+#### Phase 17b: Fix Slow Path
+
+**File**: `PyBondLab.py`
+
+**Changes to `_form_nonstaggered_portfolio()`:**
+
+Replace `for h in range(self.hor):` loop with proper date iteration:
+
+```python
+def _form_nonstaggered_portfolio(self, rebal_idx, precomp, ...):
+    """Form portfolio for one rebalancing period (non-staggered)."""
+
+    # Find next rebalancing date index
+    next_rebal_idx = len(self.datelist)  # default: end of data
+    for idx in rebal_dates_idx:
+        if idx > rebal_idx:
+            next_rebal_idx = idx
+            break
+
+    # Collect returns for ALL months until next rebalancing
+    for t1_idx in range(rebal_idx + 1, next_rebal_idx + 1):
+        if t1_idx >= len(self.datelist):
+            break
+
+        # Pseudo-formation date is t1_idx - 1
+        pseudo_form_idx = t1_idx - 1
+        pseudo_form_date = self.datelist[pseudo_form_idx]
+
+        # Get data at pseudo-formation and return dates
+        # Use intersect_id() to find bonds present at BOTH dates
+        It0_pseudo = precomp.It0.get(pseudo_form_date, pd.DataFrame())
+        It1 = precomp.It1.get(date_t1, pd.DataFrame())
+        It1m = precomp.It1m.get(pseudo_form_date, pd.DataFrame())
+        It0_pseudo, It1, It1m = intersect_id(It0_pseudo, It1, It1m, self.dynamic_weights)
+
+        # Map ranks from ORIGINAL formation date (not pseudo-formation)
+        It1['ptf_rank'] = It1[ColumnNames.ID].map(
+            precomp.ranks_map.get(self.datelist[rebal_idx], pd.Series())
+        )
+
+        # ... existing return/weight computation code ...
+        # Turnover is computed at EVERY date (latent turnover from dropouts)
+```
+
+#### Phase 17c: Weight Renormalization
+
+When bonds drop out between rebalancing dates, weights must be renormalized:
+
+**Example:**
+```
+Formation (month 3):
+  Portfolio 1: Bond A (40%), Bond B (30%), Bond C (30%)
+
+Month 4 (Bond B drops out):
+  Portfolio 1: Bond A (40%/70% = 57.1%), Bond C (30%/70% = 42.9%)
+
+Month 5 (all bonds present):
+  Portfolio 1: Bond A (40%), Bond B (30%), Bond C (30%)  # Original weights restored
+```
+
+**For EW portfolios:**
+- Original weight = 1/n_bonds_in_portfolio
+- After dropout: weight = 1/n_remaining_bonds
+
+**For VW portfolios:**
+- Original weight = VW_i / sum(VW_j for j in portfolio)
+- After dropout: weight = VW_i / sum(VW_j for j in remaining bonds)
+
+**Key insight**: We need to track which bonds were assigned to each portfolio at formation,
+then at each return date, compute weights only for bonds still present.
+
+#### Phase 17d: Validation
+
+Create validation script `examples/validate_phase17.py` that tests:
+
+1. **Balanced panel (no dropouts):**
+   - All months should have returns (except first formation month)
+   - Weights remain constant (no bonds dropping out)
+   - Turnover = 0 between rebalancing dates (only for balanced panel!)
+
+2. **Unbalanced panel (10% random dropouts):**
+   - All months should have returns
+   - Weights renormalized when bonds drop out
+   - Verify renormalization is correct (weights sum to 1)
+   - Turnover > 0 even between rebalancing dates (latent turnover)
+
+3. **Multiple frequencies:**
+   - Quarterly (freq=3)
+   - Semi-annual (freq=6)
+   - Annual (freq=12)
+
+4. **With turnover/chars:**
+   - Turnover computed at EVERY date (not just rebalancing)
+   - Chars computed with renormalized weights at each date
+
+5. **Fast vs slow path comparison:**
+   - Results must match exactly (< 1e-10 tolerance)
+
+### Key Technical Details
+
+**Rank persistence:**
+- Ranks assigned at formation date stay fixed until next rebalancing
+- Already stored in `rank_lookup[form_d, bond_id]`
+
+**Weight sources:**
+- `dynamic_weights=True`: Use VW from d-1 for date d returns
+- `dynamic_weights=False`: Use VW from formation date
+- Either way, weights are renormalized based on which bonds are present at d
+
+**Turnover semantics:**
+- Turnover computed at EVERY date, same as monthly rebalancing
+- Between rebalancing dates: turnover from weight changes when bonds drop out
+- Turnover = 0 ONLY if perfectly balanced panel with no dropouts
+
+### Files to Modify
+
+| File | Changes |
+|------|---------|
+| `PyBondLab/numba_core.py` | Fix `compute_nonstaggered_full_fast()` - date iteration, weight renorm |
+| `PyBondLab/PyBondLab.py` | Fix `_form_nonstaggered_portfolio()` - date iteration, weight renorm |
+| `examples/validate_phase17.py` | **NEW** - Phase 17 validation script |
+| `examples/validate_nonstaggered_bug.py` | Update expected behavior after fix |
+
+### Expected Results After Fix
+
+**Quarterly Rebalancing (12 months):**
+| Metric | Before (Bug) | After (Fix) |
+|--------|--------------|-------------|
+| Return dates | 3 | **11** |
+| Turnover dates | 3 | **11** (computed at every date) |
+| Chars dates | 3 | **11** |
+
+**Turnover behavior by panel type:**
+| Panel Type | Turnover Between Rebalancing |
+|------------|------------------------------|
+| Balanced (no dropouts) | 0 (weights unchanged) |
+| Unbalanced (dropouts) | > 0 (latent turnover from weight changes) |
+
+### Validation Script Location
+
+`examples/validate_nonstaggered_bug.py` - already created, confirms the bug exists.
+
+After Phase 17 implementation, this script should report "0 bugs detected".
 
 ---
