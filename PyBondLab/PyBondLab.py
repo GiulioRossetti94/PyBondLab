@@ -896,6 +896,19 @@ class StrategyFormation:
         print("StrategyFormation Initialization")
         print("=" * 60)
         print(f"Strategy: {self.strategy.strategy_name}")
+
+        # Print sorting variable(s)
+        try:
+            sort_var = self.strategy.get_sort_var()
+            print(f"Sort variable: {sort_var}")
+            # For DoubleSort, also print second sort variable
+            if hasattr(self.strategy, 'get_sort_var2'):
+                sort_var2 = self.strategy.get_sort_var2()
+                if sort_var2:
+                    print(f"Sort variable 2: {sort_var2}")
+        except Exception:
+            pass
+
         print(f"Holding period: {self.hor}")
         print(f"Number of portfolios: {self.nport}")
         print(f"Rebalancing frequency: {self.rebalance_frequency}")
