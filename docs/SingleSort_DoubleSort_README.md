@@ -64,6 +64,19 @@
     - [Summary Table (HP=3)](#summary-table-hp3)
     - [Key Differences: HP=1 vs HP=3](#key-differences-hp1-vs-hp3)
     - [Turnover Interpretation for HP>1](#turnover-interpretation-for-hp1)
+12. [The dynamic_weights Parameter](#the-dynamic_weights-parameter)
+    - [What dynamic_weights Controls](#what-dynamic_weights-controls)
+    - [Effect on HP=1 (No Effect)](#effect-on-hp1-no-effect)
+    - [Effect on HP>1 (Critical Difference)](#effect-on-hp1-critical-difference)
+    - [VW Source Date Equations](#vw-source-date-equations)
+    - [ID Intersection Behavior](#id-intersection-behavior)
+    - [Timeline Diagram: dynamic_weights=True vs False](#timeline-diagram-dynamic_weightstrue-vs-false)
+    - [Weight Computation Equations](#weight-computation-equations-dynamic_weights)
+    - [Effect on Turnover](#effect-on-turnover)
+    - [Effect on Returns](#effect-on-returns)
+    - [Defaults Across Classes](#defaults-across-classes)
+    - [When to Use Each Setting](#when-to-use-each-setting)
+    - [Summary Table (dynamic_weights)](#summary-table-dynamic_weights)
 
 ---
 
@@ -2322,3 +2335,382 @@ At any formation τ:
 full_portfolio_turnover = final_turnover × holding_period
                         = final_turnover × 3
 ```
+
+---
+
+## The dynamic_weights Parameter
+
+The `dynamic_weights` parameter controls **which date's value weights (VW) are used** for computing VW portfolio returns and characteristics. This section provides a complete specification of its behavior.
+
+---
+
+### What dynamic_weights Controls
+
+`dynamic_weights` has **two effects**:
+
+1. **VW Source Date**: Where the value weights come from
+2. **ID Intersection**: Which bonds are included in the return calculation
+
+| Setting | VW Source Date | ID Intersection |
+|---------|---------------|-----------------|
+| `True` | return_date - 1 (d-1) | 3-way: formation ∩ return ∩ VW_date |
+| `False` | formation_date (t) | 2-way: formation ∩ return |
+
+---
+
+### Effect on HP=1 (No Effect)
+
+**For `holding_period=1`, both settings produce IDENTICAL results.**
+
+```
+HP=1 Timeline:
+==============
+
+Formation:  t=0       t=1       t=2       t=3
+            │         │         │         │
+Time:    ───┼─────────┼─────────┼─────────┼───
+            │         │         │         │
+        [Form₀]    [Form₁]    [Form₂]    [Form₃]
+            │         │         │         │
+Return:           R₀→₁      R₁→₂      R₂→₃
+                  at t=1    at t=2    at t=3
+
+For return at t=1 (formed at t=0):
+  dynamic_weights=True:  VW from return_date - 1 = 1 - 1 = 0 = formation_date
+  dynamic_weights=False: VW from formation_date = 0
+
+→ SAME DATE! Both use VW from t=0.
+```
+
+**Mathematical Proof:**
+
+```
+For HP=1:
+  return_date = formation_date + 1
+
+dynamic_weights=True:
+  VW_date = return_date - 1 = (formation_date + 1) - 1 = formation_date
+
+dynamic_weights=False:
+  VW_date = formation_date
+
+→ Both settings use VW from formation_date when HP=1.
+```
+
+**Conclusion:** For HP=1, `dynamic_weights` has **no effect** on results.
+
+---
+
+### Effect on HP>1 (Critical Difference)
+
+**For `holding_period > 1`, the settings produce DIFFERENT results.**
+
+The difference arises because cohorts held for multiple months use different VW dates:
+
+```
+HP=3, Formation at t=0 (Cohort 0):
+==================================
+
+                                          dynamic_weights
+                                          ───────────────────────────
+Return date:   t=1       t=2       t=3    True          False
+               │         │         │      ────          ─────
+Holding h:    h=0       h=1       h=2
+               │         │         │
+VW Source:   d-1=0     d-1=1     d-1=2    VW varies     VW fixed at t=0
+               │         │         │      per return    (formation)
+               ▼         ▼         ▼      date
+            [VW at 0] [VW at 1] [VW at 2]
+               ↓         ↓         ↓
+            Same as    DIFFERS    DIFFERS   ← Key difference!
+            False      from       from
+                       False      False
+```
+
+---
+
+### VW Source Date Equations
+
+**For a cohort formed at date `t` with return at date `d`:**
+
+```
+dynamic_weights=True:
+  VW_date = d - 1  (day before return date)
+
+  This is FIXED for all cohorts at a given return date.
+  At return date d=5: VW_date = 4 for ALL cohorts.
+
+dynamic_weights=False:
+  VW_date = t  (formation date)
+
+  This VARIES by cohort.
+  At return date d=5:
+    Cohort formed at t=2: VW_date = 2
+    Cohort formed at t=3: VW_date = 3
+    Cohort formed at t=4: VW_date = 4
+```
+
+**General Formula:**
+
+```
+           ┌ d - 1         if dynamic_weights = True
+VW_date =  │
+           └ t             if dynamic_weights = False
+
+where:
+  d = return date
+  t = formation date for the cohort
+```
+
+---
+
+### ID Intersection Behavior
+
+The `dynamic_weights` parameter also affects **which bonds are included**:
+
+```
+intersect_id(It0, It1, It1m, dynamic_weights):
+    """
+    It0  = Bonds at formation date (t)
+    It1  = Bonds at return date (d)
+    It1m = Bonds at VW source date
+    """
+
+    common_ids = It0.ID ∩ It1.ID
+
+    if dynamic_weights:
+        common_ids = common_ids ∩ It1m.ID  # 3-way intersection
+
+    return filtered(It0, It1, It1m, common_ids)
+```
+
+**Practical Impact:**
+
+| Setting | Bond Requirement | Effect |
+|---------|-----------------|--------|
+| `True` | Must exist at formation AND return AND VW_date | More restrictive; excludes bonds missing at d-1 |
+| `False` | Must exist at formation AND return | Less restrictive; includes more bonds |
+
+**Example:**
+```
+Bond X timeline:
+  - Exists at formation (t=0): YES
+  - Exists at return (t=3): YES
+  - Exists at VW_date (t=2): NO (dropped temporarily)
+
+With dynamic_weights=True:  Bond X EXCLUDED (missing at t=2)
+With dynamic_weights=False: Bond X INCLUDED (VW from t=0)
+```
+
+---
+
+### Timeline Diagram: dynamic_weights=True vs False
+
+```
+HP=3 with dynamic_weights Comparison:
+=====================================
+
+Return date:        t=3         t=4         t=5         t=6
+                     │           │           │           │
+                     ▼           ▼           ▼           ▼
+
+Cohort 0 (form t=0):
+  Holding:          h=2         -           -           -
+  VW (True):       d-1=2        -           -           -
+  VW (False):      t=0          -           -           -
+
+Cohort 1 (form t=1):
+  Holding:          h=1        h=2          -           -
+  VW (True):       d-1=2      d-1=3         -           -
+  VW (False):      t=1        t=1           -           -
+
+Cohort 2 (form t=2):
+  Holding:          h=0        h=1         h=2          -
+  VW (True):       d-1=2      d-1=3       d-1=4         -
+  VW (False):      t=2        t=2         t=2           -
+
+Cohort 0 (form t=3):
+  Holding:           -         h=0         h=1         h=2
+  VW (True):         -        d-1=3       d-1=4       d-1=5
+  VW (False):        -        t=3         t=3         t=3
+
+                    ↑
+                    │
+At return date t=3, dynamic_weights=True uses VW from t=2 for ALL cohorts
+                    dynamic_weights=False uses VW from t=0, t=1, t=2 (varies by cohort)
+```
+
+**Key Insight:**
+- `dynamic_weights=True`: All cohorts at a return date use the SAME VW date (d-1)
+- `dynamic_weights=False`: Each cohort uses VW from its OWN formation date
+
+---
+
+### Weight Computation Equations (dynamic_weights)
+
+**VW Weight Formula:**
+
+```
+                    VW[i, VW_date]
+w_vw[i] = ────────────────────────────────
+           Σⱼ∈portfolio VW[j, VW_date]
+
+where:
+         ┌ d - 1    if dynamic_weights = True
+VW_date = │
+         └ t        if dynamic_weights = False
+```
+
+**Detailed Example (HP=3, return at d=5):**
+
+```
+Cohort formed at t=2, return at d=5 (h=2):
+==========================================
+
+Bonds in portfolio: A, B, C
+
+dynamic_weights=True (VW from d-1=4):
+  VW_A(4) = 100M,  VW_B(4) = 80M,  VW_C(4) = 120M
+  Total = 300M
+
+  w_vw[A] = 100/300 = 0.333
+  w_vw[B] = 80/300  = 0.267
+  w_vw[C] = 120/300 = 0.400
+
+dynamic_weights=False (VW from t=2):
+  VW_A(2) = 90M,   VW_B(2) = 85M,  VW_C(2) = 100M
+  Total = 275M
+
+  w_vw[A] = 90/275  = 0.327
+  w_vw[B] = 85/275  = 0.309
+  w_vw[C] = 100/275 = 0.364
+
+→ Different weights → Different VW returns!
+```
+
+---
+
+### Effect on Turnover
+
+**Turnover is NOT directly affected by `dynamic_weights`.**
+
+Turnover compares raw weights at formation τ+1 vs scaled weights at formation τ:
+
+```
+T(τ+1) = ½ × |w_raw(τ+1) - w_scaled(τ)|
+```
+
+The `w_raw` weights at each formation use VW from that formation date.
+
+**However, `dynamic_weights` indirectly affects turnover:**
+- Different VW dates → Different bond sets (via ID intersection)
+- Different bond sets → Different weight compositions
+- Different compositions → Different turnover values
+
+---
+
+### Effect on Returns
+
+**VW Returns ARE affected by `dynamic_weights` for HP>1.**
+
+```
+VW Return (portfolio p):
+  R_vw,p = Σᵢ∈p w_vw[i] × r[i]
+
+Since w_vw[i] depends on VW_date:
+  dynamic_weights=True:  Weights reflect RECENT VW (bonds that grew are weighted more)
+  dynamic_weights=False: Weights reflect ORIGINAL VW (weights frozen at formation)
+```
+
+**Interpretation:**
+
+| Setting | Meaning | Use Case |
+|---------|---------|----------|
+| `True` | "Dynamic VW" - weights adjust monthly based on recent VW | Realistic portfolio simulation |
+| `False` | "Static VW" - weights frozen at formation | Pure factor exposure analysis |
+
+---
+
+### Defaults Across Classes
+
+**IMPORTANT: Different classes have different defaults!**
+
+| Class | Default | Source | Notes |
+|-------|---------|--------|-------|
+| `FormationConfig` | `False` | config.py:277 | Base default |
+| `StrategyFormation` | Uses config | (FormationConfig) | Defaults to `False` |
+| `BatchStrategyFormation` | **`True` (hardcoded)** | batch.py:128,192 | Forces `True` |
+| `DataUncertaintyAnalysis` | **`True` (default param)** | data_uncertainty.py:635 | Default `True`, can change |
+| `pbl_test.py` (baseline tests) | **`True` (hardcoded)** | pbl_test.py:484 | Baseline uses `True` |
+| `SingleSort` / `DoubleSort` | N/A | - | No parameter (uses config) |
+
+**Critical Warning:**
+
+```python
+# These produce DIFFERENT results for HP>1:
+
+# Method 1: Direct StrategyFormation (default = False)
+sf1 = StrategyFormation(data, strategy, turnover=True)  # dynamic_weights=False
+
+# Method 2: BatchStrategyFormation (hardcoded True)
+batch = BatchStrategyFormation(data, signals=[...])     # dynamic_weights=True
+
+# Method 3: DataUncertaintyAnalysis (default True, can change)
+dua = DataUncertaintyAnalysis(data, signals=[...])      # dynamic_weights=True
+```
+
+**To ensure consistency, explicitly set `dynamic_weights`:**
+
+```python
+from PyBondLab.config import StrategyFormationConfig, FormationConfig, DataConfig
+
+config = StrategyFormationConfig(
+    data=DataConfig(),
+    formation=FormationConfig(
+        dynamic_weights=True  # Explicit setting
+    )
+)
+
+sf = StrategyFormation(data, strategy, config=config)
+```
+
+---
+
+### When to Use Each Setting
+
+**Use `dynamic_weights=True` when:**
+- Simulating realistic portfolio behavior (VW adjusts as bonds grow/shrink)
+- Comparing with BatchStrategyFormation or DataUncertaintyAnalysis results
+- Replicating baseline test results
+- Portfolio weights should reflect current market values
+
+**Use `dynamic_weights=False` when:**
+- Analyzing pure factor exposure (weights fixed at formation)
+- Isolating signal effect from VW changes
+- Comparing with older PyBondLab implementations
+- Simpler interpretation (VW source is always formation)
+
+---
+
+### Summary Table (dynamic_weights)
+
+| Aspect | `dynamic_weights=True` | `dynamic_weights=False` |
+|--------|------------------------|-------------------------|
+| **VW Source** | return_date - 1 (d-1) | formation_date (t) |
+| **VW Consistency** | Same VW date for all cohorts at return date | Different VW date per cohort |
+| **ID Intersection** | 3-way (formation ∩ return ∩ VW_date) | 2-way (formation ∩ return) |
+| **Bond Filtering** | More restrictive (must exist at d-1) | Less restrictive |
+| **HP=1 Effect** | **None** (both identical) | **None** (both identical) |
+| **HP>1 Effect** | Weights vary by return date | Weights fixed at formation |
+| **Interpretation** | "Dynamic" - tracks VW changes | "Static" - captures original VW |
+| **Default in FormationConfig** | No | **Yes (default=False)** |
+| **BatchStrategyFormation** | **Yes (hardcoded)** | No |
+| **DataUncertaintyAnalysis** | **Yes (default)** | Optional |
+| **pbl_test baseline** | **Yes (hardcoded)** | No |
+
+**Key Takeaways:**
+
+1. **For HP=1:** `dynamic_weights` has **NO effect** - both settings are mathematically identical
+2. **For HP>1:** `dynamic_weights` has **SIGNIFICANT effect** - different VW sources and bond sets
+3. **Watch for inconsistency:** Different classes default to different settings
+4. **Explicitly set for reproducibility:** Always specify `dynamic_weights` when comparing across methods
