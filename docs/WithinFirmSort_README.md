@@ -8,17 +8,93 @@
 
 ## Table of Contents
 
-1. [Quick Start](#quick-start)
-2. [Key Differences from SingleSort](#key-differences-from-singlesort)
-3. [Methodology](#methodology)
-4. [Full API Reference](#full-api-reference)
-5. [Custom Column Names](#custom-column-names)
-6. [Fast Path vs Slow Path](#fast-path-vs-slow-path)
-7. [Feature Support](#feature-support)
-8. [Performance](#performance)
-9. [Examples](#examples)
-10. [Architecture](#architecture)
-11. [Validation](#validation)
+1. [Economic Intuition](#economic-intuition)
+2. [Quick Start](#quick-start)
+3. [Key Differences from SingleSort](#key-differences-from-singlesort)
+4. [Factor Construction: Step-by-Step](#factor-construction-step-by-step)
+5. [Timeline and Indexing](#timeline-and-indexing)
+6. [Full API Reference](#full-api-reference)
+7. [Custom Column Names](#custom-column-names)
+8. [Fast Path vs Slow Path](#fast-path-vs-slow-path)
+9. [Feature Support](#feature-support)
+10. [Performance](#performance)
+11. [Examples](#examples)
+12. [Architecture](#architecture)
+13. [Validation](#validation)
+
+---
+
+## Economic Intuition
+
+### The Problem with Cross-Sectional Sorting
+
+Standard cross-sectional sorting (SingleSort) ranks ALL bonds in the universe by a characteristic
+(e.g., credit spread). This approach conflates two distinct sources of variation:
+
+1. **Cross-firm variation**: Differences between firms (e.g., Apple vs. a distressed retailer)
+2. **Within-firm variation**: Differences between bonds issued by the SAME firm
+
+The cross-firm variation often dominates, making it difficult to identify whether the factor
+premium is driven by the characteristic of interest or by unobserved issuer-specific factors.
+
+### The Within-Firm Solution
+
+`WithinFirmSort` addresses this by constructing factors that **control for issuer-specific shocks
+unrelated to the bond characteristic of interest**. This serves as a pseudo-control for firm-level
+fixed effects.
+
+**Key Insight**: By sorting within each firm, we compare bonds that share the same:
+- Issuer credit quality (same firm = same default risk)
+- Management and operational risk
+- Industry exposure
+- Macroeconomic sensitivity
+
+The only systematic difference is the bond characteristic we're sorting on (e.g., maturity,
+credit spread, liquidity).
+
+### Practical Example: Credit Spread Factor
+
+Consider two approaches to constructing a credit spread factor:
+
+**Cross-Sectional (SingleSort):**
+```
+Long:  High-spread bonds (distressed retailers, energy companies)
+Short: Low-spread bonds (Apple, Microsoft, Johnson & Johnson)
+
+Problem: Are we capturing the "credit spread" premium, or just the fact that
+         distressed firms have higher spreads AND higher expected returns?
+```
+
+**Within-Firm (WithinFirmSort):**
+```
+For Apple:     Long Apple's high-spread bonds, Short Apple's low-spread bonds
+For Microsoft: Long Microsoft's high-spread bonds, Short Microsoft's low-spread bonds
+... (repeat for each firm)
+
+Aggregate across firms and rating groups.
+
+Result: Factor captures ONLY within-firm spread variation.
+        Firm-level shocks cancel out in the long-short portfolio.
+```
+
+### When to Use WithinFirmSort
+
+| Use Case | Recommended Strategy |
+|----------|---------------------|
+| General factor construction | SingleSort |
+| Testing if a characteristic predicts returns **after controlling for issuer** | **WithinFirmSort** |
+| Constructing "pure" maturity, liquidity, or duration factors | **WithinFirmSort** |
+| When concerned about omitted firm-level variables | **WithinFirmSort** |
+| Maximum sample size / power | SingleSort |
+
+### Academic References
+
+The within-firm sorting methodology is motivated by the corporate bond literature's concern with
+firm-level confounds. Key references:
+
+- Bai, Bali, and Wen (2019): "Common risk factors in the cross-section of corporate bond returns"
+- Chordia et al. (2017): "Liquidity and credit risk in corporate bonds"
+- Kelly, Palhares, and Pruitt (2020): "Factor investing in the cross-section of bonds"
 
 ---
 
@@ -58,47 +134,268 @@ print(f"Mean return: {vw_ls.mean()*100:.3f}% per month")
 | **Percentiles** | Global (e.g., 20/40/60/80 for quintiles) | Within-firm (33.3/66.7) |
 | **Portfolios** | N portfolios (typically 5) | 2 (HIGH/LOW only) |
 | **Return Aggregation** | Simple VW average across bonds | Firm-cap-weighted → Rating-averaged |
+| **Economic Interpretation** | Cross-sectional factor | Within-issuer factor (firm FE control) |
 
 ---
 
-## Methodology
+## Factor Construction: Step-by-Step
+
+This section provides a detailed walkthrough of how WithinFirmSort factors are constructed.
 
 ### Step 1: Rating Tercile Assignment
 
-Bonds are grouped into rating terciles:
-- **IG+ (Tercile 1)**: Ratings 1-7 (AAA to A-)
-- **IG- (Tercile 2)**: Ratings 8-10 (BBB+ to BBB-)
-- **SG (Tercile 3)**: Ratings 11+ (BB+ and below)
+Bonds are first grouped into rating terciles based on their credit rating at the **formation date**:
 
-Custom bins can be specified via `rating_bins` parameter.
+| Tercile | Rating Range | Description |
+|---------|-------------|-------------|
+| **Tercile 1 (IG+)** | Ratings 1-7 | AAA to A- |
+| **Tercile 2 (IG-)** | Ratings 8-10 | BBB+ to BBB- |
+| **Tercile 3 (SG)** | Ratings 11+ | BB+ and below |
+
+Custom bins can be specified via `rating_bins` parameter (e.g., `[-inf, 4, 10, inf]`).
+
+```
+Example at date t (formation date):
+===================================
+
+Bond Universe (10 bonds, 3 firms):
+
+Firm A (IG+, Tercile 1):
+  Bond A1: Rating=3 (AA),  Credit Spread=150bp
+  Bond A2: Rating=5 (A+),  Credit Spread=180bp
+  Bond A3: Rating=6 (A),   Credit Spread=220bp
+
+Firm B (IG-, Tercile 2):
+  Bond B1: Rating=8 (BBB+), Credit Spread=280bp
+  Bond B2: Rating=9 (BBB),  Credit Spread=320bp
+  Bond B3: Rating=9 (BBB),  Credit Spread=350bp
+
+Firm C (SG, Tercile 3):
+  Bond C1: Rating=12 (BB),  Credit Spread=520bp
+  Bond C2: Rating=13 (BB-), Credit Spread=580bp
+  Bond C3: Rating=14 (B+),  Credit Spread=650bp
+  Bond C4: Rating=15 (B),   Credit Spread=720bp
+```
 
 ### Step 2: Within-Firm Portfolio Formation
 
 For each (date, rating tercile, firm) group:
-1. Require minimum `min_bonds_per_firm` bonds (default: 2)
-2. Compute 33.3rd and 66.7th percentile thresholds of the signal
-3. Assign bonds:
-   - Signal < 33.3rd percentile → **Low portfolio (Q1)**
-   - Signal > 66.7th percentile → **High portfolio (Q2)**
-   - Middle tercile bonds → **Unassigned** (excluded)
 
-### Step 3: Hierarchical Return Aggregation
-
-Returns are aggregated in a hierarchical manner:
+1. **Check minimum bonds**: Require `min_bonds_per_firm` bonds (default: 2)
+2. **Compute percentile thresholds** of the signal within the firm:
+   - Low threshold: 33.3rd percentile
+   - High threshold: 66.7th percentile
+3. **Assign bonds to portfolios**:
+   - Signal < 33.3rd percentile → **LOW portfolio**
+   - Signal > 66.7th percentile → **HIGH portfolio**
+   - Middle tercile → **Excluded** (not used)
 
 ```
-For each date:
-    For each rating tercile (1, 2, 3):
-        For each firm in this rating tercile:
-            - Compute VW return for HIGH portfolio (Q2)
-            - Compute VW return for LOW portfolio (Q1)
-            - Compute firm-level H-L factor = Q2 - Q1
+Continuing the example - Portfolio Assignment:
+==============================================
 
-        Aggregate across firms (cap-weighted):
-            rating_factor = Σ(firm_weight × firm_HL) / Σ(firm_weight)
+Firm A (3 bonds, sort by credit spread):
+  Thresholds: p33=165bp, p67=200bp
 
-    Average across rating terciles:
-        overall_factor = mean(rating_factors)
+  Bond A1 (150bp) < 165bp  → LOW  (low spread = safer)
+  Bond A2 (180bp) in middle → EXCLUDED
+  Bond A3 (220bp) > 200bp  → HIGH (high spread = riskier)
+
+Firm B (3 bonds):
+  Thresholds: p33=300bp, p67=335bp
+
+  Bond B1 (280bp) < 300bp  → LOW
+  Bond B2 (320bp) in middle → EXCLUDED
+  Bond B3 (350bp) > 335bp  → HIGH
+
+Firm C (4 bonds):
+  Thresholds: p33=567bp, p67=685bp
+
+  Bond C1 (520bp) < 567bp  → LOW
+  Bond C2 (580bp) in middle → EXCLUDED
+  Bond C3 (650bp) in middle → EXCLUDED
+  Bond C4 (720bp) > 685bp  → HIGH
+```
+
+### Step 3: Collect Returns at Return Date
+
+At the return date (t+1), we collect returns for bonds that were assigned to portfolios
+at the formation date (t).
+
+```
+Return Collection at date t+1:
+==============================
+
+Formation date t: Portfolios assigned based on credit spread
+Return date t+1:  Collect returns for assigned bonds
+
+Firm A:
+  LOW:  Bond A1 return = 0.8%
+  HIGH: Bond A3 return = 1.2%
+
+Firm B:
+  LOW:  Bond B1 return = 0.9%
+  HIGH: Bond B3 return = 1.5%
+
+Firm C:
+  LOW:  Bond C1 return = 1.0%
+  HIGH: Bond C4 return = 2.1%
+```
+
+### Step 4: Hierarchical Return Aggregation
+
+Returns are aggregated in a **hierarchical** manner to construct the final factor:
+
+```
+Aggregation Hierarchy:
+======================
+
+Level 1: Within-Firm Aggregation
+--------------------------------
+For each firm, compute VW returns for HIGH and LOW:
+
+  Firm A (VW by market value):
+    r_HIGH = VW_return(A3) = 1.20%
+    r_LOW  = VW_return(A1) = 0.80%
+    H-L_A  = 1.20% - 0.80% = 0.40%
+    Cap_A  = $50B (total firm market value)
+
+  Firm B:
+    r_HIGH = 1.50%, r_LOW = 0.90%
+    H-L_B  = 0.60%
+    Cap_B  = $30B
+
+  Firm C:
+    r_HIGH = 2.10%, r_LOW = 1.00%
+    H-L_C  = 1.10%
+    Cap_C  = $20B
+
+Level 2: Across-Firm Aggregation (Cap-Weighted)
+-----------------------------------------------
+Within each rating tercile, aggregate firm H-L factors using cap-weighting:
+
+  Tercile 1 (IG+): Only Firm A
+    Factor_T1 = H-L_A = 0.40%
+
+  Tercile 2 (IG-): Only Firm B
+    Factor_T2 = H-L_B = 0.60%
+
+  Tercile 3 (SG): Only Firm C
+    Factor_T3 = H-L_C = 1.10%
+
+  (If multiple firms in a tercile:
+   Factor_Tk = Σ(Cap_i × H-L_i) / Σ(Cap_i))
+
+Level 3: Across-Rating Aggregation (Simple Average)
+----------------------------------------------------
+Average across rating terciles:
+
+  Final Factor = (Factor_T1 + Factor_T2 + Factor_T3) / 3
+               = (0.40% + 0.60% + 1.10%) / 3
+               = 0.70%
+```
+
+### Aggregation Equations
+
+For EW portfolios:
+
+$$r_{EW,ptf,firm} = \frac{1}{N_{bonds}} \sum_{i \in ptf} r_i$$
+
+$$Factor_{EW,tercile} = \frac{1}{N_{firms}} \sum_{f} (r_{EW,HIGH,f} - r_{EW,LOW,f})$$
+
+$$Factor_{EW} = \frac{1}{3} \sum_{k=1}^{3} Factor_{EW,tercile_k}$$
+
+For VW portfolios:
+
+$$r_{VW,ptf,firm} = \frac{\sum_{i \in ptf} w_i \cdot r_i}{\sum_{i \in ptf} w_i}$$
+
+$$Factor_{VW,tercile} = \frac{\sum_{f} Cap_f \cdot (r_{VW,HIGH,f} - r_{VW,LOW,f})}{\sum_{f} Cap_f}$$
+
+$$Factor_{VW} = \frac{1}{3} \sum_{k=1}^{3} Factor_{VW,tercile_k}$$
+
+---
+
+## Timeline and Indexing
+
+### Timeline Diagram
+
+All outputs (returns, turnover, characteristics) are indexed by the **return date**.
+
+```
+WithinFirmSort Timeline (HP=1):
+===============================
+
+Formation Date (t)              Return Date (t+1)
+      │                               │
+      ▼                               ▼
+ ┌─────────────────────────────┐ ┌─────────────────────────────┐
+ │ • Read signal values        │ │ • Collect bond returns      │
+ │ • Read rating for tercile   │ │ • Aggregate returns         │
+ │ • Read VW for weighting     │ │ • Compute turnover          │
+ │ • Assign to HIGH/LOW        │ │                             │
+ │ • Read chars values (*)     │ │                             │
+ └─────────────────────────────┘ └─────────────────────────────┘
+                                        │
+                                        ▼
+                                  OUTPUT INDEXED
+                                  AT RETURN DATE
+
+(*) Chars VALUES come from formation date, but OUTPUT is indexed at return date
+```
+
+### What Gets Read at Each Date
+
+| Data Item | Read From | Indexed At |
+|-----------|-----------|------------|
+| **Signal** (sort_var) | Formation date (t) | - |
+| **Rating** (for terciles) | Formation date (t) | - |
+| **VW** (for weighting) | Formation date (t) | - |
+| **Returns** | Return date (t+1) | Return date (t+1) |
+| **Turnover** | Return date (t+1) | Return date (t+1) |
+| **Chars** | Formation date (t) | Return date (t+1) |
+
+### Why Index at Return Date?
+
+The return date indexing is consistent across all PyBondLab strategies and follows the
+standard convention in empirical asset pricing:
+
+1. **Factor returns** should be dated when the return is realized (t+1)
+2. **Turnover** reflects trading that occurs to implement the rebalance at t+1
+3. **Characteristics** describe the portfolio composition, dated when returns accrue
+
+```
+Example:
+--------
+Formation: December 2024
+Return:    January 2025
+
+Output DataFrame:
+                 ew_ls    vw_ls    turnover    char1
+2025-01-31       0.45%    0.52%    0.18        4.5   ← Indexed at return date
+
+Interpretation:
+- The 0.52% VW return was earned in January 2025
+- The 0.18 turnover was incurred to rebalance into January 2025
+- The 4.5 char1 value was measured in December 2024 (formation)
+```
+
+### Result DataFrames
+
+```python
+result = sf.fit()
+
+# Returns: indexed by return date
+ew_ls, vw_ls = result.get_long_short()
+# Index: [2024-02-29, 2024-03-31, ..., 2025-01-31]
+
+# Turnover: indexed by return date (starting from 2nd date)
+ew_turn, vw_turn = result.get_turnover()
+# Index: [2024-02-29, 2024-03-31, ..., 2025-01-31]
+
+# Characteristics: indexed by return date
+ew_chars, vw_chars = result.get_characteristics()
+# Each DataFrame has Index: [2024-02-29, 2024-03-31, ..., 2025-01-31]
+# VALUES are from formation date, but INDEX is return date
 ```
 
 ---
@@ -527,12 +824,33 @@ print(f"Max difference: {diff:.2e}")  # Should be ~0
 
 ## Summary
 
-`WithinFirmSort` provides:
+`WithinFirmSort` provides a methodology for constructing bond factors that **control for
+issuer-specific shocks unrelated to the bond characteristic of interest**.
 
-1. **Within-firm sorting** that isolates firm-level bond dispersion
-2. **Hierarchical aggregation** (firm-cap-weighted → rating-averaged)
-3. **Fast path** (33x speedup) for returns-only computation
-4. **Full feature support** for turnover and characteristics
-5. **Custom column mapping** via `fit()` parameters
+### Key Features
+
+1. **Pseudo firm fixed-effect control**: By sorting within each firm, cross-firm variation
+   is removed, isolating the return premium associated with the characteristic itself
+
+2. **Hierarchical aggregation**:
+   - Level 1: VW returns within each firm
+   - Level 2: Cap-weighted across firms within rating tercile
+   - Level 3: Simple average across rating terciles
+
+3. **Return date indexing**: All outputs (returns, turnover, characteristics) are indexed
+   by return date (t+1), consistent with standard asset pricing conventions
+
+4. **Fast path** (33x speedup) for returns-only computation
+
+5. **Full feature support** for turnover and characteristics
+
+### When to Use
+
+| Scenario | Recommendation |
+|----------|---------------|
+| Standard factor construction | Use SingleSort |
+| Testing if characteristic predicts returns after controlling for issuer | **Use WithinFirmSort** |
+| Concerned about firm-level confounds | **Use WithinFirmSort** |
+| Constructing "pure" maturity/liquidity/duration factors | **Use WithinFirmSort** |
 
 For batch processing of multiple signals, see [BatchWithinFirmSortFormation_README.md](BatchWithinFirmSortFormation_README.md).
