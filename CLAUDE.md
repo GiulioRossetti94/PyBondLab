@@ -3881,7 +3881,40 @@ sf = StrategyFormation(data, strategy=single_sort)
 results = sf.fit(IDvar='ID')  # Works! No renaming needed
 ```
 
-### Corner Case 4: Output Uses Original Names
+### Corner Case 4: Both Source and Target Columns Exist
+
+**Scenario:** User has both source and target columns in data, e.g.:
+- `data['ID'] = data['cusip']` creates a duplicate
+- Then specifies `IDvar='cusip'`
+
+This applies to ALL column mappings: `ID`, `ret`, `VW`, `RATING_NUM`, `PRICE`.
+
+**Problem:** Renaming creates duplicate column names, causing pandas/numpy errors.
+
+**Solution:** If both source and target exist, drop the existing target column before renaming.
+The user's explicit mapping takes precedence.
+
+```python
+# User code - data has BOTH 'cusip' and 'ID' columns
+data['ID'] = data['cusip']  # User created duplicate
+sf = StrategyFormation(data, strategy=single_sort)
+results = sf.fit(IDvar='cusip')  # Works! Drops existing 'ID', renames 'cusip' to 'ID'
+```
+
+**Implementation:** Before renaming, check if target already exists and drop it:
+```python
+columns_to_drop = []
+for source, target in requested_mappings.items():
+    if source in data_columns:
+        column_mapping[source] = target
+        if target in data_columns:
+            columns_to_drop.append(target)  # Drop existing target
+
+if columns_to_drop:
+    self.data_raw = self.data_raw.drop(columns=columns_to_drop)
+```
+
+### Corner Case 5: Output Uses Original Names
 
 **Scenario:** User specifies `chars=['spc_rat']` and `RATINGvar='spc_rat'`
 
@@ -3918,6 +3951,9 @@ Tests all corner cases:
 - Issue 1: chars with mapped column name ✅
 - Issue 2: Non-existent source, existing target ✅
 - Issue 2b: Skip mapping for already-correct names ✅
+- Issue 3: Both source and target exist (ID) ✅
+- Issue 3b: Both source and target exist (ret) ✅
+- Issue 3c: Both source and target exist (VW) ✅
 - Solution test: Non-renamed chars work correctly ✅
 
 ### Files Modified

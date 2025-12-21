@@ -235,6 +235,140 @@ def test_solution_chars_should_use_mapped_names():
         return False
 
 
+def test_issue3_both_source_and_target_exist():
+    """
+    Issue 3: Both source and target columns exist.
+
+    User has:
+      - 'cusip_id' column (the source they want to use)
+      - 'ID' column (already exists, perhaps as data['ID'] = data['cusip_id'])
+
+    When user specifies IDvar='cusip_id', rename should work by dropping existing 'ID'.
+    """
+    print("\n" + "=" * 60)
+    print("TEST: Issue 3 - Both source and target columns exist (ID)")
+    print("=" * 60)
+
+    data = generate_test_data_with_custom_names()
+
+    # User creates ID column (simulating data['ID'] = data['cusip'])
+    data['ID'] = data['cusip_id']
+    print(f"  Data columns: {list(data.columns)}")
+    print(f"  'cusip_id' exists: {'cusip_id' in data.columns}")
+    print(f"  'ID' exists: {'ID' in data.columns}")
+
+    # Define strategy
+    single_sort = pbl.SingleSort(
+        holding_period=1,
+        sort_var='cs',
+        num_portfolios=5,
+    )
+
+    try:
+        sf = pbl.StrategyFormation(data, strategy=single_sort, turnover=False)
+        results = sf.fit(
+            IDvar='cusip_id',  # Source exists, but target 'ID' also exists!
+            RETvar='ret_vw_bgn',
+            VWvar='mcap_e',
+            RATINGvar='spc_rat',
+        )
+        ew_ls, vw_ls = results.get_long_short()
+        print(f"  [PASS] No error - handled duplicate column gracefully")
+        print(f"  Long-short mean: {ew_ls.mean():.6f}")
+        return True
+    except Exception as e:
+        print(f"  [FAIL] {type(e).__name__}: {e}")
+        return False
+
+
+def test_issue3b_both_source_and_target_exist_ret():
+    """
+    Issue 3b: Both source and target columns exist for 'ret'.
+
+    User has:
+      - 'ret_vw_bgn' column (the source they want to use)
+      - 'ret' column (already exists)
+    """
+    print("\n" + "=" * 60)
+    print("TEST: Issue 3b - Both source and target columns exist (ret)")
+    print("=" * 60)
+
+    data = generate_test_data_with_custom_names()
+
+    # User already has a 'ret' column
+    data['ret'] = data['ret_vw_bgn'] * 1.1  # Slightly different values
+    print(f"  Data columns: {list(data.columns)}")
+    print(f"  'ret_vw_bgn' exists: {'ret_vw_bgn' in data.columns}")
+    print(f"  'ret' exists: {'ret' in data.columns}")
+
+    # Define strategy
+    single_sort = pbl.SingleSort(
+        holding_period=1,
+        sort_var='cs',
+        num_portfolios=5,
+    )
+
+    try:
+        sf = pbl.StrategyFormation(data, strategy=single_sort, turnover=False)
+        results = sf.fit(
+            IDvar='cusip_id',
+            RETvar='ret_vw_bgn',  # Source exists, but target 'ret' also exists!
+            VWvar='mcap_e',
+            RATINGvar='spc_rat',
+        )
+        ew_ls, vw_ls = results.get_long_short()
+        print(f"  [PASS] No error - handled duplicate column gracefully")
+        print(f"  Long-short mean: {ew_ls.mean():.6f}")
+        return True
+    except Exception as e:
+        print(f"  [FAIL] {type(e).__name__}: {e}")
+        return False
+
+
+def test_issue3c_both_source_and_target_exist_vw():
+    """
+    Issue 3c: Both source and target columns exist for 'VW'.
+
+    User has:
+      - 'mcap_e' column (the source they want to use)
+      - 'VW' column (already exists)
+    """
+    print("\n" + "=" * 60)
+    print("TEST: Issue 3c - Both source and target columns exist (VW)")
+    print("=" * 60)
+
+    data = generate_test_data_with_custom_names()
+
+    # User already has a 'VW' column
+    data['VW'] = data['mcap_e'] * 0.9  # Slightly different values
+    print(f"  Data columns: {list(data.columns)}")
+    print(f"  'mcap_e' exists: {'mcap_e' in data.columns}")
+    print(f"  'VW' exists: {'VW' in data.columns}")
+
+    # Define strategy
+    single_sort = pbl.SingleSort(
+        holding_period=1,
+        sort_var='cs',
+        num_portfolios=5,
+    )
+
+    try:
+        sf = pbl.StrategyFormation(data, strategy=single_sort, turnover=False)
+        results = sf.fit(
+            IDvar='cusip_id',
+            RETvar='ret_vw_bgn',
+            VWvar='mcap_e',  # Source exists, but target 'VW' also exists!
+            RATINGvar='spc_rat',
+        )
+        ew_ls, vw_ls = results.get_long_short()
+        print(f"  [PASS] No error - handled duplicate column gracefully")
+        print(f"  Long-short mean: {ew_ls.mean():.6f}")
+        return True
+    except Exception as e:
+        print(f"  [FAIL] {type(e).__name__}: {e}")
+        return False
+
+
 def main():
     print("=" * 60)
     print("Column Mapping Corner-Case Error Replication")
@@ -249,6 +383,15 @@ def main():
     # Test Issue 2b: Skip mapping for existing names
     issue2b_passed = test_issue2b_skip_mapping_for_existing()
 
+    # Test Issue 3: Both source and target exist (ID)
+    issue3_passed = test_issue3_both_source_and_target_exist()
+
+    # Test Issue 3b: Both source and target exist (ret)
+    issue3b_passed = test_issue3b_both_source_and_target_exist_ret()
+
+    # Test Issue 3c: Both source and target exist (VW)
+    issue3c_passed = test_issue3c_both_source_and_target_exist_vw()
+
     # Test proposed solution
     solution_works = test_solution_chars_should_use_mapped_names()
 
@@ -258,9 +401,13 @@ def main():
     print(f"  Issue 1 (chars with mapped column): {'PASS' if issue1_passed else 'FAIL'}")
     print(f"  Issue 2 (non-existent column mapping): {'PASS' if issue2_passed else 'FAIL'}")
     print(f"  Issue 2b (skip mapping for existing): {'PASS' if issue2b_passed else 'FAIL'}")
+    print(f"  Issue 3 (both source+target exist ID): {'PASS' if issue3_passed else 'FAIL'}")
+    print(f"  Issue 3b (both source+target exist ret): {'PASS' if issue3b_passed else 'FAIL'}")
+    print(f"  Issue 3c (both source+target exist VW): {'PASS' if issue3c_passed else 'FAIL'}")
     print(f"  Solution test (non-renamed char): {'PASS' if solution_works else 'FAIL'}")
 
-    all_passed = issue1_passed and issue2_passed and issue2b_passed and solution_works
+    all_passed = (issue1_passed and issue2_passed and issue2b_passed and
+                  issue3_passed and issue3b_passed and issue3c_passed and solution_works)
     if all_passed:
         print("\n  ALL TESTS PASSED - Column mapping corner cases handled correctly!")
     else:

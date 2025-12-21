@@ -307,16 +307,20 @@ class StrategyFormation:
             return
 
         # Determine which mappings to actually apply
-        # If source exists -> rename it
+        # If source exists -> rename it (drop target first if it also exists)
         # If source doesn't exist but target already exists -> skip (already correct)
         # If neither exists -> error
         column_mapping = {}
+        columns_to_drop = []
         data_columns = set(self.data_raw.columns)
 
         for source, target in requested_mappings.items():
             if source in data_columns:
                 # Source exists -> rename it
                 column_mapping[source] = target
+                # If target also exists, need to drop it first to avoid duplicates
+                if target in data_columns:
+                    columns_to_drop.append(target)
             elif target in data_columns:
                 # Source doesn't exist but target already exists -> already correct, skip
                 pass
@@ -326,6 +330,10 @@ class StrategyFormation:
                     f"Column '{source}' not found in data, and '{target}' doesn't exist either. "
                     f"Available columns: {list(self.data_raw.columns)}"
                 )
+
+        # Drop existing target columns that would conflict with renames
+        if columns_to_drop:
+            self.data_raw = self.data_raw.drop(columns=columns_to_drop)
 
         # Apply the actual renames
         if column_mapping:
