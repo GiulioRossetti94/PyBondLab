@@ -82,19 +82,19 @@ def test_issue1_chars_with_mapped_column():
             IDvar='cusip_id',
             RETvar='ret_vw_bgn',
             VWvar='mcap_e',
-            RATINGvar='spc_rat',  # This renames spc_rat to RATING_NUM
+            RATINGvar='spc_rat',  # This renames spc_rat to RATING_NUM internally
         )
-        # Verify chars output contains the rating data
+        # Verify chars output contains the rating data using ORIGINAL name
         ew_chars, vw_chars = results.get_characteristics()
         print(f"  [PASS] No error - chars output available")
         print(f"  Available chars: {list(ew_chars.keys())}")
-        # The key should be 'RATING_NUM' (the mapped name)
-        if 'RATING_NUM' in ew_chars:
-            print(f"  [PASS] chars contains 'RATING_NUM' (correctly mapped from 'spc_rat')")
-            print(f"  Sample values: {ew_chars['RATING_NUM'].iloc[0].tolist()[:3]}")
+        # The key should be 'spc_rat' (the original user-specified name)
+        if 'spc_rat' in ew_chars:
+            print(f"  [PASS] chars uses original name 'spc_rat' (user-friendly output)")
+            print(f"  Sample values: {ew_chars['spc_rat'].iloc[1].tolist()[:3]}")
             return True
         else:
-            print(f"  [FAIL] chars doesn't contain expected 'RATING_NUM' key")
+            print(f"  [FAIL] chars doesn't contain expected 'spc_rat' key")
             return False
     except Exception as e:
         print(f"  [FAIL] {type(e).__name__}: {e}")

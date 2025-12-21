@@ -3881,10 +3881,30 @@ sf = StrategyFormation(data, strategy=single_sort)
 results = sf.fit(IDvar='ID')  # Works! No renaming needed
 ```
 
+### Corner Case 4: Output Uses Original Names
+
+**Scenario:** User specifies `chars=['spc_rat']` and `RATINGvar='spc_rat'`
+
+**Expected behavior:** The characteristics output dictionary should use the original name `spc_rat`,
+not the internal name `RATING_NUM`.
+
+```python
+# User code
+sf = StrategyFormation(data, strategy=single_sort, chars=['spc_rat'])
+results = sf.fit(RATINGvar='spc_rat')
+
+# Output uses ORIGINAL names (what user expects)
+ew_chars, vw_chars = results.get_characteristics()
+print(ew_chars.keys())  # dict_keys(['spc_rat']) - NOT 'RATING_NUM'!
+```
+
+**Implementation:** Store a reverse mapping `_chars_display_names` that maps internal names back
+to original user-specified names. Use this when building output dictionaries.
+
 ### Design Philosophy
 
 1. **No warnings** - Handle everything internally without bothering the user
-2. **Give users what they expect** - If they ask for `chars=['spc_rat']`, give them rating averages
+2. **Give users what they expect** - If they ask for `chars=['spc_rat']`, give them `'spc_rat'` in output
 3. **Fail gracefully** - Only error if the column truly cannot be found anywhere
 4. **Memory efficient** - Rename columns in-place, don't create copies
 

@@ -231,6 +231,15 @@ class StrategyFormation:
             self.ew_ep_chars_dict = {}
             self.vw_ep_chars_dict = {}
 
+        # Mapping from internal char names to original user-specified names
+        # Used when column mapping renames a char (e.g., spc_rat -> RATING_NUM)
+        # Output should use original names that user specified
+        self._chars_display_names = {}
+
+    def _get_char_display_name(self, internal_name: str) -> str:
+        """Get the display name for a characteristic (original user-specified name)."""
+        return self._chars_display_names.get(internal_name, internal_name)
+
     def _create_name(self, rating, strategy_name):
         """
         Create a descriptive name for the strategy including rating and strategy parameters.
@@ -327,16 +336,23 @@ class StrategyFormation:
 
         # Update chars list to use new column names (Issue 1 fix)
         # If chars=['spc_rat'] and spc_rat was renamed to RATING_NUM,
-        # update chars to ['RATING_NUM']
+        # update chars to ['RATING_NUM'] for internal processing
+        # But keep a mapping to restore original names in output
         if self.chars:
             updated_chars = []
             for char in self.chars:
                 if char in column_mapping:
-                    # This char column was renamed -> use new name
-                    updated_chars.append(column_mapping[char])
+                    # This char column was renamed -> use new name internally
+                    internal_name = column_mapping[char]
+                    updated_chars.append(internal_name)
+                    # Store reverse mapping: internal -> original (for output)
+                    self._chars_display_names[internal_name] = char
                 elif char in requested_mappings and requested_mappings[char] in data_columns:
                     # Source didn't exist but target did -> use target name
-                    updated_chars.append(requested_mappings[char])
+                    internal_name = requested_mappings[char]
+                    updated_chars.append(internal_name)
+                    # Store reverse mapping: internal -> original (for output)
+                    self._chars_display_names[internal_name] = char
                 else:
                     # Not renamed -> keep as is
                     updated_chars.append(char)
@@ -2689,12 +2705,14 @@ class StrategyFormation:
                         char_values, vw, n_dates, n_firms
                     )
 
-                    chars_ew_dict[char_name] = pd.DataFrame(
+                    # Use display name (original user-specified name) as dict key
+                    display_name = self._get_char_display_name(char_name)
+                    chars_ew_dict[display_name] = pd.DataFrame(
                         np.column_stack([ew_low, ew_high]),
                         index=self.datelist,
                         columns=ptf_labels_chars
                     )
-                    chars_vw_dict[char_name] = pd.DataFrame(
+                    chars_vw_dict[display_name] = pd.DataFrame(
                         np.column_stack([vw_low, vw_high]),
                         index=self.datelist,
                         columns=ptf_labels_chars
@@ -2784,14 +2802,16 @@ class StrategyFormation:
             chars_ew_dict = {}
             chars_vw_dict = {}
             for c in self.chars:
+                # Use display name (original user-specified name) as dict key
+                display_name = self._get_char_display_name(c)
                 with warnings.catch_warnings():
                     warnings.filterwarnings('ignore', message='Mean of empty slice', category=RuntimeWarning)
-                    chars_ew_dict[c] = pd.DataFrame(
+                    chars_ew_dict[display_name] = pd.DataFrame(
                         np.nanmean(ew_chars_arr[c], axis=1),
                         index=self.datelist,
                         columns=ptf_labels
                     )
-                    chars_vw_dict[c] = pd.DataFrame(
+                    chars_vw_dict[display_name] = pd.DataFrame(
                         np.nanmean(vw_chars_arr[c], axis=1),
                         index=self.datelist,
                         columns=ptf_labels
@@ -2870,12 +2890,14 @@ class StrategyFormation:
             chars_ew_dict = {}
             chars_vw_dict = {}
             for c in self.chars:
-                chars_ew_dict[c] = pd.DataFrame(
+                # Use display name (original user-specified name) as dict key
+                display_name = self._get_char_display_name(c)
+                chars_ew_dict[display_name] = pd.DataFrame(
                     ew_chars_arr[c],
                     index=self.datelist,
                     columns=ptf_labels
                 )
-                chars_vw_dict[c] = pd.DataFrame(
+                chars_vw_dict[display_name] = pd.DataFrame(
                     vw_chars_arr[c],
                     index=self.datelist,
                     columns=ptf_labels
