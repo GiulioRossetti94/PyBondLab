@@ -16,6 +16,7 @@ PyBondLab provides tools for computing and evaluating investment strategies. It 
 - Rolling beta estimation
 - Pre-analysis summary statistics
 - Look-ahead bias free filtering procedures
+- Configurable factor naming with sign correction
 
 ## Installation
 
@@ -143,6 +144,35 @@ results = pbl.StrategyFormation(data, strategy=strategy).fit(
 # Get turnover statistics
 ew_turnover, vw_turnover = results.get_ptf_turnover()
 ```
+
+### Factor Naming (NamingConfig)
+
+Use `NamingConfig` for consistent, readable factor names:
+
+```python
+from PyBondLab import NamingConfig
+
+# Default naming: lowercase signal names
+cfg = NamingConfig()
+ew, vw = results.get_long_short(naming=cfg)
+print(ew.name)  # Output: rating_num (instead of EWEA_ALL_1)
+
+# With sign correction: flip negative factors, add '*' suffix
+cfg = NamingConfig(sign_correct=True)
+ew, vw = results.get_long_short(naming=cfg)
+print(ew.name)  # Output: rating_num* (if factor was flipped)
+
+# With weighting prefix
+cfg = NamingConfig(weighting_prefix=True)
+ew, vw = results.get_long_short(naming=cfg)
+print(ew.name, vw.name)  # Output: ew_rating_num, vw_rating_num
+
+# Factor-level turnover (average of long and short legs)
+ew_turn, vw_turn = results.get_turnover(level='factor', naming=cfg)
+print(ew_turn.name)  # Output: ew_rating_num_turnover
+```
+
+For complete documentation, see [docs/NamingConfig_README.md](docs/NamingConfig_README.md).
 
 ### Rolling Beta Estimation
 

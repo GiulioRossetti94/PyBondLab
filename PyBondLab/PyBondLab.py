@@ -1083,16 +1083,23 @@ class StrategyFormation:
 
         # Get second signal for DoubleSort
         second_signal = None
+        num_portfolios = getattr(self.strategy, 'num_portfolios', None)
         is_double = getattr(self.strategy, "double_sort", 0) or getattr(self.strategy, "DoubleSort", 0)
         if is_double:
             second_signal = getattr(self.strategy, 'cond_var', None) or getattr(self.strategy, 'sort_var2', None)
+            # For DoubleSort, num_portfolios is the number of portfolios per dimension (n1)
+            # This is needed for factor turnover computation
+            num_portfolios = getattr(self.strategy, 'num_portfolios', None)
+        else:
+            # For SingleSort, use total portfolios
+            num_portfolios = self._get_total_portfolios()
 
         return {
             'signal_name': signal_name,
             'rating_str': rating_str,
             'is_within_firm': is_within_firm,
             'second_signal': second_signal,
-            'num_portfolios': self._get_total_portfolios(),
+            'num_portfolios': num_portfolios,
         }
 
     def _get_return_data(self, precomputed, date):

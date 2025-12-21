@@ -338,6 +338,72 @@ def test_formation_results_passthrough():
     return True
 
 
+def test_doublesort_factor_turnover():
+    """Test DoubleSort factor turnover computation."""
+    print("\n" + "=" * 60)
+    print("TEST: DoubleSort factor turnover")
+    print("=" * 60)
+
+    # Generate data
+    data = generate_synthetic_data(n_dates=30, n_bonds=100, seed=42)
+
+    # Run DoubleSort strategy
+    print("  Running DoubleSort strategy...")
+    strategy = pbl.DoubleSort(
+        holding_period=1,
+        sort_var='signal1',
+        sort_var2='signal2',
+        num_portfolios=3,
+        num_portfolios2=3,  # 3x3 = 9 portfolios
+    )
+    sf = pbl.StrategyFormation(
+        data=data,
+        strategy=strategy,
+        turnover=True,
+        verbose=False,
+    )
+    result = sf.fit()
+
+    cfg = NamingConfig()
+
+    # Test 1: Portfolio-level turnover
+    print("\n  Test 1: Portfolio-level turnover")
+    ew_turn, vw_turn = result.get_turnover(level='portfolio')
+    print(f"    Number of portfolios: {len(ew_turn.columns)}")
+    assert len(ew_turn.columns) == 9, f"Expected 9 portfolios (3x3), got {len(ew_turn.columns)}"
+    print("    [PASS] DoubleSort has 9 portfolios")
+
+    # Test 2: Factor-level turnover
+    print("\n  Test 2: Factor-level turnover")
+    ew_factor_turn, vw_factor_turn = result.get_turnover(level='factor')
+    print(f"    EW factor turnover shape: {ew_factor_turn.shape}")
+    print(f"    VW factor turnover shape: {vw_factor_turn.shape}")
+    assert isinstance(ew_factor_turn, pd.Series), "Factor turnover should be Series"
+
+    # Verify the computation: average of long leg (cols 6,7,8) + short leg (cols 0,1,2)
+    # Long leg: portfolios (3,1), (3,2), (3,3) = columns 6, 7, 8
+    # Short leg: portfolios (1,1), (1,2), (1,3) = columns 0, 1, 2
+    ew_long_manual = ew_turn.iloc[:, [6, 7, 8]].mean(axis=1)
+    ew_short_manual = ew_turn.iloc[:, [0, 1, 2]].mean(axis=1)
+    ew_factor_manual = (ew_long_manual + ew_short_manual) / 2
+
+    diff = (ew_factor_turn - ew_factor_manual).abs().max()
+    print(f"    Max diff vs manual computation: {diff:.2e}")
+    assert diff < 1e-10, f"Factor turnover doesn't match expected: diff={diff}"
+    print("    [PASS] DoubleSort factor turnover computation is correct")
+
+    # Test 3: Factor turnover with naming
+    print("\n  Test 3: Factor turnover with naming")
+    ew_factor_turn, vw_factor_turn = result.get_turnover(level='factor', naming=cfg)
+    print(f"    EW factor turnover name: {ew_factor_turn.name}")
+    print(f"    VW factor turnover name: {vw_factor_turn.name}")
+    assert 'signal1_signal2' in ew_factor_turn.name.lower(), f"Expected DoubleSort name, got: {ew_factor_turn.name}"
+    print("    [PASS] DoubleSort factor turnover naming is correct")
+
+    print("\n  DoubleSort factor turnover test PASSED")
+    return True
+
+
 def main():
     """Run all validation tests."""
     print("=" * 60)
@@ -355,6 +421,7 @@ def main():
     all_passed &= test_strategy_results_naming()
     all_passed &= test_sign_correction()
     all_passed &= test_formation_results_passthrough()
+    all_passed &= test_doublesort_factor_turnover()
 
     print("\n" + "=" * 60)
     if all_passed:

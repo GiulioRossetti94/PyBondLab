@@ -571,10 +571,33 @@ class StrategyResults:
         vw_turn = self.turnover.vw_turnover_df.copy()
 
         if level == 'factor':
-            # Factor turnover = (P_N + P_1) / 2 = average of long and short legs
+            # Factor turnover = average of long and short leg turnovers
             nport = ew_turn.shape[1]
-            ew_factor = (ew_turn.iloc[:, 0] + ew_turn.iloc[:, nport - 1]) / 2
-            vw_factor = (vw_turn.iloc[:, 0] + vw_turn.iloc[:, nport - 1]) / 2
+
+            if self.second_signal is not None and self.num_portfolios is not None:
+                # DoubleSort: average across conditioning groups
+                # Portfolio layout: (1,1), (1,2), ..., (1,n2), (2,1), ..., (n1,n2)
+                # where n1 = num_portfolios for main signal, n2 = nport // n1
+                n1 = self.num_portfolios  # portfolios for main signal
+                n2 = nport // n1  # portfolios for conditioning signal
+
+                # Short leg: portfolios (1, 1), (1, 2), ..., (1, n2) = columns 0 to n2-1
+                short_cols = list(range(n2))
+                # Long leg: portfolios (n1, 1), (n1, 2), ..., (n1, n2) = columns (n1-1)*n2 to n1*n2-1
+                long_cols = list(range((n1 - 1) * n2, n1 * n2))
+
+                # Average turnover across conditioning groups
+                ew_long_turn = ew_turn.iloc[:, long_cols].mean(axis=1)
+                ew_short_turn = ew_turn.iloc[:, short_cols].mean(axis=1)
+                vw_long_turn = vw_turn.iloc[:, long_cols].mean(axis=1)
+                vw_short_turn = vw_turn.iloc[:, short_cols].mean(axis=1)
+
+                ew_factor = (ew_long_turn + ew_short_turn) / 2
+                vw_factor = (vw_long_turn + vw_short_turn) / 2
+            else:
+                # SingleSort: (P_N + P_1) / 2
+                ew_factor = (ew_turn.iloc[:, 0] + ew_turn.iloc[:, nport - 1]) / 2
+                vw_factor = (vw_turn.iloc[:, 0] + vw_turn.iloc[:, nport - 1]) / 2
 
             if naming is not None:
                 signal = self.signal_name or 'factor'
