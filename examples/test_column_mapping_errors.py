@@ -84,14 +84,20 @@ def test_issue1_chars_with_mapped_column():
             VWvar='mcap_e',
             RATINGvar='spc_rat',  # This renames spc_rat to RATING_NUM
         )
-        print("  [UNEXPECTED] No error occurred!")
-        return True
-    except KeyError as e:
-        print(f"  [EXPECTED ERROR] KeyError: {e}")
-        print("  This is the expected error - chars looks for 'spc_rat' but it was renamed")
-        return False
+        # Verify chars output contains the rating data
+        ew_chars, vw_chars = results.get_characteristics()
+        print(f"  [PASS] No error - chars output available")
+        print(f"  Available chars: {list(ew_chars.keys())}")
+        # The key should be 'RATING_NUM' (the mapped name)
+        if 'RATING_NUM' in ew_chars:
+            print(f"  [PASS] chars contains 'RATING_NUM' (correctly mapped from 'spc_rat')")
+            print(f"  Sample values: {ew_chars['RATING_NUM'].iloc[0].tolist()[:3]}")
+            return True
+        else:
+            print(f"  [FAIL] chars doesn't contain expected 'RATING_NUM' key")
+            return False
     except Exception as e:
-        print(f"  [ERROR] {type(e).__name__}: {e}")
+        print(f"  [FAIL] {type(e).__name__}: {e}")
         return False
 
 
@@ -125,23 +131,22 @@ def test_issue2_column_already_exists():
         num_portfolios=5,
     )
 
-    # User tries to map columns that don't exist in their data
-    # (they already renamed some manually, but try to use old names in fit())
+    # User tries to map columns - some exist, some already have target names
+    # RATINGvar='spc_rat' but data already has 'RATING_NUM' - should work (skip mapping)
     try:
         sf = pbl.StrategyFormation(data, strategy=single_sort, turnover=True)
         results = sf.fit(
-            IDvar='ID',  # Correct - exists
-            RETvar='ret_vw_bgn',  # Correct - exists
-            VWvar='mcap_e',  # Correct - exists
-            RATINGvar='spc_rat',  # WRONG - spc_rat doesn't exist, they renamed it to RATING_NUM
+            IDvar='ID',  # Already exists as 'ID' - skip
+            RETvar='ret_vw_bgn',  # Exists - rename to 'ret'
+            VWvar='mcap_e',  # Exists - rename to 'VW'
+            RATINGvar='spc_rat',  # Doesn't exist, but 'RATING_NUM' already exists - skip
         )
-        print("  [UNEXPECTED] No error occurred!")
+        ew_ls, vw_ls = results.get_long_short()
+        print(f"  [PASS] No error - strategy ran successfully")
+        print(f"  Long-short mean: {ew_ls.mean():.6f}")
         return True
-    except ValueError as e:
-        print(f"  [EXPECTED ERROR] ValueError: {e}")
-        return False
     except Exception as e:
-        print(f"  [ERROR] {type(e).__name__}: {e}")
+        print(f"  [FAIL] {type(e).__name__}: {e}")
         return False
 
 
@@ -236,10 +241,10 @@ def main():
     print("=" * 60)
 
     # Test Issue 1: chars with mapped column
-    issue1_failed = not test_issue1_chars_with_mapped_column()
+    issue1_passed = test_issue1_chars_with_mapped_column()
 
     # Test Issue 2: Column already exists
-    issue2_failed = not test_issue2_column_already_exists()
+    issue2_passed = test_issue2_column_already_exists()
 
     # Test Issue 2b: Skip mapping for existing names
     issue2b_passed = test_issue2b_skip_mapping_for_existing()
@@ -250,12 +255,18 @@ def main():
     print("\n" + "=" * 60)
     print("SUMMARY")
     print("=" * 60)
-    print(f"  Issue 1 (chars with mapped column): {'REPLICATED' if issue1_failed else 'NOT REPLICATED'}")
-    print(f"  Issue 2 (non-existent column mapping): {'REPLICATED' if issue2_failed else 'NOT REPLICATED'}")
-    print(f"  Issue 2b (skip mapping for existing): {'WORKS' if issue2b_passed else 'BROKEN'}")
-    print(f"  Solution test (non-renamed char): {'WORKS' if solution_works else 'BROKEN'}")
+    print(f"  Issue 1 (chars with mapped column): {'PASS' if issue1_passed else 'FAIL'}")
+    print(f"  Issue 2 (non-existent column mapping): {'PASS' if issue2_passed else 'FAIL'}")
+    print(f"  Issue 2b (skip mapping for existing): {'PASS' if issue2b_passed else 'FAIL'}")
+    print(f"  Solution test (non-renamed char): {'PASS' if solution_works else 'FAIL'}")
 
-    return issue1_failed and issue2_failed
+    all_passed = issue1_passed and issue2_passed and issue2b_passed and solution_works
+    if all_passed:
+        print("\n  ALL TESTS PASSED - Column mapping corner cases handled correctly!")
+    else:
+        print("\n  SOME TESTS FAILED")
+
+    return all_passed
 
 
 if __name__ == "__main__":

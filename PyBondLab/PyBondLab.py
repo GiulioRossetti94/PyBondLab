@@ -269,46 +269,82 @@ class StrategyFormation:
         This method renames columns in self.data_raw to match expected column names,
         then re-runs validation and preparation.
 
+        Handles two corner cases:
+        1. If source column doesn't exist but target already exists -> skip (already correct)
+        2. If chars references a column that gets renamed -> update chars to use new name
+
         Parameters
         ----------
         IDvar, DATEvar, RETvar, RATINGvar, VWvar, PRICEvar : str or None
             Custom column names to map to standard names
         """
-        # Build mapping dictionary
-        column_mapping = {}
+        # Build mapping dictionary: source -> target
+        requested_mappings = {}
 
         if IDvar is not None and IDvar != 'ID':
-            column_mapping[IDvar] = 'ID'
+            requested_mappings[IDvar] = 'ID'
         if DATEvar is not None and DATEvar != 'date':
-            column_mapping[DATEvar] = 'date'
+            requested_mappings[DATEvar] = 'date'
         if RETvar is not None and RETvar != 'ret':
-            column_mapping[RETvar] = 'ret'
+            requested_mappings[RETvar] = 'ret'
         if RATINGvar is not None and RATINGvar != 'RATING_NUM':
-            column_mapping[RATINGvar] = 'RATING_NUM'
+            requested_mappings[RATINGvar] = 'RATING_NUM'
         if VWvar is not None and VWvar != 'VW':
-            column_mapping[VWvar] = 'VW'
+            requested_mappings[VWvar] = 'VW'
         if PRICEvar is not None and PRICEvar != 'PRICE':
-            column_mapping[PRICEvar] = 'PRICE'
+            requested_mappings[PRICEvar] = 'PRICE'
 
-        # Apply mapping if any columns need to be renamed
-        if column_mapping:
-            # Check if all source columns exist in raw data
-            missing_cols = set(column_mapping.keys()) - set(self.data_raw.columns)
-            if missing_cols:
+        if not requested_mappings:
+            return
+
+        # Determine which mappings to actually apply
+        # If source exists -> rename it
+        # If source doesn't exist but target already exists -> skip (already correct)
+        # If neither exists -> error
+        column_mapping = {}
+        data_columns = set(self.data_raw.columns)
+
+        for source, target in requested_mappings.items():
+            if source in data_columns:
+                # Source exists -> rename it
+                column_mapping[source] = target
+            elif target in data_columns:
+                # Source doesn't exist but target already exists -> already correct, skip
+                pass
+            else:
+                # Neither exists -> error
                 raise ValueError(
-                    f"Specified column names not found in data: {missing_cols}. "
+                    f"Column '{source}' not found in data, and '{target}' doesn't exist either. "
                     f"Available columns: {list(self.data_raw.columns)}"
                 )
 
-            # Rename columns in raw data
+        # Apply the actual renames
+        if column_mapping:
             self.data_raw = self.data_raw.rename(columns=column_mapping)
 
             if self.verbose:
                 print(f"Mapped columns: {column_mapping}")
 
-            # Re-validate and re-prepare data with new column names
-            self._validate_data()
-            self._prepare_data()
+        # Update chars list to use new column names (Issue 1 fix)
+        # If chars=['spc_rat'] and spc_rat was renamed to RATING_NUM,
+        # update chars to ['RATING_NUM']
+        if self.chars:
+            updated_chars = []
+            for char in self.chars:
+                if char in column_mapping:
+                    # This char column was renamed -> use new name
+                    updated_chars.append(column_mapping[char])
+                elif char in requested_mappings and requested_mappings[char] in data_columns:
+                    # Source didn't exist but target did -> use target name
+                    updated_chars.append(requested_mappings[char])
+                else:
+                    # Not renamed -> keep as is
+                    updated_chars.append(char)
+            self.chars = updated_chars
+
+        # Re-validate and re-prepare data with new column names
+        self._validate_data()
+        self._prepare_data()
 
 
     def _prepare_data(self):

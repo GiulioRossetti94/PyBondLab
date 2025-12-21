@@ -3800,3 +3800,111 @@ leg_means = panel.groupby(['factor', 'leg', 'weighting'])['return'].mean()
 ```
 
 ---
+
+## Handling Usability: Column Mapping Corner Cases
+
+### Overview
+
+When users specify column mappings in `StrategyFormation.fit()` (e.g., `IDvar`, `RETvar`, `RATINGvar`),
+several corner cases can occur. These are handled internally to provide a seamless user experience.
+
+**Status: ✅ Complete**
+
+### Corner Case 1: Chars Using Mapped Column Names
+
+**Scenario:** User specifies `chars=['spc_rat']` and `RATINGvar='spc_rat'`
+
+**Problem:** After column mapping, `spc_rat` is renamed to `RATING_NUM`, but `chars` still looks
+for `spc_rat` which no longer exists.
+
+**Solution:** After applying column mappings, automatically update `self.chars` list to use the
+new column names.
+
+```python
+# User code
+sf = StrategyFormation(data, strategy=single_sort, chars=['spc_rat'])
+results = sf.fit(RATINGvar='spc_rat')  # Works! Chars output contains 'RATING_NUM'
+```
+
+**Implementation:** In `_apply_column_mapping()`, after renaming columns, update `self.chars`:
+```python
+if self.chars:
+    updated_chars = []
+    for char in self.chars:
+        if char in column_mapping:
+            # This char column was renamed -> use new name
+            updated_chars.append(column_mapping[char])
+        else:
+            updated_chars.append(char)
+    self.chars = updated_chars
+```
+
+### Corner Case 2: Target Column Already Exists
+
+**Scenario:** User's data already has `RATING_NUM` column, but they specify `RATINGvar='spc_rat'`
+(which doesn't exist).
+
+**Problem:** Code tries to rename non-existent column and fails.
+
+**Solution:** If source column doesn't exist but target column already exists, skip the mapping
+silently (the column is already correctly named).
+
+```python
+# User code - data already has 'RATING_NUM', no 'spc_rat' column
+sf = StrategyFormation(data, strategy=single_sort)
+results = sf.fit(RATINGvar='spc_rat')  # Works! Uses existing 'RATING_NUM'
+```
+
+**Implementation:** In `_apply_column_mapping()`:
+```python
+for source, target in requested_mappings.items():
+    if source in data_columns:
+        # Source exists -> rename it
+        column_mapping[source] = target
+    elif target in data_columns:
+        # Source doesn't exist but target already exists -> already correct, skip
+        pass
+    else:
+        # Neither exists -> error
+        raise ValueError(f"Column '{source}' not found...")
+```
+
+### Corner Case 3: Mapping to Self (No-Op)
+
+**Scenario:** User specifies `IDvar='ID'` when data already has an `ID` column.
+
+**Solution:** This is a valid no-op. The mapping is simply skipped.
+
+```python
+# User code - data already has 'ID' column
+sf = StrategyFormation(data, strategy=single_sort)
+results = sf.fit(IDvar='ID')  # Works! No renaming needed
+```
+
+### Design Philosophy
+
+1. **No warnings** - Handle everything internally without bothering the user
+2. **Give users what they expect** - If they ask for `chars=['spc_rat']`, give them rating averages
+3. **Fail gracefully** - Only error if the column truly cannot be found anywhere
+4. **Memory efficient** - Rename columns in-place, don't create copies
+
+### Test Script
+
+```bash
+python examples/test_column_mapping_errors.py
+```
+
+Tests all corner cases:
+- Issue 1: chars with mapped column name ✅
+- Issue 2: Non-existent source, existing target ✅
+- Issue 2b: Skip mapping for already-correct names ✅
+- Solution test: Non-renamed chars work correctly ✅
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `PyBondLab/PyBondLab.py` | Updated `_apply_column_mapping()` to handle corner cases |
+| `examples/test_column_mapping_errors.py` | **NEW** - Validation script for corner cases |
+
+---
