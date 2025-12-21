@@ -77,6 +77,13 @@ except ImportError as e:
     print(f"Warning: Could not import DataUncertaintyAnalysis: {e}")
     DataUncertaintyAnalysis = DataUncertaintyResults = None
 
+# Naming configuration
+try:
+    from .naming import NamingConfig
+except ImportError as e:
+    print(f"Warning: Could not import NamingConfig: {e}")
+    NamingConfig = None
+
 __version__ = '0.2.0'
 __all__ = [
     'StrategyFormation',
@@ -99,5 +106,6 @@ __all__ = [
     'check_duplicates',
     'DataUncertaintyAnalysis',
     'DataUncertaintyResults',
+    'NamingConfig',
 ]
 name = 'PyBondLab'

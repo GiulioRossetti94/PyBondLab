@@ -3071,3 +3071,424 @@ Create validation script `examples/validate_phase17.py` that tests:
 After Phase 17 implementation, this script should report "0 bugs detected".
 
 ---
+
+## Phase 18: NamingConfig - Factor Naming Quality of Life
+
+### Overview
+
+Add a naming configuration system for factor outputs. This provides:
+- Consistent, readable factor names (lowercase, signal-based)
+- Rating suffixes (`_ig`, `_hy`)
+- Sign correction with `*` suffix (independent for EW/VW)
+- Within-firm suffix (`_wf`)
+- Optional weighting prefix (`ew_`, `vw_`)
+- Factor-level turnover computation
+
+**Status: 🚧 In Progress**
+
+### Design Decisions
+
+| Feature | Implementation |
+|---------|---------------|
+| Naming style | Lowercase by default |
+| Rating suffixes | `_ig` (investment grade), `_hy` (high yield) |
+| Sign correction | `*` suffix (EW and VW independent) |
+| Within-firm suffix | `_wf` |
+| Weighting prefix | Optional `ew_`, `vw_` |
+| Base name | Use signal name (e.g., `cs` instead of `EWEA_ALL_1`) |
+| DoubleSort separator | `_` (e.g., `cs_duration`) |
+| WithinFirmSort portfolios | `_low`, `_high` |
+| Factor turnover | `get_turnover(level='factor')` returns `(P_N + P_1) / 2` |
+| Backward compatibility | Old names without `naming=` parameter |
+
+### NamingConfig Dataclass
+
+**File:** `PyBondLab/naming.py` (new file)
+
+```python
+from dataclasses import dataclass
+from typing import Optional
+
+@dataclass
+class NamingConfig:
+    """Configuration for factor naming conventions.
+
+    Attributes
+    ----------
+    lowercase : bool, default=True
+        Use lowercase names (e.g., 'cs' instead of 'CS').
+    sign_correct : bool, default=False
+        Flip negative factors and add '*' suffix.
+        Applied independently for EW and VW.
+    use_signal_name : bool, default=True
+        Use signal column name as base (e.g., 'cs' instead of 'EWEA_ALL_1').
+    weighting_prefix : bool, default=False
+        Add 'ew_' or 'vw_' prefix to factor names.
+    include_rating_suffix : bool, default=True
+        Add '_ig' or '_hy' suffix for rating-filtered strategies.
+    include_wf_suffix : bool, default=True
+        Add '_wf' suffix for WithinFirmSort strategies.
+    doublesort_sep : str, default='_'
+        Separator for DoubleSort factor names (e.g., 'cs_duration').
+
+    Examples
+    --------
+    Default config (recommended):
+    >>> cfg = NamingConfig()
+    >>> # SingleSort: 'cs', 'cs_ig', 'cs*'
+    >>> # DoubleSort: 'cs_duration'
+    >>> # WithinFirmSort: 'cs_wf', portfolios: 'cs_low', 'cs_high'
+
+    With weighting prefix:
+    >>> cfg = NamingConfig(weighting_prefix=True)
+    >>> # 'ew_cs', 'vw_cs', 'ew_cs_ig', 'vw_cs*'
+
+    Without signal name (legacy style):
+    >>> cfg = NamingConfig(use_signal_name=False)
+    >>> # 'factor', 'factor_ig', 'factor*'
+    """
+    lowercase: bool = True
+    sign_correct: bool = False
+    use_signal_name: bool = True
+    weighting_prefix: bool = False
+    include_rating_suffix: bool = True
+    include_wf_suffix: bool = True
+    doublesort_sep: str = '_'
+
+
+def make_factor_name(
+    signal_name: str,
+    config: NamingConfig,
+    *,
+    weighting: Optional[str] = None,  # 'ew' or 'vw'
+    rating: Optional[str] = None,     # 'ig' or 'hy'
+    is_within_firm: bool = False,
+    sign_corrected: bool = False,
+    second_signal: Optional[str] = None,  # For DoubleSort
+) -> str:
+    """Generate factor name based on config.
+
+    Parameters
+    ----------
+    signal_name : str
+        Base signal name (e.g., 'CS', 'duration').
+    config : NamingConfig
+        Naming configuration.
+    weighting : str, optional
+        'ew' or 'vw' for weighting prefix.
+    rating : str, optional
+        'ig' or 'hy' for rating suffix.
+    is_within_firm : bool
+        Add '_wf' suffix for WithinFirmSort.
+    sign_corrected : bool
+        Add '*' suffix if sign was flipped.
+    second_signal : str, optional
+        Second signal for DoubleSort (e.g., 'duration').
+
+    Returns
+    -------
+    str
+        Formatted factor name.
+    """
+    # Build base name
+    if config.use_signal_name:
+        name = signal_name
+    else:
+        name = 'factor'
+
+    # Apply case
+    if config.lowercase:
+        name = name.lower()
+        if second_signal:
+            second_signal = second_signal.lower()
+
+    # DoubleSort: add second signal
+    if second_signal:
+        name = f"{name}{config.doublesort_sep}{second_signal}"
+
+    # WithinFirmSort suffix
+    if is_within_firm and config.include_wf_suffix:
+        name = f"{name}_wf"
+
+    # Rating suffix
+    if rating and config.include_rating_suffix:
+        name = f"{name}_{rating}"
+
+    # Weighting prefix
+    if weighting and config.weighting_prefix:
+        name = f"{weighting}_{name}"
+
+    # Sign correction suffix (added last)
+    if sign_corrected:
+        name = f"{name}*"
+
+    return name
+
+
+def make_portfolio_name(
+    signal_name: str,
+    portfolio_num: int,
+    num_portfolios: int,
+    config: NamingConfig,
+    *,
+    second_signal: Optional[str] = None,
+    second_portfolio_num: Optional[int] = None,
+    is_within_firm: bool = False,
+) -> str:
+    """Generate portfolio name (e.g., 'cs1', 'cs5', 'cs_low', 'cs_high').
+
+    For WithinFirmSort: portfolio_num 1 = LOW, 2 = HIGH.
+    """
+    base = signal_name.lower() if config.lowercase else signal_name
+
+    if is_within_firm:
+        # WithinFirmSort: use _low, _high
+        suffix = '_low' if portfolio_num == 1 else '_high'
+        return f"{base}{suffix}"
+
+    if second_signal:
+        # DoubleSort: cs1_dur1, cs5_dur5
+        sec = second_signal.lower() if config.lowercase else second_signal
+        return f"{base}{portfolio_num}{config.doublesort_sep}{sec}{second_portfolio_num}"
+
+    # SingleSort: cs1, cs2, ..., cs5
+    return f"{base}{portfolio_num}"
+```
+
+### Updated StrategyResults Getter Methods
+
+**File:** `PyBondLab/StrategyResultsClass.py`
+
+```python
+class StrategyResults:
+    def get_long_short(
+        self,
+        naming: Optional[NamingConfig] = None,
+    ) -> Tuple[pd.Series, pd.Series]:
+        """Get long-short factor returns.
+
+        Parameters
+        ----------
+        naming : NamingConfig, optional
+            If provided, rename output series using naming conventions.
+            If None, use legacy names (backward compatible).
+
+        Returns
+        -------
+        ew_ls : pd.Series
+            Equal-weighted long-short returns.
+        vw_ls : pd.Series
+            Value-weighted long-short returns.
+        """
+        ew_ls = self.ea.returns.ewls_df.copy()
+        vw_ls = self.ea.returns.vwls_df.copy()
+
+        if naming is not None:
+            # Apply sign correction if enabled
+            ew_sign_corrected = False
+            vw_sign_corrected = False
+
+            if naming.sign_correct:
+                if ew_ls.mean() < 0:
+                    ew_ls = -ew_ls
+                    ew_sign_corrected = True
+                if vw_ls.mean() < 0:
+                    vw_ls = -vw_ls
+                    vw_sign_corrected = True
+
+            # Generate names
+            ew_name = make_factor_name(
+                self._signal_name,
+                naming,
+                weighting='ew',
+                rating=self._rating_str,
+                is_within_firm=self._is_within_firm,
+                sign_corrected=ew_sign_corrected,
+            )
+            vw_name = make_factor_name(
+                self._signal_name,
+                naming,
+                weighting='vw',
+                rating=self._rating_str,
+                is_within_firm=self._is_within_firm,
+                sign_corrected=vw_sign_corrected,
+            )
+
+            ew_ls.name = ew_name
+            vw_ls.name = vw_name
+
+        return ew_ls, vw_ls
+
+    def get_turnover(
+        self,
+        level: str = 'portfolio',
+        naming: Optional[NamingConfig] = None,
+    ) -> Union[Tuple[pd.DataFrame, pd.DataFrame], Tuple[pd.Series, pd.Series]]:
+        """Get turnover statistics.
+
+        Parameters
+        ----------
+        level : str, default='portfolio'
+            'portfolio' - Return turnover per portfolio (DataFrame).
+            'factor' - Return factor turnover: (P_N + P_1) / 2 (Series).
+        naming : NamingConfig, optional
+            If provided, rename output using naming conventions.
+
+        Returns
+        -------
+        ew_turnover, vw_turnover : tuple
+            Turnover statistics (DataFrames for 'portfolio', Series for 'factor').
+        """
+        ew_turn = self.ea.turnover.ewturn_df.copy()
+        vw_turn = self.ea.turnover.vwturn_df.copy()
+
+        if level == 'factor':
+            # Factor turnover = (P_N + P_1) / 2 = average of long and short legs
+            nport = ew_turn.shape[1]
+            ew_factor = (ew_turn.iloc[:, 0] + ew_turn.iloc[:, nport - 1]) / 2
+            vw_factor = (vw_turn.iloc[:, 0] + vw_turn.iloc[:, nport - 1]) / 2
+
+            if naming is not None:
+                ew_name = make_factor_name(
+                    self._signal_name, naming,
+                    weighting='ew', rating=self._rating_str,
+                    is_within_firm=self._is_within_firm,
+                )
+                vw_name = make_factor_name(
+                    self._signal_name, naming,
+                    weighting='vw', rating=self._rating_str,
+                    is_within_firm=self._is_within_firm,
+                )
+                ew_factor.name = f"{ew_name}_turnover"
+                vw_factor.name = f"{vw_name}_turnover"
+
+            return ew_factor, vw_factor
+
+        # Portfolio-level turnover (default)
+        if naming is not None:
+            # Rename columns: 1, 2, ..., N -> cs1, cs2, ..., csN
+            ew_cols = [
+                make_portfolio_name(self._signal_name, i + 1, len(ew_turn.columns), naming)
+                for i in range(len(ew_turn.columns))
+            ]
+            vw_cols = [
+                make_portfolio_name(self._signal_name, i + 1, len(vw_turn.columns), naming)
+                for i in range(len(vw_turn.columns))
+            ]
+            ew_turn.columns = ew_cols
+            vw_turn.columns = vw_cols
+
+        return ew_turn, vw_turn
+```
+
+### Implementation Steps
+
+#### Step 1: Create naming.py module
+- Create `PyBondLab/naming.py` with `NamingConfig` dataclass
+- Add `make_factor_name()` and `make_portfolio_name()` functions
+- Add unit tests
+
+#### Step 2: Update StrategyResults
+- Add `_signal_name`, `_rating_str`, `_is_within_firm` attributes
+- Update `get_long_short()` to accept `naming` parameter
+- Update `get_turnover()` to accept `level` and `naming` parameters
+- Update `get_characteristics()` to accept `naming` parameter
+
+#### Step 3: Update StrategyFormation
+- Pass signal name, rating, strategy type to StrategyResults
+- Ensure backward compatibility (no naming = legacy behavior)
+
+#### Step 4: Update BatchStrategyFormation
+- Results dict uses signal names as keys (already done)
+- Each result has proper metadata for naming
+
+#### Step 5: Validation Script
+- Test all naming configurations
+- Verify sign correction works independently for EW/VW
+- Verify factor turnover computation
+- Verify backward compatibility
+
+### Naming Examples
+
+**SingleSort:**
+```python
+result = StrategyFormation(data, SingleSort(sort_var='cs'), rating='IG').fit()
+cfg = NamingConfig()
+
+ew_ls, vw_ls = result.get_long_short(naming=cfg)
+# ew_ls.name = 'cs_ig'
+# vw_ls.name = 'cs_ig'
+
+cfg_prefix = NamingConfig(weighting_prefix=True)
+ew_ls, vw_ls = result.get_long_short(naming=cfg_prefix)
+# ew_ls.name = 'ew_cs_ig'
+# vw_ls.name = 'vw_cs_ig'
+
+cfg_sign = NamingConfig(sign_correct=True)
+ew_ls, vw_ls = result.get_long_short(naming=cfg_sign)
+# If EW mean < 0 and VW mean > 0:
+# ew_ls.name = 'cs_ig*'  (flipped)
+# vw_ls.name = 'cs_ig'   (not flipped)
+```
+
+**DoubleSort:**
+```python
+result = StrategyFormation(data, DoubleSort(sort_var='cs', cond_var='duration')).fit()
+cfg = NamingConfig()
+
+ew_ls, vw_ls = result.get_long_short(naming=cfg)
+# ew_ls.name = 'cs_duration'
+# vw_ls.name = 'cs_duration'
+```
+
+**WithinFirmSort:**
+```python
+result = StrategyFormation(data, WithinFirmSort(sort_var='cs')).fit()
+cfg = NamingConfig()
+
+ew_ls, vw_ls = result.get_long_short(naming=cfg)
+# ew_ls.name = 'cs_wf'
+# vw_ls.name = 'cs_wf'
+
+# Portfolio names
+ew_turn, vw_turn = result.get_turnover(naming=cfg)
+# ew_turn.columns = ['cs_low', 'cs_high']
+```
+
+**Factor Turnover:**
+```python
+result = StrategyFormation(data, SingleSort(sort_var='cs')).fit()
+cfg = NamingConfig()
+
+ew_turn, vw_turn = result.get_turnover(level='factor', naming=cfg)
+# ew_turn.name = 'cs_turnover'
+# Returns: (P_5 + P_1) / 2 for quintile portfolios
+```
+
+### Files to Create/Modify
+
+| File | Changes |
+|------|---------|
+| `PyBondLab/naming.py` | **NEW** - NamingConfig dataclass and utility functions |
+| `PyBondLab/StrategyResultsClass.py` | Update getter methods with `naming` parameter |
+| `PyBondLab/PyBondLab.py` | Pass metadata to StrategyResults |
+| `PyBondLab/__init__.py` | Export `NamingConfig` |
+| `examples/validate_naming.py` | **NEW** - Validation script |
+
+### Validation Script
+
+```bash
+python examples/validate_naming.py
+```
+
+Tests:
+1. Basic naming (lowercase, signal-based)
+2. Rating suffix (_ig, _hy)
+3. Sign correction (EW and VW independent)
+4. Weighting prefix (ew_, vw_)
+5. DoubleSort separator
+6. WithinFirmSort suffix and portfolios
+7. Factor turnover computation
+8. Backward compatibility (no naming = legacy names)
+
+---

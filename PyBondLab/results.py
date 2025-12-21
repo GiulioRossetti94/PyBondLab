@@ -9,11 +9,18 @@ Authors: Giulio Rossetti & Alex Dickerson
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Optional, Dict, Any
+from dataclasses import dataclass, field
+from typing import Optional, Dict, Any, Union, Tuple
 import numpy as np
 import pandas as pd
 import pickle
+
+from PyBondLab.naming import (
+    NamingConfig,
+    make_factor_name,
+    make_portfolio_name,
+    rating_to_suffix,
+)
 
 
 __all__ = [
@@ -22,6 +29,7 @@ __all__ = [
     "CharacteristicsResults",
     "StrategyResults",
     "FormationResults",
+    "NamingConfig",
 ]
 
 
@@ -395,12 +403,28 @@ class StrategyResults:
         Portfolio characteristics
     port_idx : dict, optional
         Portfolio membership indices: {date: DataFrame}
+    signal_name : str, optional
+        Name of the signal used for sorting (for naming)
+    rating_str : str, optional
+        Rating suffix ('ig', 'hy', or None)
+    is_within_firm : bool
+        Whether this is a WithinFirmSort strategy
+    second_signal : str, optional
+        Second signal name for DoubleSort
+    num_portfolios : int, optional
+        Number of portfolios
     """
 
     returns: PortfolioReturns
     turnover: Optional[TurnoverResults] = None
     characteristics: Optional[CharacteristicsResults] = None
     port_idx: Optional[Dict[pd.Timestamp, pd.DataFrame]] = None
+    # Metadata for naming
+    signal_name: Optional[str] = None
+    rating_str: Optional[str] = None
+    is_within_firm: bool = False
+    second_signal: Optional[str] = None
+    num_portfolios: Optional[int] = None
 
     @property
     def has_turnover(self) -> bool:
@@ -416,7 +440,7 @@ class StrategyResults:
     def has_port_idx(self) -> bool:
         """Check if portfolio indices are saved."""
         return self.port_idx is not None
-    
+
     def get_ptf(self)-> tuple[pd.DataFrame, pd.DataFrame]:
         """
         get ptfs
@@ -425,17 +449,64 @@ class StrategyResults:
         vw = self.returns.get_ptf("vw")
         return ew, vw
 
-    def get_long_short(self) -> tuple[pd.Series, pd.Series]:
+    def get_long_short(
+        self,
+        naming: Optional[NamingConfig] = None,
+    ) -> tuple[pd.Series, pd.Series]:
         """
         Get long-short returns as (EW, VW) tuple.
+
+        Parameters
+        ----------
+        naming : NamingConfig, optional
+            If provided, rename output series using naming conventions.
+            If None, use legacy names (backward compatible).
 
         Returns
         -------
         tuple of pd.Series
             (ew_long_short, vw_long_short)
         """
-        ew = self.returns.get_long_short("ew")
-        vw = self.returns.get_long_short("vw")
+        ew = self.returns.get_long_short("ew").copy()
+        vw = self.returns.get_long_short("vw").copy()
+
+        if naming is not None:
+            # Apply sign correction if enabled
+            ew_sign_corrected = False
+            vw_sign_corrected = False
+
+            if naming.sign_correct:
+                if ew.mean() < 0:
+                    ew = -ew
+                    ew_sign_corrected = True
+                if vw.mean() < 0:
+                    vw = -vw
+                    vw_sign_corrected = True
+
+            # Generate names
+            signal = self.signal_name or 'factor'
+            ew_name = make_factor_name(
+                signal,
+                naming,
+                weighting='ew',
+                rating=self.rating_str,
+                is_within_firm=self.is_within_firm,
+                sign_corrected=ew_sign_corrected,
+                second_signal=self.second_signal,
+            )
+            vw_name = make_factor_name(
+                signal,
+                naming,
+                weighting='vw',
+                rating=self.rating_str,
+                is_within_firm=self.is_within_firm,
+                sign_corrected=vw_sign_corrected,
+                second_signal=self.second_signal,
+            )
+
+            ew.name = ew_name
+            vw.name = vw_name
+
         return ew, vw
 
     def get_long_leg(self) -> tuple[pd.Series, pd.Series]:
@@ -463,15 +534,27 @@ class StrategyResults:
         ew = self.returns.get_short_leg("ew")
         vw = self.returns.get_short_leg("vw")
         return ew, vw
-    
-    def get_turnover(self) -> tuple[pd.DataFrame, pd.DataFrame]:
+
+    def get_turnover(
+        self,
+        level: str = 'portfolio',
+        naming: Optional[NamingConfig] = None,
+    ) -> Union[Tuple[pd.DataFrame, pd.DataFrame], Tuple[pd.Series, pd.Series]]:
         """
-        Get turnover as (EW, VW) tuple of DataFrames.
+        Get turnover statistics.
+
+        Parameters
+        ----------
+        level : str, default='portfolio'
+            'portfolio' - Return turnover per portfolio (DataFrame).
+            'factor' - Return factor turnover: (P_N + P_1) / 2 (Series).
+        naming : NamingConfig, optional
+            If provided, rename output using naming conventions.
 
         Returns
         -------
-        tuple of pd.DataFrame
-            (ew_turnover_df, vw_turnover_df)
+        ew_turnover, vw_turnover : tuple
+            Turnover statistics (DataFrames for 'portfolio', Series for 'factor').
 
         Raises
         ------
@@ -483,7 +566,108 @@ class StrategyResults:
                 "Turnover results not available. "
                 "Set turnover=True when initializing StrategyFormation."
             )
-        return self.turnover.ew_turnover_df, self.turnover.vw_turnover_df
+
+        ew_turn = self.turnover.ew_turnover_df.copy()
+        vw_turn = self.turnover.vw_turnover_df.copy()
+
+        if level == 'factor':
+            # Factor turnover = (P_N + P_1) / 2 = average of long and short legs
+            nport = ew_turn.shape[1]
+            ew_factor = (ew_turn.iloc[:, 0] + ew_turn.iloc[:, nport - 1]) / 2
+            vw_factor = (vw_turn.iloc[:, 0] + vw_turn.iloc[:, nport - 1]) / 2
+
+            if naming is not None:
+                signal = self.signal_name or 'factor'
+                ew_name = make_factor_name(
+                    signal, naming,
+                    weighting='ew', rating=self.rating_str,
+                    is_within_firm=self.is_within_firm,
+                    second_signal=self.second_signal,
+                )
+                vw_name = make_factor_name(
+                    signal, naming,
+                    weighting='vw', rating=self.rating_str,
+                    is_within_firm=self.is_within_firm,
+                    second_signal=self.second_signal,
+                )
+                ew_factor.name = f"{ew_name}_turnover"
+                vw_factor.name = f"{vw_name}_turnover"
+
+            return ew_factor, vw_factor
+
+        # Portfolio-level turnover (default)
+        if naming is not None:
+            signal = self.signal_name or 'factor'
+            nport = len(ew_turn.columns)
+            # Rename columns: 1, 2, ..., N -> cs1, cs2, ..., csN
+            ew_cols = [
+                make_portfolio_name(
+                    signal, i + 1, nport, naming,
+                    is_within_firm=self.is_within_firm,
+                    second_signal=self.second_signal,
+                )
+                for i in range(nport)
+            ]
+            vw_cols = [
+                make_portfolio_name(
+                    signal, i + 1, nport, naming,
+                    is_within_firm=self.is_within_firm,
+                    second_signal=self.second_signal,
+                )
+                for i in range(nport)
+            ]
+            ew_turn.columns = ew_cols
+            vw_turn.columns = vw_cols
+
+        return ew_turn, vw_turn
+
+    def get_characteristics(
+        self,
+        naming: Optional[NamingConfig] = None,
+    ) -> Tuple[Dict[str, pd.DataFrame], Dict[str, pd.DataFrame]]:
+        """
+        Get characteristics as (EW, VW) tuple of dictionaries.
+
+        Parameters
+        ----------
+        naming : NamingConfig, optional
+            If provided, rename portfolio columns using naming conventions.
+
+        Returns
+        -------
+        tuple of Dict[str, pd.DataFrame]
+            (ew_chars_dict, vw_chars_dict)
+
+        Raises
+        ------
+        ValueError
+            If characteristics results not available
+        """
+        if not self.has_characteristics:
+            raise ValueError(
+                "Characteristics results not available. "
+                "Set chars parameter when initializing StrategyFormation."
+            )
+
+        ew_chars = {k: v.copy() for k, v in self.characteristics.ew_chars.items()}
+        vw_chars = {k: v.copy() for k, v in self.characteristics.vw_chars.items()}
+
+        if naming is not None:
+            signal = self.signal_name or 'factor'
+            for char_name in ew_chars:
+                nport = len(ew_chars[char_name].columns)
+                new_cols = [
+                    make_portfolio_name(
+                        signal, i + 1, nport, naming,
+                        is_within_firm=self.is_within_firm,
+                        second_signal=self.second_signal,
+                    )
+                    for i in range(nport)
+                ]
+                ew_chars[char_name].columns = new_cols
+                vw_chars[char_name].columns = new_cols
+
+        return ew_chars, vw_chars
 
     def summary(self, periods_per_year: int = 12) -> dict[str, Any]:
         """
@@ -603,7 +787,11 @@ class FormationResults:
         """
         return self.get_ptf(strategy='ep')
 
-    def get_long_short(self, strategy: str = "ea") -> tuple[pd.Series, pd.Series]:
+    def get_long_short(
+        self,
+        strategy: str = "ea",
+        naming: Optional[NamingConfig] = None,
+    ) -> tuple[pd.Series, pd.Series]:
         """
         Get long-short returns as (EW, VW) tuple.
 
@@ -611,6 +799,9 @@ class FormationResults:
         ----------
         strategy : {'ea', 'ep'}
             Strategy type
+        naming : NamingConfig, optional
+            If provided, rename output series using naming conventions.
+            If None, use legacy names (backward compatible).
 
         Returns
         -------
@@ -620,20 +811,28 @@ class FormationResults:
         sr = self.ea if strategy == "ea" else self.ep
         if sr is None:
             raise ValueError(f"Strategy '{strategy}' results not available.")
-        return sr.get_long_short()
+        return sr.get_long_short(naming=naming)
 
-    def get_long_short_ex_post(self) -> tuple[pd.Series, pd.Series]:
+    def get_long_short_ex_post(
+        self,
+        naming: Optional[NamingConfig] = None,
+    ) -> tuple[pd.Series, pd.Series]:
         """
         Get ex-post long-short returns as (EW, VW) tuple.
 
         Convenience method for get_long_short(strategy='ep').
+
+        Parameters
+        ----------
+        naming : NamingConfig, optional
+            If provided, rename output series using naming conventions.
 
         Returns
         -------
         tuple of pd.Series
             (ew_long_short, vw_long_short)
         """
-        return self.get_long_short(strategy='ep')
+        return self.get_long_short(strategy='ep', naming=naming)
 
     def get_long_leg(self, strategy: str = "ea") -> tuple[pd.Series, pd.Series]:
         """
@@ -673,19 +872,29 @@ class FormationResults:
             raise ValueError(f"Strategy '{strategy}' results not available.")
         return sr.get_short_leg()
     
-    def get_turnover(self, strategy: str = "ea") -> tuple[pd.DataFrame, pd.DataFrame]:
+    def get_turnover(
+        self,
+        strategy: str = "ea",
+        level: str = 'portfolio',
+        naming: Optional[NamingConfig] = None,
+    ) -> Union[Tuple[pd.DataFrame, pd.DataFrame], Tuple[pd.Series, pd.Series]]:
         """
-        Get turnover as (EW, VW) tuple of DataFrames.
+        Get turnover statistics.
 
         Parameters
         ----------
         strategy : {'ea', 'ep'}
             Strategy type
+        level : str, default='portfolio'
+            'portfolio' - Return turnover per portfolio (DataFrame).
+            'factor' - Return factor turnover: (P_N + P_1) / 2 (Series).
+        naming : NamingConfig, optional
+            If provided, rename output using naming conventions.
 
         Returns
         -------
-        tuple of pd.DataFrame
-            (ew_turnover_df, vw_turnover_df)
+        ew_turnover, vw_turnover : tuple
+            Turnover statistics (DataFrames for 'portfolio', Series for 'factor').
 
         Raises
         ------
@@ -695,9 +904,13 @@ class FormationResults:
         sr = self.ea if strategy == "ea" else self.ep
         if sr is None:
             raise ValueError(f"Strategy '{strategy}' results not available.")
-        return sr.get_turnover()
+        return sr.get_turnover(level=level, naming=naming)
 
-    def get_characteristics(self, strategy: str = "ea") -> tuple[Dict[str, pd.DataFrame], Dict[str, pd.DataFrame]]:
+    def get_characteristics(
+        self,
+        strategy: str = "ea",
+        naming: Optional[NamingConfig] = None,
+    ) -> Tuple[Dict[str, pd.DataFrame], Dict[str, pd.DataFrame]]:
         """
         Get characteristics as (EW, VW) tuple of dictionaries.
 
@@ -705,6 +918,8 @@ class FormationResults:
         ----------
         strategy : {'ea', 'ep'}
             Strategy type
+        naming : NamingConfig, optional
+            If provided, rename portfolio columns using naming conventions.
 
         Returns
         -------
@@ -719,12 +934,7 @@ class FormationResults:
         sr = self.ea if strategy == "ea" else self.ep
         if sr is None:
             raise ValueError(f"Strategy '{strategy}' results not available.")
-        if not sr.has_characteristics:
-            raise ValueError(
-                "Characteristics results not available. "
-                "Set chars parameter when initializing StrategyFormation."
-            )
-        return sr.characteristics.get_all_characteristics("ew"), sr.characteristics.get_all_characteristics("vw")
+        return sr.get_characteristics(naming=naming)
 
     def get_ptf_bins(self) -> dict:
         """
@@ -873,10 +1083,16 @@ def build_strategy_results(
     chars_ew: Optional[Dict[str, pd.DataFrame]] = None,
     chars_vw: Optional[Dict[str, pd.DataFrame]] = None,
     port_idx: Optional[Dict[pd.Timestamp, pd.DataFrame]] = None,
+    # Metadata for naming
+    signal_name: Optional[str] = None,
+    rating_str: Optional[str] = None,
+    is_within_firm: bool = False,
+    second_signal: Optional[str] = None,
+    num_portfolios: Optional[int] = None,
 ) -> StrategyResults:
     """
     Build a StrategyResults object from DataFrames.
-    
+
     This is the primary interface for PyBondLab to construct results.
     PyBondLab should compute all long-short returns before calling this.
 
@@ -908,6 +1124,16 @@ def build_strategy_results(
         Value-weighted characteristics
     port_idx : dict, optional
         Portfolio indices
+    signal_name : str, optional
+        Name of the signal used for sorting (for naming)
+    rating_str : str, optional
+        Rating suffix ('ig', 'hy', or None)
+    is_within_firm : bool
+        Whether this is a WithinFirmSort strategy
+    second_signal : str, optional
+        Second signal name for DoubleSort
+    num_portfolios : int, optional
+        Number of portfolios
 
     Returns
     -------
@@ -949,6 +1175,11 @@ def build_strategy_results(
         turnover=turnover,
         characteristics=characteristics,
         port_idx=port_idx,
+        signal_name=signal_name,
+        rating_str=rating_str,
+        is_within_firm=is_within_firm,
+        second_signal=second_signal,
+        num_portfolios=num_portfolios,
     )
 
 

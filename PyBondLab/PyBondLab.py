@@ -1060,6 +1060,41 @@ class StrategyFormation:
             metadata['n2'] = getattr(self.strategy, "num_portfolios2", None) or getattr(self.strategy, "nport2", None)
         return metadata
 
+    def _get_naming_metadata(self) -> dict:
+        """Get metadata for naming configuration.
+
+        Returns
+        -------
+        dict
+            Contains: signal_name, rating_str, is_within_firm, second_signal, num_portfolios
+        """
+        from PyBondLab.naming import rating_to_suffix
+
+        # Get signal name
+        signal_name = getattr(self.strategy, 'sort_var', None) or getattr(self.strategy, 'signal', None)
+        if signal_name is None:
+            signal_name = 'factor'
+
+        # Get rating suffix
+        rating_str = rating_to_suffix(self.rating)
+
+        # Check if within-firm sort
+        is_within_firm = getattr(self.strategy, "__strategy_name__", "") == "Within-Firm Sort"
+
+        # Get second signal for DoubleSort
+        second_signal = None
+        is_double = getattr(self.strategy, "double_sort", 0) or getattr(self.strategy, "DoubleSort", 0)
+        if is_double:
+            second_signal = getattr(self.strategy, 'cond_var', None) or getattr(self.strategy, 'sort_var2', None)
+
+        return {
+            'signal_name': signal_name,
+            'rating_str': rating_str,
+            'is_within_firm': is_within_firm,
+            'second_signal': second_signal,
+            'num_portfolios': self._get_total_portfolios(),
+        }
+
     def _get_return_data(self, precomputed, date):
         """
         Get return data for portfolio formation.
@@ -1381,6 +1416,7 @@ class StrategyFormation:
             chars_vw = None
 
         # Build and return StrategyResults (same format as slow path)
+        naming_meta = self._get_naming_metadata()
         return build_strategy_results(
             ewport_df=ew_df,
             vwport_df=vw_df,
@@ -1394,6 +1430,7 @@ class StrategyFormation:
             turnover_vw_df=vw_turnover_df,
             chars_ew=chars_ew,
             chars_vw=chars_vw,
+            **naming_meta,
         )
 
     def _can_use_fast_path(self) -> bool:
@@ -1604,6 +1641,7 @@ class StrategyFormation:
         vw_short_df = pd.DataFrame(vw_low_series.values, index=self.datelist, columns=[f'SHORT_{vw_prefix}_{self.name}'])
 
         # Build results object using same function as other fast paths
+        naming_meta = self._get_naming_metadata()
         self.results = build_strategy_results(
             ewport_df=ew_port,
             vwport_df=vw_port,
@@ -1617,6 +1655,7 @@ class StrategyFormation:
             turnover_vw_df=None,
             chars_ew=None,
             chars_vw=None,
+            **naming_meta,
         )
 
         return self.results
@@ -1796,6 +1835,7 @@ class StrategyFormation:
         vw_short_df = pd.DataFrame(vw_short, index=self.datelist, columns=[f'SHORT_{vw_prefix}_{self.name}'])
 
         # Build and return StrategyResults (same format as _aggregate_results_staggered)
+        naming_meta = self._get_naming_metadata()
         return build_strategy_results(
             ewport_df=ew_df,
             vwport_df=vw_df,
@@ -1809,6 +1849,7 @@ class StrategyFormation:
             turnover_vw_df=None,
             chars_ew=None,
             chars_vw=None,
+            **naming_meta,
         )
 
     def _create_empty_results(self):
@@ -2624,6 +2665,7 @@ class StrategyFormation:
                 self.turnover_state, ptf_labels)
 
         # Build and return StrategyResults
+        naming_meta = self._get_naming_metadata()
         return build_strategy_results(
             ewport_df=ew_df,
             vwport_df=vw_df,
@@ -2637,6 +2679,7 @@ class StrategyFormation:
             turnover_vw_df=turnover_vw,
             chars_ew=chars_ew_dict,
             chars_vw=chars_vw_dict,
+            **naming_meta,
         )
 
     def _aggregate_results_staggered(self, ew_ret_arr, vw_ret_arr,
@@ -2719,6 +2762,7 @@ class StrategyFormation:
                 self.turnover_state, ptf_labels)
 
         # Build and return StrategyResults
+        naming_meta = self._get_naming_metadata()
         return build_strategy_results(
             ewport_df=ew_df,
             vwport_df=vw_df,
@@ -2732,6 +2776,7 @@ class StrategyFormation:
             turnover_vw_df=turnover_vw,
             chars_ew=chars_ew_dict,
             chars_vw=chars_vw_dict,
+            **naming_meta,
         )
 
     def _aggregate_results_nonstaggered(self, ew_ret_arr, vw_ret_arr,
@@ -2802,6 +2847,7 @@ class StrategyFormation:
             )
 
         # Build and return StrategyResults
+        naming_meta = self._get_naming_metadata()
         return build_strategy_results(
             ewport_df=ew_df,
             vwport_df=vw_df,
@@ -2815,6 +2861,7 @@ class StrategyFormation:
             turnover_vw_df=turnover_vw,
             chars_ew=chars_ew_dict,
             chars_vw=chars_vw_dict,
+            **naming_meta,
         )
 
 
