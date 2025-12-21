@@ -171,6 +171,18 @@ class BaseBatchFormation(ABC):
         if not rename_map:
             return data
 
+        # Check for conflicts: user columns that would overwrite existing columns
+        # Drop existing target columns before renaming to avoid duplicates
+        columns_to_drop = []
+        for user_name, pbl_name in rename_map.items():
+            if pbl_name in data.columns and pbl_name != user_name:
+                # The target column already exists and is different from source
+                # User's explicit mapping takes precedence, drop existing column
+                columns_to_drop.append(pbl_name)
+
+        if columns_to_drop:
+            data = data.drop(columns=columns_to_drop)
+
         # Rename columns
         data_prepared = data.rename(columns=rename_map)
 
