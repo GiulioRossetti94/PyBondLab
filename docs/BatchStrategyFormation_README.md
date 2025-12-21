@@ -16,6 +16,7 @@
    - [Parallel Processing](#parallel-processing)
    - [Memory Management for Large Datasets](#memory-management-for-large-datasets)
 4. [Accessing Results](#accessing-results)
+   - [Unified Panel Extraction with extract_panel](#unified-panel-extraction-with-extract_panel)
 5. [Performance Optimization](#performance-optimization)
 6. [When to Use Fast Path vs Slow Path](#when-to-use-fast-path-vs-slow-path)
 7. [Troubleshooting](#troubleshooting)
@@ -429,6 +430,95 @@ ew_turnover, vw_turnover = results['momentum'].get_turnover()
 # Characteristics (only available if chars specified)
 ew_chars, vw_chars = results['momentum'].get_characteristics()
 ```
+
+---
+
+### Unified Panel Extraction with `extract_panel`
+
+For comprehensive analysis, use `extract_panel()` to extract all results into a single panel DataFrame:
+
+```python
+from PyBondLab import BatchStrategyFormation, extract_panel, NamingConfig
+
+# Run batch strategy (turnover=True required for full panel data)
+batch = BatchStrategyFormation(
+    data=data,
+    signals=['momentum', 'value', 'quality'],
+    holding_period=1,
+    num_portfolios=5,
+    turnover=True,                  # Required for extract_panel
+    chars=['duration', 'spread'],   # Optional
+    verbose=True,
+)
+results = batch.fit()
+
+# Extract unified panel
+panel = extract_panel(results)
+
+# Panel structure:
+# - date: observation date
+# - factor: signal name (e.g., 'momentum')
+# - freq: holding period (1, 3, 6, etc.)
+# - leg: 'ls' (long-short), 'l' (long), 's' (short)
+# - weighting: 'ew' or 'vw'
+# - return: portfolio return
+# - turnover: turnover (if computed)
+# - {char_name}: characteristic values (if computed)
+
+print(panel.head())
+#         date    factor  freq leg weighting    return  turnover  duration
+# 2020-01-31  momentum     1  ls        ew  0.012300  0.450000  2.100000
+# 2020-01-31  momentum     1  ls        vw  0.014500  0.420000  2.300000
+# 2020-01-31  momentum     1   l        ew  0.023400  0.480000  5.200000
+# ...
+```
+
+**With sign correction:**
+
+```python
+# Sign-correct negative factors (flip returns, swap legs, add * suffix)
+panel = extract_panel(results, naming=NamingConfig(sign_correct=True))
+
+# Factors with negative mean are flipped:
+# - L-S returns multiplied by -1
+# - Long and short legs swapped
+# - Factor name gets '*' suffix (e.g., 'reversal*')
+```
+
+**Pivot to wide format:**
+
+```python
+# Get L-S returns in wide format (dates × factors)
+ls_returns = panel[panel['leg'] == 'ls'].pivot_table(
+    index='date',
+    columns=['factor', 'weighting'],
+    values='return'
+)
+print(ls_returns.head())
+#            momentum           value            quality
+#                  ew       vw      ew       vw       ew       vw
+# date
+# 2020-01-31  0.0123   0.0145  0.0045   0.0052   0.0087   0.0091
+# ...
+
+# Compute factor correlations
+print(ls_returns['momentum']['ew'].corr(ls_returns['value']['ew']))
+```
+
+**Filter by leg or weighting:**
+
+```python
+# Get only long-short EW returns
+ew_ls = panel[(panel['leg'] == 'ls') & (panel['weighting'] == 'ew')]
+
+# Get only long leg data
+long_leg = panel[panel['leg'] == 'l']
+
+# Group by factor
+factor_means = panel[panel['leg'] == 'ls'].groupby(['factor', 'weighting'])['return'].mean()
+```
+
+**Note:** `extract_panel` requires `turnover=True` because the fast batch path (used when `turnover=False`) only computes long-short returns, not individual leg returns.
 
 ---
 

@@ -15,6 +15,7 @@
    - [With Turnover and Characteristics](#with-turnover-and-characteristics)
    - [Parallel Processing](#parallel-processing)
 4. [Accessing Results](#accessing-results)
+   - [Unified Panel Extraction with extract_panel](#unified-panel-extraction-with-extract_panel)
 5. [Fast Path vs Slow Path](#fast-path-vs-slow-path)
 6. [Performance](#performance)
 7. [Comparison with StrategyFormation](#comparison-with-strategyformation)
@@ -413,6 +414,95 @@ if batch.chars:
 else:
     print("Characteristics not computed")
 ```
+
+---
+
+### Unified Panel Extraction with `extract_panel`
+
+For comprehensive analysis, use `extract_panel()` to extract all results into a single panel DataFrame:
+
+```python
+from PyBondLab import BatchWithinFirmSortFormation, extract_panel, NamingConfig
+
+# Run batch strategy (turnover=True required for full panel data)
+batch = BatchWithinFirmSortFormation(
+    data=data,
+    signals=['credit_spread', 'yield_spread'],
+    firm_id_col='PERMNO',
+    turnover=True,                  # Required for extract_panel
+    chars=['duration', 'spread'],   # Optional
+    n_jobs=2,
+    verbose=True,
+)
+results = batch.fit()
+
+# Extract unified panel
+panel = extract_panel(results)
+
+# Panel structure:
+# - date: observation date
+# - factor: signal name with _wf suffix (e.g., 'credit_spread_wf')
+# - freq: holding period (always 1 for WithinFirmSort)
+# - leg: 'ls' (long-short), 'l' (high), 's' (low)
+# - weighting: 'ew' or 'vw'
+# - return: portfolio return
+# - turnover: turnover (if computed)
+# - {char_name}: characteristic values (if computed)
+
+print(panel.head())
+#         date            factor  freq leg weighting    return  turnover
+# 2020-01-31  credit_spread_wf     1  ls        ew  0.008200  0.320000
+# 2020-01-31  credit_spread_wf     1  ls        vw  0.009100  0.310000
+# 2020-01-31  credit_spread_wf     1   l        ew  0.012300  0.340000
+# ...
+```
+
+**With sign correction:**
+
+```python
+# Sign-correct negative factors (flip returns, swap legs, add * suffix)
+panel = extract_panel(results, naming=NamingConfig(sign_correct=True))
+
+# Factors with negative mean are flipped:
+# - L-S returns multiplied by -1
+# - High and Low legs swapped (high → 's', low → 'l')
+# - Factor name gets '*' suffix (e.g., 'credit_spread_wf*')
+```
+
+**Pivot to wide format:**
+
+```python
+# Get L-S returns in wide format (dates × factors)
+ls_returns = panel[panel['leg'] == 'ls'].pivot_table(
+    index='date',
+    columns=['factor', 'weighting'],
+    values='return'
+)
+print(ls_returns.head())
+#            credit_spread_wf      yield_spread_wf
+#                          ew    vw              ew    vw
+# date
+# 2020-01-31          0.0082  0.0091         0.0065  0.0072
+# ...
+```
+
+**Filter by leg or weighting:**
+
+```python
+# Get only long-short VW returns
+vw_ls = panel[(panel['leg'] == 'ls') & (panel['weighting'] == 'vw')]
+
+# Get high portfolio (long leg) data
+high_leg = panel[panel['leg'] == 'l']
+
+# Get low portfolio (short leg) data
+low_leg = panel[panel['leg'] == 's']
+
+# Group by factor
+factor_means = panel[panel['leg'] == 'ls'].groupby(['factor', 'weighting'])['return'].mean()
+```
+
+**Note:** `extract_panel` requires `turnover=True` because the fast batch path (used when `turnover=False`) only computes long-short returns, not individual leg returns.
 
 ---
 
