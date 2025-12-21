@@ -84,6 +84,13 @@ except ImportError as e:
     print(f"Warning: Could not import NamingConfig: {e}")
     NamingConfig = None
 
+# Panel extraction
+try:
+    from .extract import extract_panel
+except ImportError as e:
+    print(f"Warning: Could not import extract_panel: {e}")
+    extract_panel = None
+
 __version__ = '0.2.0'
 __all__ = [
     'StrategyFormation',
@@ -107,5 +114,6 @@ __all__ = [
     'DataUncertaintyAnalysis',
     'DataUncertaintyResults',
     'NamingConfig',
+    'extract_panel',
 ]
 name = 'PyBondLab'

@@ -3492,3 +3492,311 @@ Tests:
 8. Backward compatibility (no naming = legacy names)
 
 ---
+
+## Phase 19: Unified Panel Extraction (extract_panel)
+
+### Overview
+
+Create a unified function to extract all results from `BatchStrategyFormation` and
+`BatchWithinFirmSortFormation` into a single panel DataFrame.
+
+**Status: 🚧 In Progress**
+
+### Motivation
+
+Users need an easy way to extract all output from batch results:
+- Multiple signals
+- Multiple legs (long, short, long-short)
+- Multiple weightings (EW, VW)
+- Optionally: turnover and characteristics
+
+The panel format allows users to pivot/reshape as needed for their analysis.
+
+### Panel Structure
+
+Single DataFrame with all results:
+
+```
+date       | factor | freq | leg | weighting | return  | turnover | duration | maturity | ...
+2020-01-31 | cs     | 1    | ls  | ew        | 0.0123  | 0.45     | 2.1      | 3.1      |
+2020-01-31 | cs     | 1    | ls  | vw        | 0.0145  | 0.42     | 2.3      | 2.9      |
+2020-01-31 | cs     | 1    | l   | ew        | 0.0234  | 0.48     | 5.2      | 7.3      |
+2020-01-31 | cs     | 1    | l   | vw        | 0.0256  | 0.44     | 5.8      | 7.1      |
+2020-01-31 | cs     | 1    | s   | ew        | 0.0111  | 0.42     | 3.1      | 4.2      |
+2020-01-31 | cs     | 1    | s   | vw        | 0.0111  | 0.40     | 3.5      | 4.2      |
+2020-01-31 | value  | 1    | ls  | ew        | 0.0089  | 0.38     | ...      | ...      |
+...
+```
+
+### Column Definitions
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `date` | datetime | Observation date |
+| `factor` | str | Factor name (from NamingConfig or signal name) |
+| `freq` | int | Holding period / rebalancing frequency (1=monthly, 3=quarterly, etc.) |
+| `leg` | str | Portfolio leg: `'ls'` (long-short), `'l'` (long), `'s'` (short) |
+| `weighting` | str | `'ew'` or `'vw'` |
+| `return` | float | Portfolio return |
+| `turnover` | float | Turnover (NaN if not computed) |
+| `{char1}`, `{char2}`, ... | float | Characteristic values (NaN if not computed) |
+
+### Leg Values
+
+| Leg | Returns | Turnover | Chars |
+|-----|---------|----------|-------|
+| `ls` | Long minus short | Factor turnover (avg of L and S) | L minus S spread |
+| `l` | Long portfolio | Long portfolio turnover | Long portfolio avg |
+| `s` | Short portfolio | Short portfolio turnover | Short portfolio avg |
+
+For WithinFirmSort, `high` maps to `l` and `low` maps to `s` for consistency.
+
+### Sign Correction Behavior
+
+When `NamingConfig(sign_correct=True)`:
+
+1. **Check each (factor, weighting) mean**: If mean < 0, mark as sign-corrected
+2. **For sign-corrected combinations**:
+   - `ls` return is flipped (×-1)
+   - `l` and `s` labels are **swapped** (original long becomes `s`, original short becomes `l`)
+   - Turnover for `l` and `s` are swapped accordingly
+   - Chars for `l` and `s` are swapped accordingly
+   - `ls` chars: L-S after swap (maintains correct spread direction)
+3. **Factor name gets `*` suffix** for sign-corrected factors
+
+**Example:**
+- Original: cs EW mean = -0.5%, cs VW mean = +0.2%
+- After sign correction:
+  - cs EW: flipped to +0.5%, legs swapped, name = `cs*`
+  - cs VW: unchanged at +0.2%, legs not swapped, name = `cs`
+
+### API
+
+```python
+from PyBondLab import extract_panel
+
+# Basic usage - auto-detects turnover/chars
+panel = extract_panel(batch_results)
+
+# With naming configuration
+panel = extract_panel(
+    batch_results,
+    naming=NamingConfig(sign_correct=True),
+)
+
+# The function auto-detects:
+# - Whether turnover was computed → includes turnover column
+# - Whether chars were computed → includes char columns
+# - Holding period from results → freq column
+```
+
+### Function Signature
+
+```python
+def extract_panel(
+    results: Union[BatchResults, BatchWithinFirmResults],
+    naming: Optional[NamingConfig] = None,
+) -> pd.DataFrame:
+    """
+    Extract unified panel DataFrame from batch results.
+
+    Parameters
+    ----------
+    results : BatchResults or BatchWithinFirmResults
+        Batch processing results from BatchStrategyFormation or
+        BatchWithinFirmSortFormation.
+    naming : NamingConfig, optional
+        Naming configuration. If sign_correct=True, factors with
+        negative mean are flipped and legs are swapped.
+        Default: NamingConfig() (lowercase, no sign correction)
+
+    Returns
+    -------
+    pd.DataFrame
+        Panel with columns:
+        - date: Observation date
+        - factor: Factor name (with * suffix if sign-corrected)
+        - freq: Holding period (1=monthly, 3=quarterly, etc.)
+        - leg: 'ls', 'l', or 's'
+        - weighting: 'ew' or 'vw'
+        - return: Portfolio return
+        - turnover: Turnover (if computed, else NaN)
+        - {char_name}: Characteristic values (if computed, else not present)
+
+    Notes
+    -----
+    - For sign-corrected factors, 'l' and 's' legs are swapped
+    - Turnover for 'ls' leg is factor turnover: (L + S) / 2
+    - Chars for 'ls' leg is L - S spread
+    - WithinFirmSort 'high' maps to 'l', 'low' maps to 's'
+    """
+```
+
+### Implementation Details
+
+#### Step 1: Detect result type and metadata
+
+```python
+def extract_panel(results, naming=None):
+    if naming is None:
+        naming = NamingConfig()
+
+    # Detect result type
+    is_within_firm = hasattr(results, '_is_within_firm') and results._is_within_firm
+
+    # Get first result to check what's available
+    first_signal = next(iter(results))
+    first_result = results[first_signal]
+
+    has_turnover = first_result.ea.has_turnover
+    has_chars = first_result.ea.has_characteristics
+    char_names = []
+    if has_chars:
+        char_names = first_result.ea.characteristics.available_characteristics
+
+    # Get holding period
+    holding_period = getattr(results, '_holding_period', 1)
+```
+
+#### Step 2: Build rows for each (signal, weighting, leg) combination
+
+```python
+rows = []
+for signal_name in results:
+    result = results[signal_name]
+
+    # Get returns for EW and VW
+    ew_ls, vw_ls = result.ea.get_long_short()
+    ew_long, vw_long = result.ea.get_long_leg()
+    ew_short, vw_short = result.ea.get_short_leg()
+
+    # Check sign correction needed
+    ew_flip = naming.sign_correct and ew_ls.mean() < 0
+    vw_flip = naming.sign_correct and vw_ls.mean() < 0
+
+    # Generate factor names
+    ew_factor_name = make_factor_name(signal_name, naming, sign_corrected=ew_flip)
+    vw_factor_name = make_factor_name(signal_name, naming, sign_corrected=vw_flip)
+
+    # Build rows for each date
+    for date in ew_ls.index:
+        # EW rows
+        rows.append({
+            'date': date,
+            'factor': ew_factor_name,
+            'freq': holding_period,
+            'leg': 'ls',
+            'weighting': 'ew',
+            'return': -ew_ls[date] if ew_flip else ew_ls[date],
+            # ... turnover, chars
+        })
+        # EW long leg (swap if flipped)
+        rows.append({
+            'date': date,
+            'factor': ew_factor_name,
+            'freq': holding_period,
+            'leg': 's' if ew_flip else 'l',  # Swap if flipped
+            'weighting': 'ew',
+            'return': ew_long[date],
+            # ... turnover, chars
+        })
+        # ... etc for all combinations
+```
+
+#### Step 3: Handle turnover
+
+```python
+if has_turnover:
+    # Get portfolio-level turnover
+    ew_turn_df, vw_turn_df = result.ea.get_turnover(level='portfolio')
+    nport = ew_turn_df.shape[1]
+
+    # Long portfolio turnover (last column for SingleSort)
+    ew_long_turn = ew_turn_df.iloc[:, nport - 1]
+    ew_short_turn = ew_turn_df.iloc[:, 0]
+
+    # Factor turnover
+    ew_factor_turn = (ew_long_turn + ew_short_turn) / 2
+
+    # Add to rows, swapping l/s if sign-corrected
+```
+
+#### Step 4: Handle characteristics
+
+```python
+if has_chars:
+    ew_chars, vw_chars = result.ea.get_characteristics()
+    for char_name in char_names:
+        ew_char_df = ew_chars[char_name]
+
+        # Long and short portfolio chars (first and last columns)
+        ew_long_char = ew_char_df.iloc[:, -1]  # Last = long
+        ew_short_char = ew_char_df.iloc[:, 0]  # First = short
+
+        # L-S spread for 'ls' leg
+        ew_ls_char = ew_long_char - ew_short_char
+
+        # Add to row dict, swapping if sign-corrected
+```
+
+### Files to Create/Modify
+
+| File | Changes |
+|------|---------|
+| `PyBondLab/extract.py` | **NEW** - `extract_panel()` function |
+| `PyBondLab/__init__.py` | Export `extract_panel` |
+| `examples/validate_extract_panel.py` | **NEW** - Validation script |
+| `docs/ExtractPanel_README.md` | **NEW** - Documentation |
+
+### Validation Tests
+
+1. **Basic extraction** (no turnover, no chars)
+2. **With turnover** - verify factor and leg turnover values
+3. **With characteristics** - verify L-S spread for 'ls' leg
+4. **Sign correction** - verify leg swapping
+5. **WithinFirmSort** - verify high→l, low→s mapping
+6. **DoubleSort** - verify turnover averaging across conditioning groups
+7. **Multiple holding periods** - verify freq column
+
+### Example Usage
+
+```python
+from PyBondLab import BatchStrategyFormation, extract_panel, NamingConfig
+
+# Run batch strategy
+batch = BatchStrategyFormation(
+    data=data,
+    signals=['cs', 'value', 'momentum'],
+    holding_period=1,
+    num_portfolios=5,
+    turnover=True,
+    chars=['duration', 'maturity'],
+)
+results = batch.fit()
+
+# Extract unified panel
+panel = extract_panel(results, naming=NamingConfig(sign_correct=True))
+
+# Panel is ready for analysis
+print(panel.head())
+#        date  factor  freq leg weighting    return  turnover  duration  maturity
+# 2020-01-31      cs     1  ls        ew  0.012300  0.450000  2.100000  3.100000
+# 2020-01-31      cs     1  ls        vw  0.014500  0.420000  2.300000  2.900000
+# 2020-01-31      cs     1   l        ew  0.023400  0.480000  5.200000  7.300000
+# ...
+
+# Pivot to wide format if needed
+returns_wide = panel[panel['leg'] == 'ls'].pivot_table(
+    index='date',
+    columns=['factor', 'weighting'],
+    values='return'
+)
+
+# Filter by factor
+cs_panel = panel[panel['factor'].str.startswith('cs')]
+
+# Group by leg
+leg_means = panel.groupby(['factor', 'leg', 'weighting'])['return'].mean()
+```
+
+---
