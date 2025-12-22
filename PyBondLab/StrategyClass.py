@@ -354,6 +354,34 @@ class DoubleSort(Strategy):
             Print initialization details
         """
 
+        # Validate sort_var and sort_var2 are strings (common mistake: swapping with num_portfolios)
+        if not isinstance(sort_var, str):
+            raise TypeError(
+                f"sort_var must be a string (column name), got {type(sort_var).__name__}: {sort_var!r}. "
+                f"Did you pass arguments in the wrong order? Use keyword arguments: "
+                f"DoubleSort(holding_period=..., sort_var='col1', sort_var2='col2', "
+                f"num_portfolios=5, num_portfolios2=5, how='unconditional')"
+            )
+        if not isinstance(sort_var2, str):
+            raise TypeError(
+                f"sort_var2 must be a string (column name), got {type(sort_var2).__name__}: {sort_var2!r}. "
+                f"Did you pass arguments in the wrong order? Use keyword arguments: "
+                f"DoubleSort(holding_period=..., sort_var='col1', sort_var2='col2', "
+                f"num_portfolios=5, num_portfolios2=5, how='unconditional')"
+            )
+
+        # Validate num_portfolios types if provided (common mistake: passing string column name)
+        if num_portfolios is not None and not isinstance(num_portfolios, (int, np.integer)):
+            raise TypeError(
+                f"num_portfolios must be an integer, got {type(num_portfolios).__name__}: {num_portfolios!r}. "
+                f"Did you pass a column name where num_portfolios was expected?"
+            )
+        if num_portfolios2 is not None and not isinstance(num_portfolios2, (int, np.integer)):
+            raise TypeError(
+                f"num_portfolios2 must be an integer, got {type(num_portfolios2).__name__}: {num_portfolios2!r}. "
+                f"Did you pass a column name where num_portfolios2 was expected?"
+            )
+
         # Validate sorting method
         if how not in ['unconditional', 'conditional']:
             raise ValueError(f"how must be 'unconditional' or 'conditional', got '{how}'")
