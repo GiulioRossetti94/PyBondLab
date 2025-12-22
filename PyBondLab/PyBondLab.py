@@ -151,6 +151,18 @@ class StrategyFormation:
         **kwargs
     ):
         """Initialize StrategyFormation with data and strategy."""
+        # Validate parameter types (catch common mistakes early)
+        if not isinstance(data, pd.DataFrame):
+            raise TypeError(
+                f"data must be a pandas DataFrame, got {type(data).__name__}"
+            )
+        if not isinstance(strategy, Strategy):
+            raise TypeError(
+                f"strategy must be a Strategy object (SingleSort, DoubleSort, WithinFirmSort, etc.), "
+                f"got {type(strategy).__name__}: {strategy!r}. "
+                f"Example: strategy=pbl.SingleSort(holding_period=1, sort_var='signal', num_portfolios=5)"
+            )
+
         # Extract Option 6 caching parameter before passing to config
         self._cached_precomp = kwargs.pop('cached_precomp', None)
 

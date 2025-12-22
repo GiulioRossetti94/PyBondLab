@@ -525,6 +525,30 @@ class BatchStrategyFormation:
         chunk_size: Optional[int] = None,
         verbose: bool = True,
     ):
+        # Validate parameter types (catch common mistakes early)
+        if not isinstance(signals, (list, tuple)):
+            raise TypeError(
+                f"signals must be a list of column names, got {type(signals).__name__}: {signals!r}. "
+                f"Example: signals=['signal1', 'signal2']"
+            )
+        if signals and not all(isinstance(s, str) for s in signals):
+            bad = [s for s in signals if not isinstance(s, str)]
+            raise TypeError(
+                f"All signals must be strings (column names), got non-string values: {bad}"
+            )
+        if not isinstance(holding_period, (int, np.integer)):
+            raise TypeError(
+                f"holding_period must be an integer, got {type(holding_period).__name__}: {holding_period!r}"
+            )
+        if not isinstance(num_portfolios, (int, np.integer)):
+            raise TypeError(
+                f"num_portfolios must be an integer, got {type(num_portfolios).__name__}: {num_portfolios!r}"
+            )
+        if not isinstance(n_jobs, (int, np.integer)):
+            raise TypeError(
+                f"n_jobs must be an integer, got {type(n_jobs).__name__}: {n_jobs!r}"
+            )
+
         # Store verbose first (needed by _prepare_data)
         self.verbose = verbose
 

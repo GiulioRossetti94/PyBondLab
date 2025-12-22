@@ -229,6 +229,21 @@ class SingleSort(Strategy):
             Print initialization details
         """
 
+        # Validate parameter types (catch common mistakes early)
+        if not isinstance(holding_period, (int, np.integer)):
+            raise TypeError(
+                f"holding_period must be an integer, got {type(holding_period).__name__}: {holding_period!r}"
+            )
+        if not isinstance(sort_var, str):
+            raise TypeError(
+                f"sort_var must be a string (column name), got {type(sort_var).__name__}: {sort_var!r}. "
+                f"Use keyword arguments: SingleSort(holding_period=1, sort_var='column_name', num_portfolios=5)"
+            )
+        if num_portfolios is not None and not isinstance(num_portfolios, (int, np.integer)):
+            raise TypeError(
+                f"num_portfolios must be an integer, got {type(num_portfolios).__name__}: {num_portfolios!r}"
+            )
+
         # Validate and set num_portfolios/breakpoints
         num_portfolios = self._validate_portfolios_and_breakpoints(num_portfolios, breakpoints)
         # call parent constructor
@@ -1050,6 +1065,25 @@ class WithinFirmSort(Strategy):
         verbose: bool = True
     ):
         """Initialize WithinFirmSort strategy."""
+
+        # Validate parameter types (catch common mistakes early)
+        if not isinstance(holding_period, (int, np.integer)):
+            raise TypeError(
+                f"holding_period must be an integer, got {type(holding_period).__name__}: {holding_period!r}"
+            )
+        if not isinstance(sort_var, str):
+            raise TypeError(
+                f"sort_var must be a string (column name), got {type(sort_var).__name__}: {sort_var!r}. "
+                f"Use keyword arguments: WithinFirmSort(holding_period=1, sort_var='column_name', firm_id_col='PERMNO')"
+            )
+        if not isinstance(firm_id_col, str):
+            raise TypeError(
+                f"firm_id_col must be a string (column name), got {type(firm_id_col).__name__}: {firm_id_col!r}"
+            )
+        if not isinstance(min_bonds_per_firm, (int, np.integer)):
+            raise TypeError(
+                f"min_bonds_per_firm must be an integer, got {type(min_bonds_per_firm).__name__}: {min_bonds_per_firm!r}"
+            )
 
         # Validate num_portfolios
         if num_portfolios != 2:

@@ -258,6 +258,30 @@ class BatchWithinFirmSortFormation(BaseBatchFormation):
         chunk_size: Optional[int] = None,
         verbose: bool = True,
     ):
+        # Validate parameter types (catch common mistakes early)
+        if not isinstance(signals, (list, tuple)):
+            raise TypeError(
+                f"signals must be a list of column names, got {type(signals).__name__}: {signals!r}. "
+                f"Example: signals=['signal1', 'signal2']"
+            )
+        if signals and not all(isinstance(s, str) for s in signals):
+            bad = [s for s in signals if not isinstance(s, str)]
+            raise TypeError(
+                f"All signals must be strings (column names), got non-string values: {bad}"
+            )
+        if not isinstance(firm_id_col, str):
+            raise TypeError(
+                f"firm_id_col must be a string (column name), got {type(firm_id_col).__name__}: {firm_id_col!r}"
+            )
+        if not isinstance(min_bonds_per_firm, (int, np.integer)):
+            raise TypeError(
+                f"min_bonds_per_firm must be an integer, got {type(min_bonds_per_firm).__name__}: {min_bonds_per_firm!r}"
+            )
+        if not isinstance(n_jobs, (int, np.integer)):
+            raise TypeError(
+                f"n_jobs must be an integer, got {type(n_jobs).__name__}: {n_jobs!r}"
+            )
+
         # WithinFirmSort-specific parameters
         self.firm_id_col = firm_id_col
         self.rating_bins = rating_bins if rating_bins is not None else [-np.inf, 7, 10, np.inf]
