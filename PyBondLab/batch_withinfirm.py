@@ -48,6 +48,99 @@ from .constants import ColumnNames
 # Worker function for parallel processing (must be at module level for pickle)
 # =============================================================================
 
+def _estimate_peak_memory_mb(data: pd.DataFrame, n_signals: int, n_workers: int,
+                              chunk_size: Optional[int] = None) -> Tuple[float, float]:
+    """
+    Estimate peak memory usage for batch processing.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Input data
+    n_signals : int
+        Number of signals to process
+    n_workers : int
+        Number of parallel workers
+    chunk_size : int, optional
+        If set, limits concurrent signals
+
+    Returns
+    -------
+    tuple
+        (per_worker_mb, peak_total_mb)
+    """
+    # Estimate data size per worker (minimal data)
+    base_data_mb = data.memory_usage(deep=True).sum() / 1024 / 1024
+
+    # Minimal data is typically ~10-20% of full data (only required columns)
+    # Assume 30% to be conservative
+    per_worker_data_mb = base_data_mb * 0.30
+
+    # Add overhead for strategy processing (intermediate DataFrames, results, etc.)
+    # Conservative estimate: 2x the data size for processing overhead
+    per_worker_overhead_factor = 2.5
+    per_worker_mb = per_worker_data_mb * per_worker_overhead_factor
+
+    # Calculate effective concurrent workers
+    if chunk_size:
+        effective_concurrent = min(n_workers, chunk_size, n_signals)
+    else:
+        effective_concurrent = min(n_workers, n_signals)
+
+    # Peak = base data + concurrent workers * per_worker
+    peak_total_mb = base_data_mb + (effective_concurrent * per_worker_mb)
+
+    return per_worker_mb, peak_total_mb
+
+
+def _get_available_memory_mb() -> float:
+    """Get available system memory in MB."""
+    try:
+        import psutil
+        return psutil.virtual_memory().available / 1024 / 1024
+    except ImportError:
+        # If psutil not available, return a conservative estimate
+        return 8000  # Assume 8GB available
+
+
+def _suggest_chunk_size(data: pd.DataFrame, n_signals: int, n_workers: int,
+                        target_memory_fraction: float = 0.7) -> Optional[int]:
+    """
+    Suggest a chunk_size to keep memory usage under control.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Input data
+    n_signals : int
+        Number of signals to process
+    n_workers : int
+        Number of parallel workers
+    target_memory_fraction : float
+        Target fraction of available memory to use (default 0.7 = 70%)
+
+    Returns
+    -------
+    int or None
+        Suggested chunk_size, or None if no chunking needed
+    """
+    available_mb = _get_available_memory_mb()
+    target_mb = available_mb * target_memory_fraction
+
+    per_worker_mb, _ = _estimate_peak_memory_mb(data, n_signals, n_workers)
+    base_data_mb = data.memory_usage(deep=True).sum() / 1024 / 1024
+
+    # How many concurrent workers can we support?
+    max_concurrent = max(1, int((target_mb - base_data_mb) / per_worker_mb))
+
+    if max_concurrent >= n_signals:
+        return None  # No chunking needed
+
+    # Chunk size = how many signals we process before gc.collect()
+    # Set it to fit within memory limits
+    return max(1, max_concurrent)
+
+
 def _process_withinfirm_signal(args: Tuple) -> Tuple[str, Any, float, Optional[str]]:
     """
     Process a single WithinFirmSort signal - worker function for parallel execution.
@@ -100,6 +193,63 @@ def _process_withinfirm_signal(args: Tuple) -> Tuple[str, Any, float, Optional[s
     except Exception as e:
         elapsed = time.time() - t_start
         return (signal, None, elapsed, str(e))
+
+
+def _process_withinfirm_batch(args: Tuple) -> List[Tuple[str, Any, float, Optional[str]]]:
+    """
+    Process a batch of WithinFirmSort signals - worker function for parallel execution.
+
+    Parameters
+    ----------
+    args : tuple
+        (signals, data, firm_id_col, rating_bins, min_bonds_per_firm,
+         turnover, chars, rating)
+
+    Returns
+    -------
+    list
+        List of (signal_name, result_or_none, elapsed_time, error_or_none) tuples
+    """
+    (signals, data, firm_id_col, rating_bins, min_bonds_per_firm,
+     turnover, chars, rating) = args
+
+    results = []
+    for signal in signals:
+        t_start = time.time()
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+
+                strategy = WithinFirmSort(
+                    holding_period=1,
+                    sort_var=signal,
+                    firm_id_col=firm_id_col,
+                    min_bonds_per_firm=min_bonds_per_firm,
+                    rating_bins=rating_bins,
+                    num_portfolios=2,
+                    verbose=False
+                )
+
+                sf_config = StrategyFormationConfig(
+                    data=DataConfig(rating=rating, chars=chars),
+                    formation=FormationConfig(
+                        dynamic_weights=True,
+                        compute_turnover=turnover,
+                        verbose=False,
+                    )
+                )
+
+                sf = StrategyFormation(data=data, strategy=strategy, config=sf_config)
+                result = sf.fit()
+
+                elapsed = time.time() - t_start
+                results.append((signal, result, elapsed, None))
+
+        except Exception as e:
+            elapsed = time.time() - t_start
+            results.append((signal, None, elapsed, str(e)))
+
+    return results
 
 
 # =============================================================================
@@ -222,7 +372,8 @@ class BatchWithinFirmSortFormation(BaseBatchFormation):
     signals_per_worker : int, default=1
         Number of signals per worker (reduces overhead)
     chunk_size : int, optional
-        Process in chunks to limit memory
+        Process in chunks to limit memory. If 'auto', automatically determines
+        based on available system memory.
     verbose : bool, default=True
         Show progress output
 
@@ -255,7 +406,7 @@ class BatchWithinFirmSortFormation(BaseBatchFormation):
         columns: Optional[Dict[str, str]] = None,
         n_jobs: int = 1,
         signals_per_worker: int = 1,
-        chunk_size: Optional[int] = None,
+        chunk_size: Optional[Union[int, str]] = None,
         verbose: bool = True,
     ):
         # Validate parameter types (catch common mistakes early)
@@ -291,6 +442,15 @@ class BatchWithinFirmSortFormation(BaseBatchFormation):
         self.rating = rating
         self.subset_filter = subset_filter
 
+        # Handle auto chunk_size
+        effective_chunk_size = None
+        if chunk_size == 'auto':
+            effective_chunk_size = _suggest_chunk_size(data, len(signals), n_jobs)
+            if verbose and effective_chunk_size is not None:
+                print(f"Auto chunk_size: {effective_chunk_size} (based on available memory)")
+        elif isinstance(chunk_size, (int, np.integer)):
+            effective_chunk_size = int(chunk_size)
+
         # Initialize base class
         super().__init__(
             data=data,
@@ -298,9 +458,24 @@ class BatchWithinFirmSortFormation(BaseBatchFormation):
             columns=columns,
             n_jobs=n_jobs,
             signals_per_worker=signals_per_worker,
-            chunk_size=chunk_size,
+            chunk_size=effective_chunk_size,
             verbose=verbose,
         )
+
+        # Memory warning for slow path with parallel execution
+        if turnover and n_jobs > 1 and verbose and effective_chunk_size is None:
+            _, peak_mb = _estimate_peak_memory_mb(data, len(signals), n_jobs)
+            available_mb = _get_available_memory_mb()
+            if peak_mb > available_mb * 0.8:
+                suggested = _suggest_chunk_size(data, len(signals), n_jobs)
+                warnings.warn(
+                    f"\n⚠️  Memory Warning: Estimated peak usage {peak_mb:.0f}MB may exceed "
+                    f"available memory ({available_mb:.0f}MB).\n"
+                    f"   Consider using chunk_size={suggested or 10} to limit memory usage:\n"
+                    f"   BatchWithinFirmSortFormation(..., chunk_size={suggested or 10})\n"
+                    f"   Or use chunk_size='auto' for automatic memory management.",
+                    UserWarning
+                )
 
         # Store config
         self.config = {
@@ -313,7 +488,7 @@ class BatchWithinFirmSortFormation(BaseBatchFormation):
             'subset_filter': subset_filter,
             'n_jobs': n_jobs,
             'signals_per_worker': signals_per_worker,
-            'chunk_size': chunk_size,
+            'chunk_size': effective_chunk_size,
         }
 
     def _get_required_columns(self) -> List[str]:
@@ -681,7 +856,7 @@ class BatchWithinFirmSortFormation(BaseBatchFormation):
         return results
 
     def _fit_parallel(self, n_workers: int) -> BatchWithinFirmResults:
-        """Parallel processing of signals with warmup."""
+        """Parallel processing of signals with warmup and chunking."""
         results = BatchWithinFirmResults(
             signals=self.signals.copy(),
             config=self.config.copy(),
@@ -735,52 +910,148 @@ class BatchWithinFirmSortFormation(BaseBatchFormation):
         if not remaining_signals:
             return results
 
-        if self.verbose:
-            print(f"  Processing {len(remaining_signals)} remaining signals in parallel...")
+        # Determine effective chunk size (process in chunks to limit memory)
+        effective_chunk_size = self.chunk_size if self.chunk_size else len(remaining_signals)
 
-        # Prepare worker args with minimal data
-        worker_args = []
-        for signal in remaining_signals:
-            minimal_data = self._get_minimal_data(signal)
-            worker_args.append((
-                signal, minimal_data, self.firm_id_col, self.rating_bins,
-                self.min_bonds_per_firm, self.turnover, self.chars, self.rating
-            ))
+        # Process remaining signals in chunks
+        total_remaining = len(remaining_signals)
+        processed = 0
 
-        # Show data reduction stats
-        if self.verbose and worker_args:
-            self._print_data_size_stats(worker_args[0][1])
+        for chunk_start in range(0, total_remaining, effective_chunk_size):
+            chunk_end = min(chunk_start + effective_chunk_size, total_remaining)
+            chunk_signals = remaining_signals[chunk_start:chunk_end]
 
-        # Execute in parallel
-        mp_context = mp.get_context(start_method)
-        with ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_context) as executor:
-            future_to_signal = {
-                executor.submit(_process_withinfirm_signal, args): args[0]
-                for args in worker_args
-            }
+            if self.verbose:
+                if self.chunk_size:
+                    print(f"\n  Processing chunk {chunk_start // effective_chunk_size + 1} "
+                          f"({len(chunk_signals)} signals)...")
+                else:
+                    print(f"  Processing {len(chunk_signals)} remaining signals in parallel...")
 
-            if self.verbose and TQDM_AVAILABLE:
-                futures_iter = tqdm(
-                    as_completed(future_to_signal),
-                    total=len(remaining_signals),
-                    desc="Parallel processing"
-                )
-            else:
-                futures_iter = as_completed(future_to_signal)
+            # Process this chunk
+            self._process_chunk(
+                chunk_signals, results, n_workers, start_method, processed, total_remaining
+            )
+            processed += len(chunk_signals)
 
-            for future in futures_iter:
-                signal = future_to_signal[future]
-                try:
-                    sig_name, result, elapsed, error = future.result()
-                    if error is None:
-                        results.results[sig_name] = result
-                        results.timings[sig_name] = elapsed
-                    else:
-                        results.errors[sig_name] = error
-                except Exception as e:
-                    results.errors[signal] = str(e)
+            # Memory cleanup between chunks
+            if self.chunk_size and chunk_end < total_remaining:
+                gc.collect()
 
         return results
+
+    def _process_chunk(self, signals: List[str], results: BatchWithinFirmResults,
+                       n_workers: int, start_method: str,
+                       offset: int, total: int):
+        """Process a chunk of signals in parallel."""
+
+        # Group signals into batches for workers (signals_per_worker)
+        if self.signals_per_worker > 1:
+            # Batch mode: group signals for each worker
+            signal_batches = []
+            for i in range(0, len(signals), self.signals_per_worker):
+                batch = signals[i:i + self.signals_per_worker]
+                signal_batches.append(batch)
+
+            # Prepare worker args with batched data
+            worker_args = []
+            for batch in signal_batches:
+                batch_data = self._get_minimal_data_batch(batch)
+                worker_args.append((
+                    batch, batch_data, self.firm_id_col, self.rating_bins,
+                    self.min_bonds_per_firm, self.turnover, self.chars, self.rating
+                ))
+
+            if self.verbose and offset == 0:
+                # Show data reduction stats on first chunk
+                full_size = self.data.memory_usage(deep=True).sum() / 1024 / 1024
+                batch_size = worker_args[0][1].memory_usage(deep=True).sum() / 1024 / 1024
+                reduction = (1 - batch_size / full_size) * 100
+                print(f"  Data size: {full_size:.1f}MB → {batch_size:.1f}MB per worker ({reduction:.0f}% reduction)")
+                print(f"  Worker batches: {len(worker_args)} (processing {len(signals)} signals)")
+
+            # Execute batched workers
+            mp_context = mp.get_context(start_method)
+            with ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_context) as executor:
+                future_to_batch = {
+                    executor.submit(_process_withinfirm_batch, args): args[0]
+                    for args in worker_args
+                }
+
+                completed = 0
+                for future in as_completed(future_to_batch):
+                    batch_signals = future_to_batch[future]
+                    try:
+                        batch_results = future.result()
+                        for sig_name, result, elapsed, error in batch_results:
+                            if error is None:
+                                results.results[sig_name] = result
+                                results.timings[sig_name] = elapsed
+                            else:
+                                results.errors[sig_name] = error
+                            completed += 1
+
+                            if self.verbose and not TQDM_AVAILABLE:
+                                status = "OK" if error is None else "ERROR"
+                                print(f"  [{offset + completed}/{total}] {sig_name}: {status}")
+
+                    except Exception as e:
+                        for sig in batch_signals:
+                            results.errors[sig] = str(e)
+                        completed += len(batch_signals)
+
+        else:
+            # Single signal mode (original behavior but with chunking)
+            worker_args = []
+            for signal in signals:
+                minimal_data = self._get_minimal_data(signal)
+                worker_args.append((
+                    signal, minimal_data, self.firm_id_col, self.rating_bins,
+                    self.min_bonds_per_firm, self.turnover, self.chars, self.rating
+                ))
+
+            if self.verbose and offset == 0:
+                # Show data reduction stats on first chunk
+                full_size = self.data.memory_usage(deep=True).sum() / 1024 / 1024
+                min_size = worker_args[0][1].memory_usage(deep=True).sum() / 1024 / 1024
+                reduction = (1 - min_size / full_size) * 100
+                print(f"  Data size: {full_size:.1f}MB → {min_size:.1f}MB per worker ({reduction:.0f}% reduction)")
+
+            mp_context = mp.get_context(start_method)
+            completed = 0
+            with ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_context) as executor:
+                future_to_signal = {
+                    executor.submit(_process_withinfirm_signal, args): args[0]
+                    for args in worker_args
+                }
+
+                if self.verbose and TQDM_AVAILABLE:
+                    futures_iter = tqdm(
+                        as_completed(future_to_signal),
+                        total=len(signals),
+                        desc="Parallel processing"
+                    )
+                else:
+                    futures_iter = as_completed(future_to_signal)
+
+                for future in futures_iter:
+                    signal = future_to_signal[future]
+                    try:
+                        sig_name, result, elapsed, error = future.result()
+                        if error is None:
+                            results.results[sig_name] = result
+                            results.timings[sig_name] = elapsed
+                        else:
+                            results.errors[sig_name] = error
+                        completed += 1
+
+                        if self.verbose and not TQDM_AVAILABLE:
+                            status = "OK" if error is None else "ERROR"
+                            print(f"  [{offset + completed}/{total}] {sig_name}: {status}")
+
+                    except Exception as e:
+                        results.errors[signal] = str(e)
+                        completed += 1
 
 
 class _BatchResult:
