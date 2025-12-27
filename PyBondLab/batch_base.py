@@ -6,7 +6,8 @@ This module provides shared functionality for BatchStrategyFormation and
 BatchWithinFirmSortFormation, including:
 - Column mapping with verbose output
 - Platform-aware multiprocessing (fork vs spawn)
-- Memory optimization (minimal data transfer)
+- Memory optimization (minimal data transfer, lazy arg preparation)
+- Auto-tuning of parallel parameters
 - Progress bars (tqdm)
 - Summary output with timing statistics
 
@@ -26,11 +27,44 @@ import pandas as pd
 
 
 # =============================================================================
+# Platform Detection
+# =============================================================================
+
+def _is_windows() -> bool:
+    """Check if running on Windows."""
+    return platform.system() == 'Windows'
+
+
+def _is_fork_safe() -> bool:
+    """Check if fork-based multiprocessing is available (Linux/macOS)."""
+    return platform.system() != 'Windows'
+
+
+# =============================================================================
 # Memory Management Functions
 # =============================================================================
 
+def _get_available_memory_mb() -> float:
+    """Get available system memory in MB."""
+    try:
+        import psutil
+        return psutil.virtual_memory().available / 1024 / 1024
+    except ImportError:
+        # If psutil not available, return a conservative estimate
+        return 8000  # Assume 8GB available
+
+
+def _get_total_memory_mb() -> float:
+    """Get total system memory in MB."""
+    try:
+        import psutil
+        return psutil.virtual_memory().total / 1024 / 1024
+    except ImportError:
+        return 16000  # Assume 16GB total
+
+
 def _estimate_memory_components(data: pd.DataFrame, n_workers: int,
-                                  required_columns: List[str]) -> Tuple[float, float, float]:
+                                  required_columns: List[str]) -> Dict[str, float]:
     """
     Estimate memory components for batch processing.
 
@@ -45,8 +79,13 @@ def _estimate_memory_components(data: pd.DataFrame, n_workers: int,
 
     Returns
     -------
-    tuple
-        (base_data_mb, minimal_data_mb, processing_overhead_per_worker_mb)
+    dict
+        Memory components in MB:
+        - base_data_mb: Size of full DataFrame in main process
+        - minimal_data_mb: Size of minimal data per signal
+        - pickle_overhead_mb: Overhead from pickle serialization (2x on Windows)
+        - worker_python_mb: Python runtime per worker process
+        - processing_overhead_mb: Intermediate DataFrames during processing
     """
     # Base data size
     base_data_mb = data.memory_usage(deep=True).sum() / 1024 / 1024
@@ -59,20 +98,45 @@ def _estimate_memory_components(data: pd.DataFrame, n_workers: int,
         # Fallback: estimate as fraction of full data
         minimal_data_mb = base_data_mb * 0.15
 
-    # Processing overhead per worker (intermediate DataFrames, results, etc.)
-    # Conservative estimate: 1.5x the minimal data size
+    # Platform-specific overhead
+    if _is_windows():
+        # Windows 'spawn' requires full pickle serialization
+        # Data is pickled (copy), sent, unpickled (another copy)
+        pickle_overhead_factor = 2.0
+        worker_python_mb = 150.0  # Each worker loads full Python runtime
+    else:
+        # Linux/macOS 'fork' uses copy-on-write
+        # Much less overhead, but still some for modified pages
+        pickle_overhead_factor = 1.2
+        worker_python_mb = 50.0  # Shared memory, less overhead
+
+    pickle_overhead_mb = minimal_data_mb * pickle_overhead_factor
+
+    # Processing overhead (intermediate DataFrames, results, etc.)
     processing_overhead_mb = minimal_data_mb * 1.5
 
-    return base_data_mb, minimal_data_mb, processing_overhead_mb
+    return {
+        'base_data_mb': base_data_mb,
+        'minimal_data_mb': minimal_data_mb,
+        'pickle_overhead_mb': pickle_overhead_mb,
+        'worker_python_mb': worker_python_mb,
+        'processing_overhead_mb': processing_overhead_mb,
+    }
 
 
 def _estimate_peak_memory_mb(data: pd.DataFrame, n_signals: int, n_workers: int,
                               chunk_size: Optional[int] = None,
-                              required_columns: Optional[List[str]] = None) -> Tuple[float, float]:
+                              max_in_flight: Optional[int] = None,
+                              required_columns: Optional[List[str]] = None) -> Dict[str, float]:
     """
     Estimate peak memory usage for batch processing.
 
-    Peak memory = base_data + chunk_size × minimal_data + n_workers × overhead
+    Uses a realistic memory model that accounts for:
+    - Base data in main process
+    - Worker args prepared at once (limited by max_in_flight)
+    - Pickle serialization overhead (platform-dependent)
+    - Worker Python runtime overhead
+    - Processing overhead in workers
 
     Parameters
     ----------
@@ -83,53 +147,73 @@ def _estimate_peak_memory_mb(data: pd.DataFrame, n_signals: int, n_workers: int,
     n_workers : int
         Number of parallel workers
     chunk_size : int, optional
-        If set, limits signals prepared at once
+        If set, limits signals per chunk
+    max_in_flight : int, optional
+        Maximum concurrent tasks (limits prepared args)
     required_columns : list, optional
         Required columns for minimal data estimation
 
     Returns
     -------
-    tuple
-        (minimal_data_mb, peak_total_mb)
+    dict
+        Memory estimates in MB:
+        - minimal_data_mb: Per-signal minimal data size
+        - peak_mb: Estimated peak memory usage
+        - available_mb: Available system memory
+        - is_safe: Whether peak is under safe threshold
     """
     if required_columns is None:
         required_columns = ['date', 'ID', 'ret', 'VW', 'RATING_NUM']
 
-    base_mb, minimal_mb, overhead_mb = _estimate_memory_components(
-        data, n_workers, required_columns
-    )
+    components = _estimate_memory_components(data, n_workers, required_columns)
 
-    # Effective chunk size (how many worker args prepared at once)
+    # Effective limits
     effective_chunk = chunk_size if chunk_size else n_signals
+    effective_in_flight = max_in_flight if max_in_flight else min(n_workers, effective_chunk)
 
-    # Peak = base + chunk × minimal_data + concurrent_workers × overhead
-    concurrent_workers = min(n_workers, effective_chunk)
-    peak_mb = base_mb + (effective_chunk * minimal_mb) + (concurrent_workers * overhead_mb)
+    # Peak memory calculation:
+    # 1. Base data stays in main process
+    # 2. max_in_flight worker args are prepared at once
+    # 3. Each arg goes through pickle (overhead)
+    # 4. Workers have Python runtime + processing overhead
 
-    return minimal_mb, peak_mb
+    base_mb = components['base_data_mb']
+    args_mb = effective_in_flight * components['minimal_data_mb']
+    pickle_mb = effective_in_flight * components['pickle_overhead_mb']
+    workers_mb = n_workers * (components['worker_python_mb'] + components['processing_overhead_mb'])
+
+    peak_mb = base_mb + args_mb + pickle_mb + workers_mb
+    available_mb = _get_available_memory_mb()
+
+    # Safe threshold: 70% on Linux/macOS, 50% on Windows (more conservative)
+    safe_fraction = 0.50 if _is_windows() else 0.70
+    safe_threshold = available_mb * safe_fraction
+
+    return {
+        'minimal_data_mb': components['minimal_data_mb'],
+        'base_data_mb': base_mb,
+        'args_mb': args_mb,
+        'pickle_mb': pickle_mb,
+        'workers_mb': workers_mb,
+        'peak_mb': peak_mb,
+        'available_mb': available_mb,
+        'safe_threshold_mb': safe_threshold,
+        'is_safe': peak_mb <= safe_threshold,
+    }
 
 
-def _get_available_memory_mb() -> float:
-    """Get available system memory in MB."""
-    try:
-        import psutil
-        return psutil.virtual_memory().available / 1024 / 1024
-    except ImportError:
-        # If psutil not available, return a conservative estimate
-        return 8000  # Assume 8GB available
-
-
-def _suggest_chunk_size(data: pd.DataFrame, n_signals: int, n_workers: int,
-                        target_memory_fraction: float = 0.7,
-                        required_columns: Optional[List[str]] = None) -> Optional[int]:
+def _suggest_parallel_config(data: pd.DataFrame, n_signals: int,
+                              requested_workers: int,
+                              required_columns: Optional[List[str]] = None,
+                              verbose: bool = False) -> Dict[str, Any]:
     """
-    Suggest a chunk_size to keep memory usage under control.
+    Suggest optimal parallel configuration based on available memory.
 
-    Memory model:
-        Peak = base_data + chunk_size × minimal_data + n_workers × overhead
-
-    Solving for chunk_size:
-        chunk_size = (target - base_data - n_workers × overhead) / minimal_data
+    This is the main entry point for auto-tuning. It determines:
+    - n_workers: May be reduced if memory is tight
+    - chunk_size: How many signals per chunk
+    - signals_per_worker: How many signals each worker processes
+    - max_in_flight: Maximum concurrent task submissions
 
     Parameters
     ----------
@@ -137,51 +221,158 @@ def _suggest_chunk_size(data: pd.DataFrame, n_signals: int, n_workers: int,
         Input data
     n_signals : int
         Number of signals to process
-    n_workers : int
-        Number of parallel workers
-    target_memory_fraction : float
-        Target fraction of available memory to use (default 0.7 = 70%)
+    requested_workers : int
+        Requested number of workers (may be reduced)
     required_columns : list, optional
         Required columns for minimal data estimation
+    verbose : bool
+        Print memory diagnostics
 
     Returns
     -------
-    int or None
-        Suggested chunk_size, or None if no chunking needed
+    dict
+        Recommended configuration:
+        - n_workers: Actual workers to use
+        - chunk_size: Signals per chunk (None = no chunking)
+        - signals_per_worker: Signals batched per worker
+        - max_in_flight: Max concurrent submissions
+        - memory_info: Dict with memory details
+        - warnings: List of warning messages
     """
     if required_columns is None:
         required_columns = ['date', 'ID', 'ret', 'VW', 'RATING_NUM']
 
+    warnings = []
     available_mb = _get_available_memory_mb()
-    target_mb = available_mb * target_memory_fraction
+    total_mb = _get_total_memory_mb()
 
-    base_mb, minimal_mb, overhead_mb = _estimate_memory_components(
-        data, n_workers, required_columns
+    # Get memory components
+    components = _estimate_memory_components(data, requested_workers, required_columns)
+    minimal_mb = components['minimal_data_mb']
+    base_mb = components['base_data_mb']
+
+    # Platform-specific safe threshold
+    safe_fraction = 0.50 if _is_windows() else 0.70
+    target_mb = available_mb * safe_fraction
+
+    # Start with requested config
+    n_workers = requested_workers
+
+    # Auto-tune signals_per_worker based on signal count
+    if n_signals >= 50:
+        signals_per_worker = 3
+    elif n_signals >= 20:
+        signals_per_worker = 2
+    else:
+        signals_per_worker = 1
+
+    # Calculate max_in_flight to limit prepared args
+    # We want to limit the memory from prepared args to ~30% of target
+    args_budget_mb = target_mb * 0.30
+    max_in_flight = max(2, int(args_budget_mb / (minimal_mb * signals_per_worker)))
+    max_in_flight = min(max_in_flight, n_workers, n_signals)
+
+    # Calculate chunk_size
+    # Chunk should be large enough for efficient parallel processing
+    # but small enough to allow GC between chunks
+    chunk_size = max(max_in_flight * signals_per_worker, n_workers * 2)
+
+    # Estimate peak with these settings
+    peak_info = _estimate_peak_memory_mb(
+        data, n_signals, n_workers,
+        chunk_size=chunk_size,
+        max_in_flight=max_in_flight,
+        required_columns=required_columns
     )
 
-    # Available budget for worker args after accounting for base data and worker overhead
-    budget_for_args = target_mb - base_mb - (n_workers * overhead_mb)
+    # If still too high, reduce workers
+    if not peak_info['is_safe'] and n_workers > 1:
+        # Try reducing workers
+        for try_workers in range(n_workers - 1, 0, -1):
+            peak_info = _estimate_peak_memory_mb(
+                data, n_signals, try_workers,
+                chunk_size=chunk_size,
+                max_in_flight=min(max_in_flight, try_workers),
+                required_columns=required_columns
+            )
+            if peak_info['is_safe']:
+                warnings.append(
+                    f"Reduced workers from {n_workers} to {try_workers} due to memory constraints"
+                )
+                n_workers = try_workers
+                max_in_flight = min(max_in_flight, try_workers)
+                break
 
-    if budget_for_args <= 0:
-        # Not enough memory even for n_workers - suggest minimal chunk
-        return max(1, n_workers)
+    # Final check - if still not safe, warn but proceed
+    if not peak_info['is_safe']:
+        warnings.append(
+            f"Warning: Estimated peak memory ({peak_info['peak_mb']:.0f}MB) exceeds "
+            f"safe threshold ({peak_info['safe_threshold_mb']:.0f}MB). "
+            f"Consider reducing n_jobs or processing fewer signals at once."
+        )
 
-    # How many signals can we prepare at once?
-    max_chunk = int(budget_for_args / minimal_mb) if minimal_mb > 0 else n_signals
+    # If no chunking needed (all signals fit safely)
+    if chunk_size >= n_signals and peak_info['is_safe']:
+        chunk_size = None
 
-    # Ensure chunk_size is at least n_workers (no point in smaller chunks)
-    max_chunk = max(max_chunk, n_workers)
+    return {
+        'n_workers': n_workers,
+        'chunk_size': chunk_size,
+        'signals_per_worker': signals_per_worker,
+        'max_in_flight': max_in_flight,
+        'memory_info': {
+            'available_mb': available_mb,
+            'total_mb': total_mb,
+            'base_data_mb': base_mb,
+            'minimal_data_mb': minimal_mb,
+            'peak_mb': peak_info['peak_mb'],
+            'safe_threshold_mb': peak_info['safe_threshold_mb'],
+            'is_safe': peak_info['is_safe'],
+            'platform': 'Windows (spawn)' if _is_windows() else 'Linux/macOS (fork)',
+        },
+        'warnings': warnings,
+    }
 
-    if max_chunk >= n_signals:
-        return None  # No chunking needed
 
-    # Round up to a reasonable multiple for cleaner batching
-    # Aim for 2-5 chunks total
-    ideal_chunks = 3
-    suggested = max(n_workers, (n_signals + ideal_chunks - 1) // ideal_chunks)
+def _print_memory_config(config: Dict[str, Any], n_signals: int, verbose: bool = True):
+    """
+    Print memory configuration in a clean, human-readable format.
 
-    # Don't exceed what memory allows
-    return min(suggested, max_chunk)
+    Parameters
+    ----------
+    config : dict
+        Configuration from _suggest_parallel_config
+    n_signals : int
+        Number of signals being processed
+    verbose : bool
+        If False, only print warnings
+    """
+    mem = config['memory_info']
+
+    if verbose:
+        print(f"\nMemory Configuration:")
+        print(f"  System: {mem['total_mb']/1024:.1f} GB RAM | "
+              f"Available: {mem['available_mb']/1024:.1f} GB | "
+              f"Target: {mem['safe_threshold_mb']/1024:.1f} GB ({mem['platform']})")
+        print(f"  Data: {mem['base_data_mb']:.0f} MB total | "
+              f"{mem['minimal_data_mb']:.0f} MB per signal")
+        print(f"\nParallel Settings:")
+        print(f"  Workers: {config['n_workers']} | "
+              f"Signals/worker: {config['signals_per_worker']} | "
+              f"Max in-flight: {config['max_in_flight']}")
+
+        if config['chunk_size']:
+            n_chunks = (n_signals + config['chunk_size'] - 1) // config['chunk_size']
+            print(f"  Chunk size: {config['chunk_size']} signals ({n_chunks} chunks)")
+        else:
+            print(f"  Chunk size: None (all signals fit in memory)")
+
+        status = "✓ OK" if mem['is_safe'] else "⚠ HIGH"
+        print(f"  Est. peak memory: {mem['peak_mb']/1024:.1f} GB {status}")
+
+    # Always print warnings
+    for warning in config['warnings']:
+        print(f"  ⚠ {warning}")
 
 
 # =============================================================================
