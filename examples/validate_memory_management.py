@@ -206,39 +206,75 @@ def test_signals_per_worker():
 
 
 def test_memory_warning():
-    """Test that memory warning is triggered for large workloads."""
+    """Test that memory estimation and chunk_size suggestion work correctly."""
     print("\n" + "=" * 60)
-    print("TEST 4: Memory warning")
+    print("TEST 4: Memory estimation and chunk_size suggestion")
     print("=" * 60)
 
     from PyBondLab.batch_withinfirm import (
+        _estimate_memory_components,
         _estimate_peak_memory_mb,
         _get_available_memory_mb,
         _suggest_chunk_size
     )
 
-    # Create small test data
-    data = generate_test_data(n_dates=30, n_bonds=100, n_firms=20, n_signals=5)
+    # Create test data with many columns (simulating real data)
+    data = generate_test_data(n_dates=60, n_bonds=500, n_firms=50, n_signals=100)
+    required_cols = ['date', 'ID', 'ret', 'VW', 'RATING_NUM', 'PERMNO']
 
-    # Test memory estimation functions
-    per_worker, peak = _estimate_peak_memory_mb(data, n_signals=100, n_workers=10)
-    available = _get_available_memory_mb()
-    suggested = _suggest_chunk_size(data, n_signals=100, n_workers=10)
-
-    print(f"\nMemory estimation:")
-    print(f"  Per worker: {per_worker:.1f} MB")
-    print(f"  Peak total: {peak:.1f} MB")
-    print(f"  Available: {available:.1f} MB")
-    print(f"  Suggested chunk_size: {suggested}")
-
-    # The functions should return reasonable values
-    success = (
-        per_worker > 0 and
-        peak > 0 and
-        available > 0
+    # Test memory component estimation
+    base_mb, minimal_mb, overhead_mb = _estimate_memory_components(
+        data, n_workers=10, required_columns=required_cols
     )
 
-    print(f"\nMemory functions work correctly: {'✓' if success else '✗'}")
+    print(f"\nMemory components:")
+    print(f"  Base data: {base_mb:.1f} MB")
+    print(f"  Minimal data per signal: {minimal_mb:.1f} MB")
+    print(f"  Processing overhead per worker: {overhead_mb:.1f} MB")
+
+    # Test peak memory estimation
+    _, peak_no_chunk = _estimate_peak_memory_mb(
+        data, n_signals=105, n_workers=10, required_columns=required_cols
+    )
+    _, peak_with_chunk = _estimate_peak_memory_mb(
+        data, n_signals=105, n_workers=10, chunk_size=35, required_columns=required_cols
+    )
+
+    print(f"\nPeak memory estimates:")
+    print(f"  No chunking (105 signals): {peak_no_chunk:.1f} MB")
+    print(f"  With chunk_size=35: {peak_with_chunk:.1f} MB")
+
+    # Test chunk_size suggestion
+    available = _get_available_memory_mb()
+    suggested = _suggest_chunk_size(
+        data, n_signals=105, n_workers=10, required_columns=required_cols
+    )
+
+    print(f"\nChunk size suggestion:")
+    print(f"  Available memory: {available:.1f} MB")
+    print(f"  Suggested chunk_size for 105 signals: {suggested}")
+
+    # Key validation: suggested chunk_size should NOT be 1
+    # With proper memory model, it should be a reasonable number (e.g., 10-50)
+    success = True
+    if suggested is not None:
+        if suggested < 10:
+            print(f"  WARNING: Suggested chunk_size {suggested} seems too small!")
+            # Only fail if it's 1 or 2 (clearly broken)
+            if suggested <= 2:
+                success = False
+        else:
+            print(f"  OK: Suggested chunk_size {suggested} is reasonable")
+
+        # Also check: with suggested chunk_size, we should have 2-5 chunks
+        n_chunks = (105 + suggested - 1) // suggested
+        print(f"  Number of chunks: {n_chunks}")
+        if n_chunks > 10:
+            print(f"  WARNING: Too many chunks ({n_chunks})")
+    else:
+        print("  OK: No chunking needed (all signals fit in memory)")
+
+    print(f"\nMemory estimation works correctly: {'✓' if success else '✗'}")
 
     return success
 

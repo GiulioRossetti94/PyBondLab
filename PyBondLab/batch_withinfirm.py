@@ -48,10 +48,50 @@ from .constants import ColumnNames
 # Worker function for parallel processing (must be at module level for pickle)
 # =============================================================================
 
+def _estimate_memory_components(data: pd.DataFrame, n_workers: int,
+                                  required_columns: List[str]) -> Tuple[float, float, float]:
+    """
+    Estimate memory components for batch processing.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Input data
+    n_workers : int
+        Number of parallel workers
+    required_columns : list
+        Required column names for minimal data
+
+    Returns
+    -------
+    tuple
+        (base_data_mb, minimal_data_mb, processing_overhead_per_worker_mb)
+    """
+    # Base data size
+    base_data_mb = data.memory_usage(deep=True).sum() / 1024 / 1024
+
+    # Minimal data size (only required columns)
+    available_cols = [c for c in required_columns if c in data.columns]
+    if available_cols:
+        minimal_data_mb = data[available_cols].memory_usage(deep=True).sum() / 1024 / 1024
+    else:
+        # Fallback: estimate as fraction of full data
+        minimal_data_mb = base_data_mb * 0.15
+
+    # Processing overhead per worker (intermediate DataFrames, results, etc.)
+    # Conservative estimate: 1.5x the minimal data size
+    processing_overhead_mb = minimal_data_mb * 1.5
+
+    return base_data_mb, minimal_data_mb, processing_overhead_mb
+
+
 def _estimate_peak_memory_mb(data: pd.DataFrame, n_signals: int, n_workers: int,
-                              chunk_size: Optional[int] = None) -> Tuple[float, float]:
+                              chunk_size: Optional[int] = None,
+                              required_columns: Optional[List[str]] = None) -> Tuple[float, float]:
     """
     Estimate peak memory usage for batch processing.
+
+    Peak memory = base_data + chunk_size × minimal_data + n_workers × overhead
 
     Parameters
     ----------
@@ -62,35 +102,30 @@ def _estimate_peak_memory_mb(data: pd.DataFrame, n_signals: int, n_workers: int,
     n_workers : int
         Number of parallel workers
     chunk_size : int, optional
-        If set, limits concurrent signals
+        If set, limits signals prepared at once
+    required_columns : list, optional
+        Required columns for minimal data estimation
 
     Returns
     -------
     tuple
-        (per_worker_mb, peak_total_mb)
+        (minimal_data_mb, peak_total_mb)
     """
-    # Estimate data size per worker (minimal data)
-    base_data_mb = data.memory_usage(deep=True).sum() / 1024 / 1024
+    if required_columns is None:
+        required_columns = ['date', 'ID', 'ret', 'VW', 'RATING_NUM', 'PERMNO']
 
-    # Minimal data is typically ~10-20% of full data (only required columns)
-    # Assume 30% to be conservative
-    per_worker_data_mb = base_data_mb * 0.30
+    base_mb, minimal_mb, overhead_mb = _estimate_memory_components(
+        data, n_workers, required_columns
+    )
 
-    # Add overhead for strategy processing (intermediate DataFrames, results, etc.)
-    # Conservative estimate: 2x the data size for processing overhead
-    per_worker_overhead_factor = 2.5
-    per_worker_mb = per_worker_data_mb * per_worker_overhead_factor
+    # Effective chunk size (how many worker args prepared at once)
+    effective_chunk = chunk_size if chunk_size else n_signals
 
-    # Calculate effective concurrent workers
-    if chunk_size:
-        effective_concurrent = min(n_workers, chunk_size, n_signals)
-    else:
-        effective_concurrent = min(n_workers, n_signals)
+    # Peak = base + chunk × minimal_data + concurrent_workers × overhead
+    concurrent_workers = min(n_workers, effective_chunk)
+    peak_mb = base_mb + (effective_chunk * minimal_mb) + (concurrent_workers * overhead_mb)
 
-    # Peak = base data + concurrent workers * per_worker
-    peak_total_mb = base_data_mb + (effective_concurrent * per_worker_mb)
-
-    return per_worker_mb, peak_total_mb
+    return minimal_mb, peak_mb
 
 
 def _get_available_memory_mb() -> float:
@@ -104,9 +139,16 @@ def _get_available_memory_mb() -> float:
 
 
 def _suggest_chunk_size(data: pd.DataFrame, n_signals: int, n_workers: int,
-                        target_memory_fraction: float = 0.7) -> Optional[int]:
+                        target_memory_fraction: float = 0.7,
+                        required_columns: Optional[List[str]] = None) -> Optional[int]:
     """
     Suggest a chunk_size to keep memory usage under control.
+
+    Memory model:
+        Peak = base_data + chunk_size × minimal_data + n_workers × overhead
+
+    Solving for chunk_size:
+        chunk_size = (target - base_data - n_workers × overhead) / minimal_data
 
     Parameters
     ----------
@@ -118,27 +160,47 @@ def _suggest_chunk_size(data: pd.DataFrame, n_signals: int, n_workers: int,
         Number of parallel workers
     target_memory_fraction : float
         Target fraction of available memory to use (default 0.7 = 70%)
+    required_columns : list, optional
+        Required columns for minimal data estimation
 
     Returns
     -------
     int or None
         Suggested chunk_size, or None if no chunking needed
     """
+    if required_columns is None:
+        required_columns = ['date', 'ID', 'ret', 'VW', 'RATING_NUM', 'PERMNO']
+
     available_mb = _get_available_memory_mb()
     target_mb = available_mb * target_memory_fraction
 
-    per_worker_mb, _ = _estimate_peak_memory_mb(data, n_signals, n_workers)
-    base_data_mb = data.memory_usage(deep=True).sum() / 1024 / 1024
+    base_mb, minimal_mb, overhead_mb = _estimate_memory_components(
+        data, n_workers, required_columns
+    )
 
-    # How many concurrent workers can we support?
-    max_concurrent = max(1, int((target_mb - base_data_mb) / per_worker_mb))
+    # Available budget for worker args after accounting for base data and worker overhead
+    budget_for_args = target_mb - base_mb - (n_workers * overhead_mb)
 
-    if max_concurrent >= n_signals:
+    if budget_for_args <= 0:
+        # Not enough memory even for n_workers - suggest minimal chunk
+        return max(1, n_workers)
+
+    # How many signals can we prepare at once?
+    max_chunk = int(budget_for_args / minimal_mb) if minimal_mb > 0 else n_signals
+
+    # Ensure chunk_size is at least n_workers (no point in smaller chunks)
+    max_chunk = max(max_chunk, n_workers)
+
+    if max_chunk >= n_signals:
         return None  # No chunking needed
 
-    # Chunk size = how many signals we process before gc.collect()
-    # Set it to fit within memory limits
-    return max(1, max_concurrent)
+    # Round up to a reasonable multiple for cleaner batching
+    # Aim for 2-5 chunks total
+    ideal_chunks = 3
+    suggested = max(n_workers, (n_signals + ideal_chunks - 1) // ideal_chunks)
+
+    # Don't exceed what memory allows
+    return min(suggested, max_chunk)
 
 
 def _process_withinfirm_signal(args: Tuple) -> Tuple[str, Any, float, Optional[str]]:
@@ -442,12 +504,21 @@ class BatchWithinFirmSortFormation(BaseBatchFormation):
         self.rating = rating
         self.subset_filter = subset_filter
 
+        # Required columns for memory estimation (includes firm_id_col)
+        required_cols = ['date', 'ID', 'ret', 'VW', 'RATING_NUM', firm_id_col]
+
         # Handle auto chunk_size
         effective_chunk_size = None
         if chunk_size == 'auto':
-            effective_chunk_size = _suggest_chunk_size(data, len(signals), n_jobs)
-            if verbose and effective_chunk_size is not None:
-                print(f"Auto chunk_size: {effective_chunk_size} (based on available memory)")
+            effective_chunk_size = _suggest_chunk_size(
+                data, len(signals), n_jobs, required_columns=required_cols
+            )
+            if verbose:
+                if effective_chunk_size is not None:
+                    n_chunks = (len(signals) + effective_chunk_size - 1) // effective_chunk_size
+                    print(f"Auto chunk_size: {effective_chunk_size} ({n_chunks} chunks of ~{effective_chunk_size} signals)")
+                else:
+                    print("Auto chunk_size: None (no chunking needed)")
         elif isinstance(chunk_size, (int, np.integer)):
             effective_chunk_size = int(chunk_size)
 
@@ -464,10 +535,14 @@ class BatchWithinFirmSortFormation(BaseBatchFormation):
 
         # Memory warning for slow path with parallel execution
         if turnover and n_jobs > 1 and verbose and effective_chunk_size is None:
-            _, peak_mb = _estimate_peak_memory_mb(data, len(signals), n_jobs)
+            _, peak_mb = _estimate_peak_memory_mb(
+                data, len(signals), n_jobs, required_columns=required_cols
+            )
             available_mb = _get_available_memory_mb()
             if peak_mb > available_mb * 0.8:
-                suggested = _suggest_chunk_size(data, len(signals), n_jobs)
+                suggested = _suggest_chunk_size(
+                    data, len(signals), n_jobs, required_columns=required_cols
+                )
                 warnings.warn(
                     f"\n⚠️  Memory Warning: Estimated peak usage {peak_mb:.0f}MB may exceed "
                     f"available memory ({available_mb:.0f}MB).\n"
