@@ -64,6 +64,10 @@ from .batch_base import (
     tqdm,
     REQUIRED_COLUMNS,
     DEFAULT_COLUMNS,
+    _estimate_memory_components,
+    _estimate_peak_memory_mb,
+    _get_available_memory_mb,
+    _suggest_chunk_size,
 )
 
 # Import PyBondLab components
@@ -522,7 +526,7 @@ class BatchStrategyFormation:
         columns: Optional[Dict[str, str]] = None,
         n_jobs: int = 1,
         signals_per_worker: int = 1,
-        chunk_size: Optional[int] = None,
+        chunk_size: Optional[Union[int, str]] = None,
         verbose: bool = True,
     ):
         # Validate parameter types (catch common mistakes early)
@@ -576,7 +580,43 @@ class BatchStrategyFormation:
         self.rebalance_month = rebalance_month
         self.n_jobs = n_jobs
         self.signals_per_worker = max(1, signals_per_worker)
-        self.chunk_size = chunk_size
+
+        # Handle chunk_size='auto'
+        n_workers = self._get_n_workers()
+        required_cols = self._get_required_columns()
+        if chars:
+            required_cols = list(set(required_cols + chars))
+
+        if chunk_size == 'auto':
+            suggested = _suggest_chunk_size(
+                self.data, len(signals), n_workers, required_columns=required_cols
+            )
+            self.chunk_size = suggested
+            if verbose and suggested is not None:
+                print(f"Auto chunk_size: {suggested} (processing {len(signals)} signals in "
+                      f"{(len(signals) + suggested - 1) // suggested} chunks)")
+        else:
+            self.chunk_size = chunk_size
+
+        # Memory estimation and warning
+        if n_workers > 1 and self.chunk_size is None and len(signals) > 10:
+            # Estimate memory without chunking
+            _, peak_mb = _estimate_peak_memory_mb(
+                self.data, len(signals), n_workers,
+                chunk_size=None, required_columns=required_cols
+            )
+            available_mb = _get_available_memory_mb()
+
+            if peak_mb > available_mb * 0.8:
+                suggested = _suggest_chunk_size(
+                    self.data, len(signals), n_workers, required_columns=required_cols
+                )
+                warnings.warn(
+                    f"\nMemory warning: Processing {len(signals)} signals with {n_workers} workers "
+                    f"may use ~{peak_mb:.0f}MB (available: {available_mb:.0f}MB).\n"
+                    f"Consider using chunk_size={suggested} or chunk_size='auto' to reduce memory usage.",
+                    UserWarning
+                )
 
         self.banding_threshold = None
         if banding is not None:
@@ -686,6 +726,10 @@ class BatchStrategyFormation:
             return max(1, mp.cpu_count() + 1 + self.n_jobs)
         else:
             return min(self.n_jobs, mp.cpu_count())
+
+    def _get_required_columns(self) -> List[str]:
+        """Get list of required columns for minimal data."""
+        return ['date', 'ID', 'ret', 'VW', 'RATING_NUM']
 
     def _can_use_fast_batch_path(self) -> bool:
         """

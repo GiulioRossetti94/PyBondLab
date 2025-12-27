@@ -26,6 +26,165 @@ import pandas as pd
 
 
 # =============================================================================
+# Memory Management Functions
+# =============================================================================
+
+def _estimate_memory_components(data: pd.DataFrame, n_workers: int,
+                                  required_columns: List[str]) -> Tuple[float, float, float]:
+    """
+    Estimate memory components for batch processing.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Input data
+    n_workers : int
+        Number of parallel workers
+    required_columns : list
+        Required column names for minimal data
+
+    Returns
+    -------
+    tuple
+        (base_data_mb, minimal_data_mb, processing_overhead_per_worker_mb)
+    """
+    # Base data size
+    base_data_mb = data.memory_usage(deep=True).sum() / 1024 / 1024
+
+    # Minimal data size (only required columns)
+    available_cols = [c for c in required_columns if c in data.columns]
+    if available_cols:
+        minimal_data_mb = data[available_cols].memory_usage(deep=True).sum() / 1024 / 1024
+    else:
+        # Fallback: estimate as fraction of full data
+        minimal_data_mb = base_data_mb * 0.15
+
+    # Processing overhead per worker (intermediate DataFrames, results, etc.)
+    # Conservative estimate: 1.5x the minimal data size
+    processing_overhead_mb = minimal_data_mb * 1.5
+
+    return base_data_mb, minimal_data_mb, processing_overhead_mb
+
+
+def _estimate_peak_memory_mb(data: pd.DataFrame, n_signals: int, n_workers: int,
+                              chunk_size: Optional[int] = None,
+                              required_columns: Optional[List[str]] = None) -> Tuple[float, float]:
+    """
+    Estimate peak memory usage for batch processing.
+
+    Peak memory = base_data + chunk_size × minimal_data + n_workers × overhead
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Input data
+    n_signals : int
+        Number of signals to process
+    n_workers : int
+        Number of parallel workers
+    chunk_size : int, optional
+        If set, limits signals prepared at once
+    required_columns : list, optional
+        Required columns for minimal data estimation
+
+    Returns
+    -------
+    tuple
+        (minimal_data_mb, peak_total_mb)
+    """
+    if required_columns is None:
+        required_columns = ['date', 'ID', 'ret', 'VW', 'RATING_NUM']
+
+    base_mb, minimal_mb, overhead_mb = _estimate_memory_components(
+        data, n_workers, required_columns
+    )
+
+    # Effective chunk size (how many worker args prepared at once)
+    effective_chunk = chunk_size if chunk_size else n_signals
+
+    # Peak = base + chunk × minimal_data + concurrent_workers × overhead
+    concurrent_workers = min(n_workers, effective_chunk)
+    peak_mb = base_mb + (effective_chunk * minimal_mb) + (concurrent_workers * overhead_mb)
+
+    return minimal_mb, peak_mb
+
+
+def _get_available_memory_mb() -> float:
+    """Get available system memory in MB."""
+    try:
+        import psutil
+        return psutil.virtual_memory().available / 1024 / 1024
+    except ImportError:
+        # If psutil not available, return a conservative estimate
+        return 8000  # Assume 8GB available
+
+
+def _suggest_chunk_size(data: pd.DataFrame, n_signals: int, n_workers: int,
+                        target_memory_fraction: float = 0.7,
+                        required_columns: Optional[List[str]] = None) -> Optional[int]:
+    """
+    Suggest a chunk_size to keep memory usage under control.
+
+    Memory model:
+        Peak = base_data + chunk_size × minimal_data + n_workers × overhead
+
+    Solving for chunk_size:
+        chunk_size = (target - base_data - n_workers × overhead) / minimal_data
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Input data
+    n_signals : int
+        Number of signals to process
+    n_workers : int
+        Number of parallel workers
+    target_memory_fraction : float
+        Target fraction of available memory to use (default 0.7 = 70%)
+    required_columns : list, optional
+        Required columns for minimal data estimation
+
+    Returns
+    -------
+    int or None
+        Suggested chunk_size, or None if no chunking needed
+    """
+    if required_columns is None:
+        required_columns = ['date', 'ID', 'ret', 'VW', 'RATING_NUM']
+
+    available_mb = _get_available_memory_mb()
+    target_mb = available_mb * target_memory_fraction
+
+    base_mb, minimal_mb, overhead_mb = _estimate_memory_components(
+        data, n_workers, required_columns
+    )
+
+    # Available budget for worker args after accounting for base data and worker overhead
+    budget_for_args = target_mb - base_mb - (n_workers * overhead_mb)
+
+    if budget_for_args <= 0:
+        # Not enough memory even for n_workers - suggest minimal chunk
+        return max(1, n_workers)
+
+    # How many signals can we prepare at once?
+    max_chunk = int(budget_for_args / minimal_mb) if minimal_mb > 0 else n_signals
+
+    # Ensure chunk_size is at least n_workers (no point in smaller chunks)
+    max_chunk = max(max_chunk, n_workers)
+
+    if max_chunk >= n_signals:
+        return None  # No chunking needed
+
+    # Round up to a reasonable multiple for cleaner batching
+    # Aim for 2-5 chunks total
+    ideal_chunks = 3
+    suggested = max(n_workers, (n_signals + ideal_chunks - 1) // ideal_chunks)
+
+    # Don't exceed what memory allows
+    return min(suggested, max_chunk)
+
+
+# =============================================================================
 # Platform-specific multiprocessing setup
 # =============================================================================
 
