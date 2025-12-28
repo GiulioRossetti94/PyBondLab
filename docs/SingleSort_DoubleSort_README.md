@@ -89,18 +89,27 @@ import PyBondLab as pbl
 # Create a single-sort strategy (quintiles based on momentum)
 strategy = pbl.SingleSort(
     holding_period=1,
-    sort_var='momentum',
+    sort_var='momentum',    # Your signal column name
     num_portfolios=5,
 )
 
 # Execute the strategy
 sf = pbl.StrategyFormation(data=data, strategy=strategy)
-result = sf.fit()
+
+# Map your column names to PyBondLab expected names in .fit()
+result = sf.fit(
+    IDvar='cusip',          # Your bond ID column (default: 'ID')
+    RETvar='ret_vw',        # Your return column (default: 'ret')
+    VWvar='mcap_e',         # Your value weight column (default: 'VW')
+    RATINGvar='spc_rat',    # Your rating column (default: 'RATING_NUM')
+)
 
 # Get long-short portfolio returns
 ew_ls, vw_ls = result.get_long_short()
 print(f"Sharpe: {ew_ls.mean() / ew_ls.std() * 12**0.5:.2f}")
 ```
+
+**Column Mapping:** If your data already uses the default names (`ID`, `ret`, `VW`, `RATING_NUM`), you can simply call `result = sf.fit()` without any parameters. See [Column Mapping](#column-mapping-custom-column-names) for details.
 
 ---
 
