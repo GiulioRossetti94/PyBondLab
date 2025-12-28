@@ -16,6 +16,7 @@
    - [Unconditional vs Conditional Sorting](#unconditional-vs-conditional-sorting)
    - [DoubleSort Parameters](#doublesort-parameters)
 4. [StrategyFormation Execution](#strategyformation-execution)
+   - [Column Mapping (Custom Column Names)](#column-mapping-custom-column-names)
    - [Rating Filtering](#rating-filtering)
    - [Subset Filter (Characteristic-Based)](#subset-filter-characteristic-based)
    - [Turnover and Banding](#turnover-and-banding)
@@ -342,6 +343,100 @@ sf = pbl.StrategyFormation(
     verbose: bool = True,
 )
 ```
+
+### Column Mapping (Custom Column Names)
+
+PyBondLab expects specific column names by default. If your data uses different names, map them using the `.fit()` method parameters.
+
+#### Default Expected Columns
+
+| Internal Name | Default | Description |
+|---------------|---------|-------------|
+| `ID` | `'ID'` | Bond identifier (e.g., CUSIP) |
+| `date` | `'date'` | Date column |
+| `ret` | `'ret'` | Return column |
+| `VW` | `'VW'` | Value weight (market cap) |
+| `RATING_NUM` | `'RATING_NUM'` | Numeric rating (1-22) |
+| `PRICE` | `'PRICE'` | Bond price (for price filters) |
+
+#### Mapping Your Column Names
+
+Use the `.fit()` method parameters to map your column names:
+
+```python
+import PyBondLab as pbl
+
+# Your data has custom column names
+print(data.columns)
+# ['cusip', 'date', 'ret_vw', 'mcap_e', 'spc_rat', 'my_signal']
+
+# Create strategy (sort_var uses YOUR column name)
+strategy = pbl.SingleSort(
+    holding_period=1,
+    sort_var='my_signal',  # Your signal column name
+    num_portfolios=5,
+)
+
+# Create StrategyFormation
+sf = pbl.StrategyFormation(data=data, strategy=strategy, turnover=True)
+
+# Map columns in .fit()
+result = sf.fit(
+    IDvar='cusip',           # Maps 'cusip' → 'ID'
+    RETvar='ret_vw',         # Maps 'ret_vw' → 'ret'
+    VWvar='mcap_e',          # Maps 'mcap_e' → 'VW'
+    RATINGvar='spc_rat',     # Maps 'spc_rat' → 'RATING_NUM'
+)
+
+# Get results
+ew_ls, vw_ls = result.get_long_short()
+```
+
+#### .fit() Column Parameters
+
+| Parameter | Maps To | Description |
+|-----------|---------|-------------|
+| `IDvar` | `'ID'` | Your bond identifier column |
+| `DATEvar` | `'date'` | Your date column |
+| `RETvar` | `'ret'` | Your return column |
+| `VWvar` | `'VW'` | Your value weight column |
+| `RATINGvar` | `'RATING_NUM'` | Your numeric rating column |
+| `PRICEvar` | `'PRICE'` | Your price column (for price filters) |
+
+**Notes:**
+- Only specify parameters for columns with different names
+- If your column already has the default name (e.g., `'date'`), no mapping needed
+- Signal columns (`sort_var`, `sort_var2`) use your original names - no mapping required
+
+#### DoubleSort Example
+
+```python
+# DoubleSort with custom column names
+strategy = pbl.DoubleSort(
+    holding_period=1,
+    sort_var='my_signal',      # Your first signal column
+    sort_var2='my_control',    # Your second signal column
+    num_portfolios=3,
+    num_portfolios2=3,
+    how='unconditional',
+)
+
+sf = pbl.StrategyFormation(data=data, strategy=strategy)
+result = sf.fit(
+    IDvar='cusip',
+    RETvar='ret_vw',
+    VWvar='mcap_e',
+    RATINGvar='spc_rat',
+)
+```
+
+#### Comparison with BatchStrategyFormation
+
+| Aspect | StrategyFormation | BatchStrategyFormation |
+|--------|------------------|------------------------|
+| Where | `.fit()` method | Constructor (`columns={}`) |
+| Format | Individual params | Dictionary |
+| Example | `sf.fit(IDvar='cusip')` | `columns={'ID': 'cusip'}` |
 
 ### Rating Filtering
 
@@ -1453,6 +1548,40 @@ strategy = pbl.DoubleSort(
 ```python
 # Increase data or reduce num_portfolios
 # Check if rating filter leaves enough bonds
+```
+
+**5. "Data missing required columns: ['ret']"**
+
+Your data uses custom column names. Map them in `.fit()`:
+
+```python
+# Check what columns your data has
+print(data.columns.tolist())
+# ['cusip', 'date', 'ret_vw', 'mcap_e', 'spc_rat', ...]
+
+# Map your column names to PyBondLab expected names
+result = sf.fit(
+    IDvar='cusip',           # Your ID column
+    RETvar='ret_vw',         # Your return column
+    VWvar='mcap_e',          # Your value weight column
+    RATINGvar='spc_rat',     # Your rating column
+)
+```
+
+**6. "Column 'RATING_NUM' not found"**
+
+Map your rating column:
+
+```python
+result = sf.fit(RATINGvar='your_rating_column')
+```
+
+**7. "Column 'VW' not found"**
+
+Map your value weight (market cap) column:
+
+```python
+result = sf.fit(VWvar='your_vw_column')
 ```
 
 ### Validation
