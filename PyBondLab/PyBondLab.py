@@ -2142,7 +2142,13 @@ class StrategyFormation:
                     vw_chars_arr[c][t1_idx, self.cohort, :] = result['chars_vw'][c].values
 
             # Handle turnover if requested
-            if self.turnover and not result['weights_df'].empty:
+            # CRITICAL: Only accumulate turnover for h=0 (first horizon)
+            # For HP>1, multiple horizons share the same formation date (t_idx).
+            # If we accumulate for all h, later horizons (h=1,2,...) overwrite
+            # h=0's correct turnover with small values (since h=1 vs h=0 weights
+            # are nearly identical - same formation month). The fix is to only
+            # compute turnover once per formation, at h=0.
+            if self.turnover and h == 0 and not result['weights_df'].empty:
                 self.turnover_manager.accumulate(
                     self.turnover_state,
                     self.cohort,  # cohort index (t % hor)
