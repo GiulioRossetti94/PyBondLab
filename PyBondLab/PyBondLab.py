@@ -199,6 +199,7 @@ class StrategyFormation:
         self.rating = self.config.data.rating
         self.subset_filter = self.config.data.subset_filter
         self.chars = self.config.data.chars
+        self.chars_no_shift = self.config.data.chars_no_shift or []
 
         # Formation configuration
         self.dynamic_weights = self.config.formation.dynamic_weights
@@ -2737,16 +2738,27 @@ class StrategyFormation:
 
                     # Use display name (original user-specified name) as dict key
                     display_name = self._get_char_display_name(char_name)
-                    chars_ew_dict[display_name] = pd.DataFrame(
+                    ew_char_df = pd.DataFrame(
                         np.column_stack([ew_low, ew_high]),
                         index=self.datelist,
                         columns=ptf_labels_chars
                     )
-                    chars_vw_dict[display_name] = pd.DataFrame(
+                    vw_char_df = pd.DataFrame(
                         np.column_stack([vw_low, vw_high]),
                         index=self.datelist,
                         columns=ptf_labels_chars
                     )
+
+                    # SHIFT(1) ALIGNMENT: Same logic as turnover.
+                    # Chars at index t represent the characteristics of the portfolio
+                    # formed at t-1 that generates return[t].
+                    # First row becomes NaN (warmup period).
+                    # Skip shift for chars in chars_no_shift (already return-aligned).
+                    if display_name not in self.chars_no_shift:
+                        ew_char_df = ew_char_df.shift(1)
+                        vw_char_df = vw_char_df.shift(1)
+                    chars_ew_dict[display_name] = ew_char_df
+                    chars_vw_dict[display_name] = vw_char_df
 
         # Finalize turnover (use standard PyBondLab machinery)
         turnover_ew = None
@@ -2851,8 +2863,12 @@ class StrategyFormation:
                     # Chars at index t represent the characteristics of the portfolio
                     # formed at t-1 that generates return[t].
                     # First row becomes NaN (warmup period).
-                    chars_ew_dict[display_name] = ew_char_df.shift(1)
-                    chars_vw_dict[display_name] = vw_char_df.shift(1)
+                    # Skip shift for chars in chars_no_shift (already return-aligned).
+                    if display_name not in self.chars_no_shift:
+                        ew_char_df = ew_char_df.shift(1)
+                        vw_char_df = vw_char_df.shift(1)
+                    chars_ew_dict[display_name] = ew_char_df
+                    chars_vw_dict[display_name] = vw_char_df
 
         # Finalize turnover
         turnover_ew = None
@@ -2944,8 +2960,12 @@ class StrategyFormation:
                 # Chars at index t represent the characteristics of the portfolio
                 # formed at t-1 that generates return[t].
                 # First row becomes NaN (warmup period).
-                chars_ew_dict[display_name] = ew_char_df.shift(1)
-                chars_vw_dict[display_name] = vw_char_df.shift(1)
+                # Skip shift for chars in chars_no_shift (already return-aligned).
+                if display_name not in self.chars_no_shift:
+                    ew_char_df = ew_char_df.shift(1)
+                    vw_char_df = vw_char_df.shift(1)
+                chars_ew_dict[display_name] = ew_char_df
+                chars_vw_dict[display_name] = vw_char_df
 
         # Finalize turnover
         turnover_ew = None

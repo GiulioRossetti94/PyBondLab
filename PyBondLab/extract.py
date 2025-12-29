@@ -261,7 +261,9 @@ def extract_panel(
             if has_chars:
                 for char_name in char_names:
                     if char_name in ew_chars_data:
-                        row_ew_ls[char_name] = safe_get(ew_chars_data[char_name]['ls'], date)
+                        ls_char_val = safe_get(ew_chars_data[char_name]['ls'], date)
+                        # Negate L-S spread when sign-corrected (L and S are swapped)
+                        row_ew_ls[char_name] = -ls_char_val if ew_flip else ls_char_val
             rows.append(row_ew_ls)
 
             # Long leg (swap to 's' if flipped)
@@ -313,7 +315,9 @@ def extract_panel(
             if has_chars:
                 for char_name in char_names:
                     if char_name in vw_chars_data:
-                        row_vw_ls[char_name] = safe_get(vw_chars_data[char_name]['ls'], date)
+                        ls_char_val = safe_get(vw_chars_data[char_name]['ls'], date)
+                        # Negate L-S spread when sign-corrected (L and S are swapped)
+                        row_vw_ls[char_name] = -ls_char_val if vw_flip else ls_char_val
             rows.append(row_vw_ls)
 
             # Long leg (swap to 's' if flipped)
