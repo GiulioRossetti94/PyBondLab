@@ -304,8 +304,38 @@ class TurnoverManager:
                 if state.prev_seen_vw[cohort, k]:
                     state.vw_turn_ea[tau, cohort, k] = 0.0
 
-    def compute(self, state, weights_df, weights_scaled_df, tau, tot_nport):
-        """Compute turnover (non-staggered)."""
+    def compute(self, state, weights_df, weights_scaled_df, tau, tot_nport,
+                is_rebalancing_date=True):
+        """Compute turnover (non-staggered).
+
+        Parameters
+        ----------
+        state : TurnoverState
+            Turnover state object
+        weights_df : pd.DataFrame
+            Current weights
+        weights_scaled_df : pd.DataFrame
+            Scaled weights for next period
+        tau : int
+            Time index
+        tot_nport : int
+            Total number of portfolios
+        is_rebalancing_date : bool, default=True
+            If True, compute actual turnover (trading occurs).
+            If False, set turnover to 0.0 (holding period, no trading).
+            This is similar to staggered rebalancing where holding cohorts get 0.
+        """
+        if not is_rebalancing_date:
+            # Between rebalancing dates: no trading, turnover = 0
+            # This matches staggered holding cohort behavior
+            for k in range(tot_nport):
+                state.ew_turn_ea[tau, k] = 0.0
+                state.vw_turn_ea[tau, k] = 0.0
+            # Still need to update previous weights for next comparison
+            # but skip turnover computation
+            _update_prev_weights_only(state, weights_scaled_df, tot_nport)
+            return
+
         # For non-staggered, we use cohort index 0 (single cohort)
         compute_nonstaggered_turnover_state(
             state, weights_df, weights_scaled_df, tau, tot_nport
@@ -613,6 +643,55 @@ def accumulate_turnover(state: TurnoverState,
 # =============================================================================
 # Non-staggered turnover computation with TurnoverState
 # =============================================================================
+
+def _update_prev_weights_only(state: TurnoverState, weights_scaled_df: pd.DataFrame,
+                              tot_nport: int):
+    """
+    Update previous weights without computing turnover.
+
+    This is used between rebalancing dates when we want to track weights
+    but not compute turnover (since no trading occurs).
+
+    Parameters
+    ----------
+    state : TurnoverState
+        Turnover state object
+    weights_scaled_df : pd.DataFrame
+        Scaled weights for next period
+    tot_nport : int
+        Total number of portfolios
+    """
+    cohort = 0  # Non-staggered uses single cohort
+    id_to_pos = state.id_to_pos
+
+    for k in range(1, tot_nport + 1):
+        k0 = k - 1
+
+        curr_ptf_scaled = weights_scaled_df[weights_scaled_df['ptf_rank'] == k].copy()
+
+        if curr_ptf_scaled.empty:
+            continue
+
+        # Reset previous weights to zero
+        state.prev_scaled_ew[cohort, k0, :] = 0.0
+        state.prev_scaled_vw[cohort, k0, :] = 0.0
+
+        # Get IDs and positions
+        scaled_ids = curr_ptf_scaled['ID'].values
+        scaled_pos = id_to_pos.loc[scaled_ids].values.astype(np.int64)
+
+        # Store new scaled weights
+        state.prev_scaled_ew[cohort, k0, scaled_pos] = curr_ptf_scaled['eweights'].values
+        state.prev_scaled_vw[cohort, k0, scaled_pos] = curr_ptf_scaled['vweights'].values
+
+        # Store sums for next turnover calculation
+        state.prev_sum_ew[cohort, k0] = curr_ptf_scaled['eweights'].sum()
+        state.prev_sum_vw[cohort, k0] = curr_ptf_scaled['vweights'].sum()
+
+        # Mark as seen
+        state.prev_seen_ew[cohort, k0] = True
+        state.prev_seen_vw[cohort, k0] = True
+
 
 def compute_nonstaggered_turnover_state(
     state: TurnoverState,

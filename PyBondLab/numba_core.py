@@ -4938,44 +4938,57 @@ def compute_nonstaggered_full_fast(
 
         # Compute turnover if enabled
         if compute_turnover:
-            # Compute portfolio returns for scaling
-            ew_ptf_ret = np.zeros(nport, dtype=np.float64)
-            vw_ptf_ret = np.zeros(nport, dtype=np.float64)
-            for p in range(nport):
-                if ptf_count[p] > 0:
-                    ew_ptf_ret[p] = ew_ret_sum[p] / ptf_count[p]
-                if ptf_vw_sum[p] > 0:
-                    vw_ptf_ret[p] = vw_ret_sum[p] / ptf_vw_sum[p]
+            # Check if this is the first return date after rebalancing
+            # Only compute actual turnover at rebalancing dates (d == form_d + 1)
+            # At other dates (holding period), set turnover to 0
+            is_rebalancing_date = (d == form_d + 1)
 
-            # Compute turnover per portfolio
-            for p in range(nport):
-                if not prev_seen[p]:
-                    # First time seeing this portfolio - mark as seen
-                    prev_seen[p] = True
-                    continue
+            if is_rebalancing_date:
+                # Compute portfolio returns for scaling
+                ew_ptf_ret = np.zeros(nport, dtype=np.float64)
+                vw_ptf_ret = np.zeros(nport, dtype=np.float64)
+                for p in range(nport):
+                    if ptf_count[p] > 0:
+                        ew_ptf_ret[p] = ew_ret_sum[p] / ptf_count[p]
+                    if ptf_vw_sum[p] > 0:
+                        vw_ptf_ret[p] = vw_ret_sum[p] / ptf_vw_sum[p]
 
-                # Current weights sum
-                curr_sum_ew = 0.0
-                curr_sum_vw = 0.0
-                for bond_id in range(n_ids):
-                    if curr_ranks[bond_id] == p + 1:
-                        curr_sum_ew += curr_ew[bond_id]
-                        curr_sum_vw += curr_vw[bond_id]
+                # Compute turnover per portfolio
+                for p in range(nport):
+                    if not prev_seen[p]:
+                        # First time seeing this portfolio - mark as seen
+                        prev_seen[p] = True
+                        continue
 
-                # Sum of min(prev_scaled, curr)
-                sum_min_ew = 0.0
-                sum_min_vw = 0.0
-                for bond_id in range(n_ids):
-                    if curr_ranks[bond_id] == p + 1 and prev_ranks_for_turnover[bond_id] == p + 1:
-                        sum_min_ew += min(curr_ew[bond_id], prev_ew_weights[bond_id])
-                        sum_min_vw += min(curr_vw[bond_id], prev_vw_weights[bond_id])
+                    # Current weights sum
+                    curr_sum_ew = 0.0
+                    curr_sum_vw = 0.0
+                    for bond_id in range(n_ids):
+                        if curr_ranks[bond_id] == p + 1:
+                            curr_sum_ew += curr_ew[bond_id]
+                            curr_sum_vw += curr_vw[bond_id]
 
-                # Turnover = prev_sum + curr_sum - 2 * sum_min
-                turn_ew = prev_sum_ew[p] + curr_sum_ew - 2.0 * sum_min_ew
-                turn_vw = prev_sum_vw[p] + curr_sum_vw - 2.0 * sum_min_vw
+                    # Sum of min(prev_scaled, curr)
+                    sum_min_ew = 0.0
+                    sum_min_vw = 0.0
+                    for bond_id in range(n_ids):
+                        if curr_ranks[bond_id] == p + 1 and prev_ranks_for_turnover[bond_id] == p + 1:
+                            sum_min_ew += min(curr_ew[bond_id], prev_ew_weights[bond_id])
+                            sum_min_vw += min(curr_vw[bond_id], prev_vw_weights[bond_id])
 
-                ew_turnover[d, p] = turn_ew
-                vw_turnover[d, p] = turn_vw
+                    # Turnover = prev_sum + curr_sum - 2 * sum_min
+                    turn_ew = prev_sum_ew[p] + curr_sum_ew - 2.0 * sum_min_ew
+                    turn_vw = prev_sum_vw[p] + curr_sum_vw - 2.0 * sum_min_vw
+
+                    ew_turnover[d, p] = turn_ew
+                    vw_turnover[d, p] = turn_vw
+            else:
+                # Holding period - no trading, turnover = 0
+                # This matches staggered holding cohort behavior
+                for p in range(nport):
+                    if prev_seen[p]:
+                        ew_turnover[d, p] = 0.0
+                        vw_turnover[d, p] = 0.0
 
             # Update previous scaled weights for next date
             # scaled_weight = curr_weight * (1 + bond_ret) / (1 + ptf_ret)

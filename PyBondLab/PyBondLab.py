@@ -2244,11 +2244,15 @@ class StrategyFormation:
 
             # Handle turnover
             if self.turnover and not result['weights_df'].empty:
+                # For non-staggered: only compute turnover at rebalancing dates (h=0)
+                # At h>0, we're in holding period - set turnover to 0
+                is_rebalancing = (h == 0)
                 self.turnover_manager.compute(
                     self.turnover_state,
                     result['weights_df'],
                     result['weights_scaled_df'],
-                    t1_idx, tot_nport
+                    t1_idx, tot_nport,
+                    is_rebalancing_date=is_rebalancing
                 )
 
     def _form_single_period(
