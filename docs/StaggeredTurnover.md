@@ -14,8 +14,10 @@ This document explains how turnover is computed for staggered (overlapping cohor
 4. [The Bug: Horizon Loop Overwrites](#the-bug-horizon-loop-overwrites)
 5. [The Fix: Only Accumulate for h=0](#the-fix-only-accumulate-for-h0)
 6. [Key Assumptions](#key-assumptions)
-7. [Detailed Examples](#detailed-examples)
-8. [Code Reference](#code-reference)
+7. [Turnover and Characteristics Alignment (shift(1))](#turnover-and-characteristics-alignment-shift1)
+8. [Detailed Examples](#detailed-examples)
+9. [Discussion: Bond Dropouts](#discussion-bond-dropouts)
+10. [Code Reference](#code-reference)
 
 ---
 
@@ -330,6 +332,116 @@ scaled_weight_i = (1 + r_i) / (1 + r_portfolio) * original_weight_i
 
 ---
 
+## Turnover and Characteristics Alignment (shift(1))
+
+### The Alignment Problem
+
+Before the shift(1) fix, there was a subtle indexing mismatch:
+
+| DataFrame | Index Represents | Value Represents |
+|-----------|------------------|------------------|
+| Returns | Return date t | Return earned from portfolio formed at t-1 |
+| Turnover (old) | Date t | Cost incurred at formation t-1 |
+
+For net-of-cost calculations, users needed to manually align:
+```python
+# Old (confusing): Manual lag required
+net_return[t] = gross_return[t] - cost * turnover[t-1]  # Awkward!
+```
+
+### The Fix: shift(1)
+
+After applying `.shift(1)` to turnover and characteristics:
+
+| DataFrame | Index Represents | Value Represents |
+|-----------|------------------|------------------|
+| Returns | Return date t | Return from portfolio formed at t-1 |
+| Turnover | Return date t | Cost to enter portfolio that generates return[t] |
+| Chars | Return date t | Characteristics of portfolio that generates return[t] |
+
+Now net-of-cost is straightforward:
+```python
+# New (intuitive): Direct alignment
+net_return[t] = gross_return[t] - cost * turnover[t]
+```
+
+### First Row is NaN (Warmup Period)
+
+After shift(1), the first row of turnover and characteristics is NaN:
+
+```
+Returns:     [ret_jan, ret_feb, ret_mar, ...]
+Turnover:    [NaN,     turn_feb, turn_mar, ...]
+Chars:       [NaN,     char_feb, char_mar, ...]
+```
+
+**Why NaN?**
+- At the first return date (Jan), there's no previous formation to compare
+- No turnover was incurred because no prior portfolio existed
+- Characteristics of "no portfolio" is undefined
+
+**Important**: For HP>1 staggered rebalancing, the first NaN applies to ALL cohorts. The warmup period represents when the overlapping cohort structure is still being initialized.
+
+### Net-of-Cost Calculation Example
+
+```python
+from PyBondLab import StrategyFormation, SingleSort
+
+# Run strategy with turnover
+result = StrategyFormation(
+    data=data,
+    strategy=SingleSort(holding_period=1, sort_var='signal', num_portfolios=5),
+    turnover=True,
+).fit()
+
+# Get aligned data
+ew_ls, vw_ls = result.get_long_short()
+ew_turn, vw_turn = result.get_turnover()
+
+# Compute factor-level turnover: average of long and short portfolios
+n_port = ew_turn.shape[1]
+factor_turnover = (ew_turn.iloc[:, 0] + ew_turn.iloc[:, n_port - 1]) / 2
+
+# Set transaction cost (e.g., 20 bps per unit turnover)
+cost_per_unit = 0.002
+
+# Net-of-cost returns (aligned dates only)
+common_dates = ew_ls.index.intersection(factor_turnover.index)
+net_returns = ew_ls.loc[common_dates] - cost_per_unit * factor_turnover.loc[common_dates]
+
+# Note: First common date will have NaN turnover → NaN net return
+# Usable net returns start from second date onwards
+```
+
+### Same Logic for Characteristics
+
+Characteristics are also shifted by 1, so:
+- `chars[t]` = characteristics of the portfolio that generates `return[t]`
+- First row is NaN (warmup period)
+
+This enables direct factor exposure analysis:
+```python
+ew_chars, vw_chars = result.get_characteristics()
+duration_chars = ew_chars['duration']
+
+# Duration[t] = duration exposure of portfolio generating return[t]
+# Can directly regress: return[t] ~ duration[t] + ...
+```
+
+### Verification Script
+
+```bash
+python examples/validate_shift_alignment.py
+```
+
+This validates:
+- First turnover row is NaN
+- First chars row is NaN
+- BatchStrategyFormation produces consistent alignment
+- Net-of-cost calculation works correctly
+
+---
+
 ## Detailed Examples
 
 ### Example 1: Complete Turnover (Balanced Panel, HP=3)
@@ -515,6 +627,8 @@ This creates a balanced panel with maximally-changing signal and verifies:
 
 | Date | Change |
 |------|--------|
+| Dec 2025 | Added shift(1) alignment for turnover and characteristics |
+| Dec 2025 | First row of turnover/chars now NaN (warmup period) |
 | Dec 2025 | Fixed horizon loop overwrite bug (added `h == 0` condition) |
 | Dec 2025 | Created this documentation |
 
@@ -523,4 +637,6 @@ This creates a balanced panel with maximally-changing signal and verifies:
 ## See Also
 
 - [CLAUDE.md](../CLAUDE.md) - Project documentation
-- [examples/diagnose_turnover.py](../examples/diagnose_turnover.py) - Diagnostic script
+- [examples/diagnose_turnover.py](../examples/diagnose_turnover.py) - Diagnostic script for turnover computation
+- [examples/validate_shift_alignment.py](../examples/validate_shift_alignment.py) - Validation script for shift(1) alignment
+- [examples/diagnose_turnover_unbalanced.py](../examples/diagnose_turnover_unbalanced.py) - Diagnostic for unbalanced panels

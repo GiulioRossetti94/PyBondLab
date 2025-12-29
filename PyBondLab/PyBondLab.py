@@ -2832,16 +2832,23 @@ class StrategyFormation:
                 display_name = self._get_char_display_name(c)
                 with warnings.catch_warnings():
                     warnings.filterwarnings('ignore', message='Mean of empty slice', category=RuntimeWarning)
-                    chars_ew_dict[display_name] = pd.DataFrame(
+                    ew_char_df = pd.DataFrame(
                         np.nanmean(ew_chars_arr[c], axis=1),
                         index=self.datelist,
                         columns=ptf_labels
                     )
-                    chars_vw_dict[display_name] = pd.DataFrame(
+                    vw_char_df = pd.DataFrame(
                         np.nanmean(vw_chars_arr[c], axis=1),
                         index=self.datelist,
                         columns=ptf_labels
                     )
+
+                    # SHIFT(1) ALIGNMENT: Same logic as turnover.
+                    # Chars at index t represent the characteristics of the portfolio
+                    # formed at t-1 that generates return[t].
+                    # First row becomes NaN (warmup period).
+                    chars_ew_dict[display_name] = ew_char_df.shift(1)
+                    chars_vw_dict[display_name] = vw_char_df.shift(1)
 
         # Finalize turnover
         turnover_ew = None
@@ -2918,16 +2925,23 @@ class StrategyFormation:
             for c in self.chars:
                 # Use display name (original user-specified name) as dict key
                 display_name = self._get_char_display_name(c)
-                chars_ew_dict[display_name] = pd.DataFrame(
+                ew_char_df = pd.DataFrame(
                     ew_chars_arr[c],
                     index=self.datelist,
                     columns=ptf_labels
                 )
-                chars_vw_dict[display_name] = pd.DataFrame(
+                vw_char_df = pd.DataFrame(
                     vw_chars_arr[c],
                     index=self.datelist,
                     columns=ptf_labels
                 )
+
+                # SHIFT(1) ALIGNMENT: Same logic as turnover.
+                # Chars at index t represent the characteristics of the portfolio
+                # formed at t-1 that generates return[t].
+                # First row becomes NaN (warmup period).
+                chars_ew_dict[display_name] = ew_char_df.shift(1)
+                chars_vw_dict[display_name] = vw_char_df.shift(1)
 
         # Finalize turnover
         turnover_ew = None

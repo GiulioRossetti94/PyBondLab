@@ -1086,7 +1086,16 @@ def finalize_turnover(state: TurnoverState, datelist: list, ptf_labels: list,
         vw_turnover_df = pd.DataFrame(
             vw_mean_over_h, index=datelist[1:], columns=ptf_labels
         )
-        
+
+        # ===== SHIFT(1) ALIGNMENT =====
+        # Shift turnover by 1 so that turnover[t] represents the cost incurred
+        # to generate return[t]. Without shift, turnover at index t is the cost
+        # incurred at formation date t-1. After shift(1):
+        # - turnover[t] = cost of entering positions that generate returns at t
+        # - First row becomes NaN (warmup period - no previous to compare)
+        ew_turnover_df = ew_turnover_df.shift(1)
+        vw_turnover_df = vw_turnover_df.shift(1)
+
         return ew_turnover_df, vw_turnover_df
     else:
         # For non-staggered, return the turnover arrays directly as DataFrames
@@ -1096,5 +1105,10 @@ def finalize_turnover(state: TurnoverState, datelist: list, ptf_labels: list,
         vw_turnover_df = pd.DataFrame(
             state.vw_turn_ea[1:, :], index=datelist[1:], columns=ptf_labels
         )
-        
+
+        # ===== SHIFT(1) ALIGNMENT =====
+        # Same logic as staggered: shift so turnover[t] = cost for return[t]
+        ew_turnover_df = ew_turnover_df.shift(1)
+        vw_turnover_df = vw_turnover_df.shift(1)
+
         return ew_turnover_df, vw_turnover_df
