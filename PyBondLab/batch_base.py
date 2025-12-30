@@ -680,11 +680,16 @@ class BaseBatchFormation(ABC):
                 avg_time = sum(signal_times) / len(signal_times)
                 print(f"Avg time/signal:  {avg_time:.2f}s")
 
-                # Compute effective speedup
-                sequential_estimate = avg_time * len(self.signals)
-                if total_time > 0:
-                    speedup = sequential_estimate / total_time
-                    print(f"Effective speedup: {speedup:.1f}x")
+                # Compute effective speedup (only show if meaningful)
+                if len(self.signals) >= 3:
+                    sequential_estimate = avg_time * len(self.signals)
+                    if total_time > 0:
+                        speedup = sequential_estimate / total_time
+                        if speedup >= 1.0:
+                            print(f"Effective speedup: {speedup:.1f}x")
+                        else:
+                            # Parallel overhead exceeded benefit
+                            print(f"Note: Parallel overhead exceeded benefit for this dataset ({speedup:.1f}x)")
 
         if self.errors:
             print(f"\nFailed signals: {list(self.errors.keys())}")

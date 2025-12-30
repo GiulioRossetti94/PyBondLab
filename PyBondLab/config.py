@@ -456,11 +456,12 @@ class StrategyFormationConfig:
                         f"(e.g., SingleSort(sort_var='{kwargs[key]}', ...))"
                     )
                 else:
-                    suggestions.append(f"  - '{key}'")
+                    suggestions.append(f"  - '{key}': Unknown parameter")
 
             msg = f"Unknown parameter(s) passed to StrategyFormation: {unknown_list}\n"
             if suggestions:
                 msg += "Suggestions:\n" + "\n".join(suggestions)
+            msg += f"\n\nValid StrategyFormation parameters: {sorted(known_kwargs)}"
             raise TypeError(msg)
 
         # Data config

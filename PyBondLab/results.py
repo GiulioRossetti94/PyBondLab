@@ -759,6 +759,20 @@ class FormationResults:
         """Check if ex-post results are available."""
         return self.ep is not None
 
+    def _get_strategy_results(self, strategy: str) -> StrategyResults:
+        """Get EA or EP results with helpful error message."""
+        sr = self.ea if strategy == "ea" else self.ep
+        if sr is None:
+            if strategy == "ep":
+                raise ValueError(
+                    "Ex-post (EP) results not available. "
+                    "EP results require filters to be applied. "
+                    "Use filters={'adj': 'trim', 'level': 0.2} when creating StrategyFormation."
+                )
+            else:
+                raise ValueError(f"Ex-ante (EA) results not available.")
+        return sr
+
     # ------------------------------ Accessors ------------------------------ #
     def get_returns(self, strategy: str = "ea", weight_type: str = "ew") -> pd.DataFrame:
         """
@@ -776,9 +790,7 @@ class FormationResults:
         pd.DataFrame
             Portfolio returns
         """
-        sr = self.ea if strategy == "ea" else self.ep
-        if sr is None:
-            raise ValueError(f"Strategy '{strategy}' results not available.")
+        sr = self._get_strategy_results(strategy)
 
         if weight_type == "ew":
             return sr.returns.ewport_df
@@ -792,9 +804,7 @@ class FormationResults:
         Get Portfolios returns as (EW, VW) tuple.
         
         """
-        sr = self.ea if strategy == "ea" else self.ep
-        if sr is None:
-            raise ValueError(f"Strategy '{strategy}' results not available.")
+        sr = self._get_strategy_results(strategy)
         return sr.get_ptf()
     
     def get_ptf_ex_post(self) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -831,9 +841,7 @@ class FormationResults:
         tuple of pd.Series
             (ew_long_short, vw_long_short)
         """
-        sr = self.ea if strategy == "ea" else self.ep
-        if sr is None:
-            raise ValueError(f"Strategy '{strategy}' results not available.")
+        sr = self._get_strategy_results(strategy)
         return sr.get_long_short(naming=naming)
 
     def get_long_short_ex_post(
@@ -871,9 +879,7 @@ class FormationResults:
         tuple of pd.Series
             (ew_long, vw_long)
         """
-        sr = self.ea if strategy == "ea" else self.ep
-        if sr is None:
-            raise ValueError(f"Strategy '{strategy}' results not available.")
+        sr = self._get_strategy_results(strategy)
         return sr.get_long_leg()
 
     def get_short_leg(self, strategy: str = "ea") -> tuple[pd.Series, pd.Series]:
@@ -890,9 +896,7 @@ class FormationResults:
         tuple of pd.Series
             (ew_short, vw_short)
         """
-        sr = self.ea if strategy == "ea" else self.ep
-        if sr is None:
-            raise ValueError(f"Strategy '{strategy}' results not available.")
+        sr = self._get_strategy_results(strategy)
         return sr.get_short_leg()
     
     def get_turnover(
@@ -924,9 +928,7 @@ class FormationResults:
         ValueError
             If strategy or turnover results not available
         """
-        sr = self.ea if strategy == "ea" else self.ep
-        if sr is None:
-            raise ValueError(f"Strategy '{strategy}' results not available.")
+        sr = self._get_strategy_results(strategy)
         return sr.get_turnover(level=level, naming=naming)
 
     def get_characteristics(
@@ -954,9 +956,7 @@ class FormationResults:
         ValueError
             If strategy or characteristics results not available
         """
-        sr = self.ea if strategy == "ea" else self.ep
-        if sr is None:
-            raise ValueError(f"Strategy '{strategy}' results not available.")
+        sr = self._get_strategy_results(strategy)
         return sr.get_characteristics(naming=naming)
 
     def get_ptf_bins(self) -> dict:

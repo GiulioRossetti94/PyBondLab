@@ -806,10 +806,18 @@ class StrategyFormation:
                     f"Available columns: {list(self.data.columns)}"
                 )
 
-        # Keep signal columns
+        # Keep signal columns - validate they exist
         for s in filter(None, [sort_var_main, sort_var2]):
             if s in self.data.columns:
                 required.add(s)
+            else:
+                # Provide helpful error message with available columns
+                available = [c for c in self.data.columns if c not in ColumnNames.REQUIRED]
+                raise ValueError(
+                    f"Sort variable '{s}' not found in data. "
+                    f"Available signal columns: {available[:20]}"
+                    + (f" ... ({len(available) - 20} more)" if len(available) > 20 else "")
+                )
 
         # Add columns required by breakpoint_universe_func if it's a string column name
         bp_func = getattr(self.strategy, 'breakpoint_universe_func', None)

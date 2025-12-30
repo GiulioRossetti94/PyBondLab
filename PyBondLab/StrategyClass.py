@@ -26,7 +26,7 @@ class Strategy(ABC):
         skip: Optional[int] = None,
         rebalance_frequency: Union[str, int] = 'monthly',
         rebalance_month: Union[int, List[int]] = 6,
-        verbose: bool = True
+        verbose: bool = False
     ):
         """
         Initialize strategy with consistent parameter ordering.
@@ -59,8 +59,9 @@ class Strategy(ABC):
             - For 'quarterly': list of 4 months (e.g., [3, 6, 9, 12])
             - For 'monthly': ignored
             - For custom int frequency: starting month (e.g., 3 to start in March)
-        verbose : bool, default True
-            Enable verbose output
+        verbose : bool, default False
+            Enable verbose output. Default is False since StrategyFormation
+            provides more comprehensive output.
         """
         self.holding_period = holding_period
         self.num_portfolios = num_portfolios
@@ -194,7 +195,7 @@ class SingleSort(Strategy):
         rebalance_frequency: Union[str, int] = 'monthly',
         rebalance_month: Union[int, List[int]] = 6,
         breakpoint_universe_func: Optional[Union[str, Callable]] = None, # pass a function to filter data for breakpoints (eg NYSE only)
-        verbose: bool = True
+        verbose: bool = False
     ):
         """
         Initialize SingleSort strategy.
@@ -347,7 +348,7 @@ class DoubleSort(Strategy):
         breakpoint_universe_func: Optional[Union[str, Callable]] = None,
         breakpoint_universe_func2: Optional[Union[str, Callable]] = None,
         auto_match_signals: bool = False,
-        verbose: bool = True
+        verbose: bool = False
     ):
         """
         Initialize DoubleSort strategy.
@@ -536,7 +537,7 @@ class Momentum(Strategy):
         num_portfolios: Optional[int] = None,
         rebalance_frequency: Union[str, int] = 'monthly',
         rebalance_month: Union[int, List[int]] = 6,
-        verbose: bool = True,
+        verbose: bool = False,
         # Legacy parameter names for backward compatibility
         K: Optional[int] = None,
         nport: Optional[int] = None,
@@ -789,7 +790,7 @@ class LTreversal(Strategy):
         num_portfolios: Optional[int] = None,
         rebalance_frequency: Union[str, int] = 'monthly',
         rebalance_month: Union[int, List[int]] = 6,
-        verbose: bool = True
+        verbose: bool = False
     ):
         """
         Initialize Long-term reversal strategy.
@@ -1043,10 +1044,10 @@ class WithinFirmSort(Strategy):
 
     Parameters
     ----------
-    holding_period : int
-        Holding period for the strategy
     sort_var : str
         Sorting variable (e.g., 'eff_yld', 'oas', 'CS')
+    holding_period : int, default 1
+        Holding period for the strategy. Currently only holding_period=1 is supported.
     firm_id_col : str, default 'PERMNO'
         Column name for firm identifier
     min_bonds_per_firm : int, default 2
@@ -1074,8 +1075,8 @@ class WithinFirmSort(Strategy):
 
     def __init__(
         self,
-        holding_period: int,
         sort_var: str,
+        holding_period: int = 1,
         firm_id_col: str = 'PERMNO',
         min_bonds_per_firm: int = 2,
         rating_bins: Optional[List[float]] = None,
@@ -1083,19 +1084,19 @@ class WithinFirmSort(Strategy):
         skip: Optional[int] = None,
         rebalance_frequency: Union[str, int] = 'monthly',
         rebalance_month: Union[int, List[int]] = 6,
-        verbose: bool = True
+        verbose: bool = False
     ):
         """Initialize WithinFirmSort strategy."""
 
         # Validate parameter types (catch common mistakes early)
-        if not isinstance(holding_period, (int, np.integer)):
-            raise TypeError(
-                f"holding_period must be an integer, got {type(holding_period).__name__}: {holding_period!r}"
-            )
         if not isinstance(sort_var, str):
             raise TypeError(
                 f"sort_var must be a string (column name), got {type(sort_var).__name__}: {sort_var!r}. "
-                f"Use keyword arguments: WithinFirmSort(holding_period=1, sort_var='column_name', firm_id_col='PERMNO')"
+                f"Use keyword arguments: WithinFirmSort(sort_var='column_name', firm_id_col='PERMNO')"
+            )
+        if not isinstance(holding_period, (int, np.integer)):
+            raise TypeError(
+                f"holding_period must be an integer, got {type(holding_period).__name__}: {holding_period!r}"
             )
         if not isinstance(firm_id_col, str):
             raise TypeError(
