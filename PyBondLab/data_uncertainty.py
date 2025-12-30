@@ -252,66 +252,143 @@ class DataUncertaintyResults:
         """Metadata for all configurations."""
         return self._configs
 
-    def summary(self) -> pd.DataFrame:
+    def summary(
+        self,
+        aggregate_by: Optional[Union[str, List[str]]] = None
+    ) -> pd.DataFrame:
         """
         Compute summary statistics for all configurations.
 
-        Returns DataFrame with:
-        - signal, hp, rating, filter_type, level, location
-        - ew_ea_mean, ew_ea_tstat (Newey-West)
-        - vw_ea_mean, vw_ea_tstat
-        - ew_ep_mean, ew_ep_tstat
-        - vw_ep_mean, vw_ep_tstat
-        - n_obs, sharpe (annualized EW EA Sharpe)
+        Parameters
+        ----------
+        aggregate_by : str or list of str, optional
+            Group by these column(s) and compute average statistics.
+            Valid values: 'filter_type', 'signal', 'hp', 'rating', 'location'
+            Example: aggregate_by='filter_type' returns one row per filter type
+            with averaged statistics.
 
-        All means are in % (×100).
+        Returns
+        -------
+        pd.DataFrame
+            Summary statistics with columns:
+            - signal, hp, rating, filter_type, level, location
+            - ew_ea_mean, ew_ea_tstat (Newey-West)
+            - vw_ea_mean, vw_ea_tstat
+            - ew_ep_mean, ew_ep_tstat
+            - vw_ep_mean, vw_ep_tstat
+            - ea_ep_diff_ew, ea_ep_diff_vw (EP - EA difference)
+            - n_obs, sharpe (annualized EW EA Sharpe)
+
+            All means are in % (×100).
+
+        Notes
+        -----
+        For 'wins' filter, EA values are NaN because winsorization doesn't
+        exclude bonds from ranking (unlike trim/price/bounce filters).
+        The wins rankings are identical to baseline, so EA returns would
+        duplicate baseline. EP returns show the effect of winsorized returns.
         """
-        if self._summary_cache is not None:
-            return self._summary_cache
+        if self._summary_cache is None:
+            rows = []
+            for _, config in self._configs.iterrows():
+                col = config['column_name']
 
-        rows = []
-        for _, config in self._configs.iterrows():
-            col = config['column_name']
+                # Compute stats for each panel
+                ew_ea_mean, ew_ea_tstat, n_obs = compute_newey_west_tstat(self._ew_ea[col])
+                vw_ea_mean, vw_ea_tstat, _ = compute_newey_west_tstat(self._vw_ea[col])
+                ew_ep_mean, ew_ep_tstat, _ = compute_newey_west_tstat(self._ew_ep[col])
+                vw_ep_mean, vw_ep_tstat, _ = compute_newey_west_tstat(self._vw_ep[col])
 
-            # Compute stats for each panel
-            ew_ea_mean, ew_ea_tstat, n_obs = compute_newey_west_tstat(self._ew_ea[col])
-            vw_ea_mean, vw_ea_tstat, _ = compute_newey_west_tstat(self._vw_ea[col])
-            ew_ep_mean, ew_ep_tstat, _ = compute_newey_west_tstat(self._ew_ep[col])
-            vw_ep_mean, vw_ep_tstat, _ = compute_newey_west_tstat(self._vw_ep[col])
+                # Annualized Sharpe ratio (EW EA)
+                ew_ea_series = self._ew_ea[col].dropna()
+                if len(ew_ea_series) > 1 and ew_ea_series.std() > 0:
+                    sharpe = (ew_ea_series.mean() / ew_ea_series.std()) * np.sqrt(12)
+                else:
+                    sharpe = np.nan
 
-            # Annualized Sharpe ratio (EW EA)
-            ew_ea_series = self._ew_ea[col].dropna()
-            if len(ew_ea_series) > 1 and ew_ea_series.std() > 0:
-                sharpe = (ew_ea_series.mean() / ew_ea_series.std()) * np.sqrt(12)
-            else:
-                sharpe = np.nan
+                # EA-EP difference (EP - EA), in percentage points
+                ea_ep_diff_ew = (ew_ep_mean - ew_ea_mean) * 100 if not (np.isnan(ew_ep_mean) or np.isnan(ew_ea_mean)) else np.nan
+                ea_ep_diff_vw = (vw_ep_mean - vw_ea_mean) * 100 if not (np.isnan(vw_ep_mean) or np.isnan(vw_ea_mean)) else np.nan
 
-            row = {
-                'signal': config['signal'],
-                'hp': config['hp'],
-                'filter_type': config['filter_type'],
-                'level': config['level'],
-                'location': config['location'],
-                'ew_ea_mean': ew_ea_mean * 100,  # Convert to %
-                'ew_ea_tstat': ew_ea_tstat,
-                'vw_ea_mean': vw_ea_mean * 100,
-                'vw_ea_tstat': vw_ea_tstat,
-                'ew_ep_mean': ew_ep_mean * 100,
-                'ew_ep_tstat': ew_ep_tstat,
-                'vw_ep_mean': vw_ep_mean * 100,
-                'vw_ep_tstat': vw_ep_tstat,
-                'n_obs': n_obs,
-                'sharpe': sharpe,
-            }
+                row = {
+                    'signal': config['signal'],
+                    'hp': config['hp'],
+                    'filter_type': config['filter_type'],
+                    'level': config['level'],
+                    'location': config['location'],
+                    'ew_ea_mean': ew_ea_mean * 100,  # Convert to %
+                    'ew_ea_tstat': ew_ea_tstat,
+                    'vw_ea_mean': vw_ea_mean * 100,
+                    'vw_ea_tstat': vw_ea_tstat,
+                    'ew_ep_mean': ew_ep_mean * 100,
+                    'ew_ep_tstat': ew_ep_tstat,
+                    'vw_ep_mean': vw_ep_mean * 100,
+                    'vw_ep_tstat': vw_ep_tstat,
+                    'ea_ep_diff_ew': ea_ep_diff_ew,
+                    'ea_ep_diff_vw': ea_ep_diff_vw,
+                    'n_obs': n_obs,
+                    'sharpe': sharpe,
+                }
 
-            # Add rating if present in config
-            if 'rating' in config:
-                row['rating'] = config['rating']
+                # Add rating if present in config
+                if 'rating' in config:
+                    row['rating'] = config['rating']
 
-            rows.append(row)
+                rows.append(row)
 
-        self._summary_cache = pd.DataFrame(rows)
-        return self._summary_cache
+            self._summary_cache = pd.DataFrame(rows)
+
+        result = self._summary_cache
+
+        # Handle aggregation
+        if aggregate_by is not None:
+            if isinstance(aggregate_by, str):
+                aggregate_by = [aggregate_by]
+
+            # Validate aggregate_by columns
+            valid_cols = {'filter_type', 'signal', 'hp', 'rating', 'location'}
+            for col in aggregate_by:
+                if col not in valid_cols:
+                    raise ValueError(f"Invalid aggregate_by column: '{col}'. Valid: {valid_cols}")
+                if col not in result.columns:
+                    raise ValueError(f"Column '{col}' not in summary. Available: {list(result.columns)}")
+
+            # Columns to average
+            numeric_cols = [
+                'ew_ea_mean', 'vw_ea_mean', 'ew_ep_mean', 'vw_ep_mean',
+                'ea_ep_diff_ew', 'ea_ep_diff_vw', 'sharpe'
+            ]
+            # Filter to columns that exist in result
+            numeric_cols = [c for c in numeric_cols if c in result.columns]
+
+            result = result.groupby(aggregate_by, dropna=False)[numeric_cols].mean().reset_index()
+
+        return result
+
+    def average_by_filter(self) -> pd.DataFrame:
+        """
+        Compute average statistics by (signal, hp, filter_type).
+
+        This is a convenience method equivalent to:
+        ``summary(aggregate_by=['signal', 'hp', 'filter_type'])``
+
+        Returns
+        -------
+        pd.DataFrame
+            Averaged statistics with one row per (signal, hp, filter_type).
+            Useful for comparing baseline vs different filter types.
+
+        Examples
+        --------
+        >>> results = DataUncertaintyAnalysis(...).fit()
+        >>> avg = results.average_by_filter()
+        >>> print(avg[['signal', 'hp', 'filter_type', 'ew_ea_mean', 'vw_ea_mean']])
+        """
+        groupby_cols = ['signal', 'hp', 'filter_type']
+        if 'rating' in self._summary_cache.columns if self._summary_cache is not None else 'rating' in self._configs.columns:
+            groupby_cols.append('rating')
+
+        return self.summary(aggregate_by=groupby_cols)
 
     # Sentinel value to distinguish "not provided" from "filter for None"
     _NOT_PROVIDED = object()
