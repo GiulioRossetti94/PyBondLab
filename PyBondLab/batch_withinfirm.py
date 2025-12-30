@@ -62,7 +62,7 @@ def _process_withinfirm_signal(args: Tuple) -> Tuple[str, Any, float, Optional[s
     ----------
     args : tuple
         (signal, data, firm_id_col, rating_bins, min_bonds_per_firm,
-         turnover, chars, chars_no_shift, rating)
+         turnover, chars, rating)
 
     Returns
     -------
@@ -70,7 +70,7 @@ def _process_withinfirm_signal(args: Tuple) -> Tuple[str, Any, float, Optional[s
         (signal_name, result_or_none, elapsed_time, error_or_none)
     """
     (signal, data, firm_id_col, rating_bins, min_bonds_per_firm,
-     turnover, chars, chars_no_shift, rating) = args
+     turnover, chars, rating) = args
 
     t_start = time.time()
 
@@ -89,7 +89,7 @@ def _process_withinfirm_signal(args: Tuple) -> Tuple[str, Any, float, Optional[s
             )
 
             sf_config = StrategyFormationConfig(
-                data=DataConfig(rating=rating, chars=chars, chars_no_shift=chars_no_shift),
+                data=DataConfig(rating=rating, chars=chars),
                 formation=FormationConfig(
                     dynamic_weights=True,
                     compute_turnover=turnover,
@@ -116,7 +116,7 @@ def _process_withinfirm_batch(args: Tuple) -> List[Tuple[str, Any, float, Option
     ----------
     args : tuple
         (signals, data, firm_id_col, rating_bins, min_bonds_per_firm,
-         turnover, chars, chars_no_shift, rating)
+         turnover, chars, rating)
 
     Returns
     -------
@@ -124,7 +124,7 @@ def _process_withinfirm_batch(args: Tuple) -> List[Tuple[str, Any, float, Option
         List of (signal_name, result_or_none, elapsed_time, error_or_none) tuples
     """
     (signals, data, firm_id_col, rating_bins, min_bonds_per_firm,
-     turnover, chars, chars_no_shift, rating) = args
+     turnover, chars, rating) = args
 
     results = []
     for signal in signals:
@@ -144,7 +144,7 @@ def _process_withinfirm_batch(args: Tuple) -> List[Tuple[str, Any, float, Option
                 )
 
                 sf_config = StrategyFormationConfig(
-                    data=DataConfig(rating=rating, chars=chars, chars_no_shift=chars_no_shift),
+                    data=DataConfig(rating=rating, chars=chars),
                     formation=FormationConfig(
                         dynamic_weights=True,
                         compute_turnover=turnover,
@@ -314,7 +314,6 @@ class BatchWithinFirmSortFormation(BaseBatchFormation):
         min_bonds_per_firm: int = 2,
         turnover: bool = False,
         chars: Optional[List[str]] = None,
-        chars_no_shift: Optional[Union[str, List[str]]] = None,
         rating: Optional[Union[str, Tuple[int, int]]] = None,
         subset_filter: Optional[Dict[str, Tuple[float, float]]] = None,
         columns: Optional[Dict[str, str]] = None,
@@ -353,7 +352,6 @@ class BatchWithinFirmSortFormation(BaseBatchFormation):
         self.min_bonds_per_firm = min_bonds_per_firm
         self.turnover = turnover
         self.chars = chars
-        self.chars_no_shift = self._normalize_chars_no_shift(chars_no_shift)
         self.rating = rating
         self.subset_filter = subset_filter
 
@@ -425,7 +423,6 @@ class BatchWithinFirmSortFormation(BaseBatchFormation):
             'min_bonds_per_firm': min_bonds_per_firm,
             'turnover': turnover,
             'chars': chars,
-            'chars_no_shift': self.chars_no_shift,
             'rating': rating,
             'subset_filter': subset_filter,
             'n_jobs': effective_n_jobs,
@@ -443,51 +440,6 @@ class BatchWithinFirmSortFormation(BaseBatchFormation):
             return max(1, mp.cpu_count() + 1 + n_jobs)
         else:
             return min(n_jobs, mp.cpu_count())
-
-    def _normalize_chars_no_shift(
-        self, chars_no_shift: Optional[Union[str, List[str]]]
-    ) -> Optional[List[str]]:
-        """
-        Normalize chars_no_shift to a list and validate against chars.
-
-        Parameters
-        ----------
-        chars_no_shift : str, list, or None
-            Characteristics that should NOT be shifted.
-
-        Returns
-        -------
-        list or None
-            Normalized list of chars_no_shift, or None if not specified.
-        """
-        if chars_no_shift is None:
-            return None
-
-        # Normalize string to list
-        if isinstance(chars_no_shift, str):
-            chars_no_shift = [chars_no_shift]
-        elif not isinstance(chars_no_shift, list):
-            raise TypeError(
-                f"chars_no_shift must be a string or list of strings, "
-                f"got {type(chars_no_shift).__name__}"
-            )
-
-        # Validate all items are in chars
-        if self.chars is None or len(self.chars) == 0:
-            raise ValueError(
-                f"chars_no_shift specified ({chars_no_shift}) but chars is empty. "
-                f"chars_no_shift must be a subset of chars."
-            )
-
-        chars_set = set(self.chars)
-        for item in chars_no_shift:
-            if item not in chars_set:
-                raise ValueError(
-                    f"chars_no_shift item '{item}' is not in chars ({self.chars}). "
-                    f"chars_no_shift must be a subset of chars."
-                )
-
-        return chars_no_shift
 
     def _get_required_columns(self) -> List[str]:
         """Get required columns including firm ID."""
@@ -830,7 +782,6 @@ class BatchWithinFirmSortFormation(BaseBatchFormation):
                     data=DataConfig(
                         rating=self.rating,
                         chars=self.chars,
-                        chars_no_shift=self.chars_no_shift,
                     ),
                     formation=FormationConfig(
                         dynamic_weights=True,
@@ -891,7 +842,6 @@ class BatchWithinFirmSortFormation(BaseBatchFormation):
                 data=DataConfig(
                     rating=self.rating,
                     chars=self.chars,
-                    chars_no_shift=self.chars_no_shift,
                 ),
                 formation=FormationConfig(
                     dynamic_weights=True,
@@ -951,7 +901,7 @@ class BatchWithinFirmSortFormation(BaseBatchFormation):
         minimal_data = self._get_minimal_data(signal)
         return (
             signal, minimal_data, self.firm_id_col, self.rating_bins,
-            self.min_bonds_per_firm, self.turnover, self.chars, self.chars_no_shift,
+            self.min_bonds_per_firm, self.turnover, self.chars,
             self.rating
         )
 
@@ -960,7 +910,7 @@ class BatchWithinFirmSortFormation(BaseBatchFormation):
         batch_data = self._get_minimal_data_batch(signals)
         return (
             signals, batch_data, self.firm_id_col, self.rating_bins,
-            self.min_bonds_per_firm, self.turnover, self.chars, self.chars_no_shift,
+            self.min_bonds_per_firm, self.turnover, self.chars,
             self.rating
         )
 

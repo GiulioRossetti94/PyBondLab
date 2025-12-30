@@ -103,7 +103,7 @@ def _process_single_signal(args: Tuple) -> Tuple[str, Any, float, Optional[str]]
         (signal_name, result_or_none, elapsed_time, error_or_none)
     """
     (signal, data, holding_period, num_portfolios, turnover,
-     chars, chars_no_shift, rating, subset_filter, banding_threshold,
+     chars, rating, subset_filter, banding_threshold,
      dynamic_weights, rebalance_frequency, rebalance_month) = args
 
     t_start = time.time()
@@ -129,7 +129,6 @@ def _process_single_signal(args: Tuple) -> Tuple[str, Any, float, Optional[str]]
                     rating=rating,
                     subset_filter=subset_filter,
                     chars=chars,
-                    chars_no_shift=chars_no_shift,
                 ),
                 formation=FormationConfig(
                     dynamic_weights=dynamic_weights,
@@ -165,7 +164,7 @@ def _process_signal_batch(args: Tuple) -> List[Tuple[str, Any, float, Optional[s
     ----------
     args : tuple
         (signals_list, data, holding_period, num_portfolios, turnover,
-         chars, chars_no_shift, rating, subset_filter, banding_threshold,
+         chars, rating, subset_filter, banding_threshold,
          dynamic_weights, rebalance_frequency, rebalance_month)
 
     Returns
@@ -174,7 +173,7 @@ def _process_signal_batch(args: Tuple) -> List[Tuple[str, Any, float, Optional[s
         [(signal_name, result_or_none, elapsed_time, error_or_none), ...]
     """
     (signals_list, data, holding_period, num_portfolios, turnover,
-     chars, chars_no_shift, rating, subset_filter, banding_threshold,
+     chars, rating, subset_filter, banding_threshold,
      dynamic_weights, rebalance_frequency, rebalance_month) = args
 
     results = []
@@ -198,7 +197,6 @@ def _process_signal_batch(args: Tuple) -> List[Tuple[str, Any, float, Optional[s
                         rating=rating,
                         subset_filter=subset_filter,
                         chars=chars,
-                        chars_no_shift=chars_no_shift,
                     ),
                     formation=FormationConfig(
                         dynamic_weights=dynamic_weights,
@@ -525,7 +523,6 @@ class BatchStrategyFormation:
         num_portfolios: int = 5,
         turnover: bool = True,
         chars: Optional[List[str]] = None,
-        chars_no_shift: Optional[Union[str, List[str]]] = None,
         rating: Optional[Union[str, tuple]] = None,
         subset_filter: Optional[SubsetFilter] = None,
         banding: Optional[int] = None,
@@ -581,7 +578,6 @@ class BatchStrategyFormation:
         self.num_portfolios = num_portfolios
         self.turnover = turnover
         self.chars = chars
-        self.chars_no_shift = self._normalize_chars_no_shift(chars_no_shift)
         self.rating = rating
         self.subset_filter = subset_filter
         self.banding = banding
@@ -654,51 +650,6 @@ class BatchStrategyFormation:
             'signals_per_worker': signals_per_worker,
             'chunk_size': chunk_size,
         }
-
-    def _normalize_chars_no_shift(
-        self, chars_no_shift: Optional[Union[str, List[str]]]
-    ) -> Optional[List[str]]:
-        """
-        Normalize chars_no_shift to a list and validate against chars.
-
-        Parameters
-        ----------
-        chars_no_shift : str, list, or None
-            Characteristics that should NOT be shifted.
-
-        Returns
-        -------
-        list or None
-            Normalized list of chars_no_shift, or None if not specified.
-        """
-        if chars_no_shift is None:
-            return None
-
-        # Normalize string to list
-        if isinstance(chars_no_shift, str):
-            chars_no_shift = [chars_no_shift]
-        elif not isinstance(chars_no_shift, list):
-            raise TypeError(
-                f"chars_no_shift must be a string or list of strings, "
-                f"got {type(chars_no_shift).__name__}"
-            )
-
-        # Validate all items are in chars
-        if self.chars is None or len(self.chars) == 0:
-            raise ValueError(
-                f"chars_no_shift specified ({chars_no_shift}) but chars is empty. "
-                f"chars_no_shift must be a subset of chars."
-            )
-
-        chars_set = set(self.chars)
-        for item in chars_no_shift:
-            if item not in chars_set:
-                raise ValueError(
-                    f"chars_no_shift item '{item}' is not in chars ({self.chars}). "
-                    f"chars_no_shift must be a subset of chars."
-                )
-
-        return chars_no_shift
 
     def _prepare_data(self, data: pd.DataFrame, signals: List[str]) -> pd.DataFrame:
         """
@@ -1276,7 +1227,6 @@ class BatchStrategyFormation:
                         rating=self.rating,
                         subset_filter=self.subset_filter,
                         chars=self.chars,
-                        chars_no_shift=self.chars_no_shift,
                     ),
                     formation=FormationConfig(
                         dynamic_weights=self.dynamic_weights,
@@ -1409,7 +1359,6 @@ class BatchStrategyFormation:
                     rating=self.rating,
                     subset_filter=self.subset_filter,
                     chars=self.chars,
-                    chars_no_shift=self.chars_no_shift,
                 ),
                 formation=FormationConfig(
                     dynamic_weights=self.dynamic_weights,
@@ -1595,7 +1544,7 @@ class BatchStrategyFormation:
         minimal_data = self._get_minimal_data(signal)
         return (
             signal, minimal_data, self.holding_period, self.num_portfolios,
-            self.turnover, self.chars, self.chars_no_shift, self.rating, self.subset_filter,
+            self.turnover, self.chars, self.rating, self.subset_filter,
             self.banding_threshold, self.dynamic_weights,
             self.rebalance_frequency, self.rebalance_month
         )
@@ -1605,7 +1554,7 @@ class BatchStrategyFormation:
         batch_data = self._get_minimal_data_batch(signals)
         return (
             signals, batch_data, self.holding_period, self.num_portfolios,
-            self.turnover, self.chars, self.chars_no_shift, self.rating, self.subset_filter,
+            self.turnover, self.chars, self.rating, self.subset_filter,
             self.banding_threshold, self.dynamic_weights,
             self.rebalance_frequency, self.rebalance_month
         )

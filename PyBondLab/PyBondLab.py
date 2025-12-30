@@ -199,7 +199,6 @@ class StrategyFormation:
         self.rating = self.config.data.rating
         self.subset_filter = self.config.data.subset_filter
         self.chars = self.config.data.chars
-        self.chars_no_shift = self.config.data.chars_no_shift or []
 
         # Formation configuration
         self.dynamic_weights = self.config.formation.dynamic_weights
@@ -2097,7 +2096,7 @@ class StrategyFormation:
 
             date_t1 = self.datelist[t1_idx]
 
-            # Get date for dynamic weights if needed
+            # Get date for dynamic weights (VW from d-1 if enabled)
             date_t1_minus1 = None
             if self.dynamic_weights and t1_idx > 0:
                 date_t1_minus1 = self.datelist[t1_idx - 1]
@@ -2111,7 +2110,9 @@ class StrategyFormation:
             else:
                 It1 = precomp.It1.get(date_t1, pd.DataFrame())
 
-            It1m = precomp.It1m.get(date_t1_minus1 if date_t1_minus1 else date_t1, pd.DataFrame())
+            # It1m is used for chars - ALWAYS use formation date (date_t)
+            # The dynamic_weights setting only affects VW, not chars
+            It1m = precomp.It1m.get(date_t, pd.DataFrame())
 
             # Determine return column based on EA vs EP
             if self._computing_ep and self.adj:
@@ -2749,14 +2750,6 @@ class StrategyFormation:
                         columns=ptf_labels_chars
                     )
 
-                    # SHIFT(1) ALIGNMENT: Same logic as turnover.
-                    # Chars at index t represent the characteristics of the portfolio
-                    # formed at t-1 that generates return[t].
-                    # First row becomes NaN (warmup period).
-                    # Skip shift for chars in chars_no_shift (already return-aligned).
-                    if display_name not in self.chars_no_shift:
-                        ew_char_df = ew_char_df.shift(1)
-                        vw_char_df = vw_char_df.shift(1)
                     chars_ew_dict[display_name] = ew_char_df
                     chars_vw_dict[display_name] = vw_char_df
 
@@ -2859,14 +2852,6 @@ class StrategyFormation:
                         columns=ptf_labels
                     )
 
-                    # SHIFT(1) ALIGNMENT: Same logic as turnover.
-                    # Chars at index t represent the characteristics of the portfolio
-                    # formed at t-1 that generates return[t].
-                    # First row becomes NaN (warmup period).
-                    # Skip shift for chars in chars_no_shift (already return-aligned).
-                    if display_name not in self.chars_no_shift:
-                        ew_char_df = ew_char_df.shift(1)
-                        vw_char_df = vw_char_df.shift(1)
                     chars_ew_dict[display_name] = ew_char_df
                     chars_vw_dict[display_name] = vw_char_df
 
@@ -2956,14 +2941,6 @@ class StrategyFormation:
                     columns=ptf_labels
                 )
 
-                # SHIFT(1) ALIGNMENT: Same logic as turnover.
-                # Chars at index t represent the characteristics of the portfolio
-                # formed at t-1 that generates return[t].
-                # First row becomes NaN (warmup period).
-                # Skip shift for chars in chars_no_shift (already return-aligned).
-                if display_name not in self.chars_no_shift:
-                    ew_char_df = ew_char_df.shift(1)
-                    vw_char_df = vw_char_df.shift(1)
                 chars_ew_dict[display_name] = ew_char_df
                 chars_vw_dict[display_name] = vw_char_df
 

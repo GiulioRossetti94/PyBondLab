@@ -51,13 +51,6 @@ class DataConfig:
     chars : list of str, optional
         Characteristics to compute for portfolios
         Example: ['duration', 'size', 'rating']
-    chars_no_shift : str or list of str, optional
-        Characteristics that should NOT be shifted by 1 period.
-        By default, all characteristics are shifted to align with returns
-        (chars[t] = formation date t-1 characteristics for return[t]).
-        Specify chars here that are already return-aligned and should
-        NOT be shifted. Must be a subset of `chars`.
-        Example: 'lib' or ['lib', 'other']
 
     Examples
     --------
@@ -75,25 +68,17 @@ class DataConfig:
     ...     rating='IG',
     ...     chars=['duration', 'size', 'rating']
     ... )
-    >>>
-    >>> # Compute characteristics with some not shifted
-    >>> data_config = DataConfig(
-    ...     chars=['duration', 'size', 'lib'],
-    ...     chars_no_shift='lib'  # 'lib' stays aligned with returns
-    ... )
     """
 
     rating: Optional[Union[str, Tuple[float, float]]] = None
     subset_filter: Optional[SubsetFilter] = None
     chars: Optional[List[str]] = None
-    chars_no_shift: Optional[Union[str, List[str]]] = None
-    
+
     def __post_init__(self):
         """Validate configuration after initialization."""
         self._validate_rating()
         if self.subset_filter is not None:
             self._validate_subset_filter()
-        self._normalize_and_validate_chars_no_shift()
     
     def _validate_rating(self):
         """Validate rating parameter."""
@@ -139,43 +124,6 @@ class DataConfig:
                     ValidationMessages.INVALID_BOUNDS.format(
                         col=col, low=low, high=high
                     )
-                )
-
-    def _normalize_and_validate_chars_no_shift(self):
-        """Normalize chars_no_shift to list and validate against chars."""
-        if self.chars_no_shift is None:
-            return
-
-        # Normalize string to list
-        if isinstance(self.chars_no_shift, str):
-            self.chars_no_shift = [self.chars_no_shift]
-        elif not isinstance(self.chars_no_shift, list):
-            raise TypeError(
-                f"chars_no_shift must be a string or list of strings, "
-                f"got {type(self.chars_no_shift).__name__}"
-            )
-
-        # Validate all items are strings
-        for item in self.chars_no_shift:
-            if not isinstance(item, str):
-                raise TypeError(
-                    f"All items in chars_no_shift must be strings, "
-                    f"got {type(item).__name__}: {item!r}"
-                )
-
-        # Validate all items are in chars
-        if self.chars is None or len(self.chars) == 0:
-            raise ValueError(
-                f"chars_no_shift specified ({self.chars_no_shift}) but chars is empty. "
-                f"chars_no_shift must be a subset of chars."
-            )
-
-        chars_set = set(self.chars)
-        for item in self.chars_no_shift:
-            if item not in chars_set:
-                raise ValueError(
-                    f"chars_no_shift item '{item}' is not in chars ({self.chars}). "
-                    f"chars_no_shift must be a subset of chars."
                 )
 
     @property
@@ -428,7 +376,6 @@ class StrategyFormationConfig:
             'rating': self.data.rating,
             'subset_filter': self.data.subset_filter,
             'chars': self.data.chars,
-            'chars_no_shift': self.data.chars_no_shift,
             'dynamic_weights': self.formation.dynamic_weights,
             'turnover': self.formation.compute_turnover,
             'save_idx': self.formation.save_idx,
@@ -474,7 +421,6 @@ class StrategyFormationConfig:
             rating=kwargs.get('rating'),
             subset_filter=kwargs.get('subset_filter'),
             chars=kwargs.get('chars'),
-            chars_no_shift=kwargs.get('chars_no_shift'),
         )
         
         # Formation config
