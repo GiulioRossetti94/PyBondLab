@@ -165,7 +165,7 @@ def compute_portfolio_weights_single(
     return eweights, vweights, counts
 
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)  # Note: fastmath=True breaks conditional checks, causing division by zero
 def compute_scaled_weights_single(
     ranks: np.ndarray,
     returns: np.ndarray,
@@ -1926,7 +1926,35 @@ def compute_staggered_returns_ultrafast(
                 bond_id = ret_id_idx[i]
                 ret_val = returns[i]
 
-                # Look up VW based on dynamic_weights setting:
+                # STEP 1: INTERSECTION CHECK - Always use formation date
+                # This matches slow path's intersect_id(It0, It1, It1m) where
+                # It1m is ALWAYS at formation date (form_d), not d-1.
+                # The dynamic_weights setting only affects VW weighting, not intersection.
+                form_vw_lookup_idx = form_d * n_ids + bond_id
+                if form_vw_lookup_idx < 0 or form_vw_lookup_idx >= len(vw_lookup):
+                    continue
+                form_weight = vw_lookup[form_vw_lookup_idx]
+                if np.isnan(form_weight):
+                    continue  # Bond doesn't exist at formation date → skip
+
+                # STEP 2: Look up rank from formation date
+                lookup_idx = form_d * n_ids + bond_id
+                if lookup_idx < 0 or lookup_idx >= len(rank_lookup):
+                    continue
+
+                rank = rank_lookup[lookup_idx]
+                if np.isnan(rank) or np.isnan(ret_val):
+                    continue
+
+                p = int(rank) - 1
+                if p < 0 or p >= nport:
+                    continue
+
+                # STEP 3: EW - Always include (bond passed intersection check)
+                sum_ret[p] += ret_val
+                count[p] += 1
+
+                # STEP 4: VW WEIGHTING - Use appropriate date based on dynamic_weights
                 # - True: VW from d-1 (day before return date) - same for all cohorts
                 # - False: VW from form_d (formation date) - different per cohort
                 if use_dynamic_weights:
@@ -1940,28 +1968,8 @@ def compute_staggered_returns_ultrafast(
                 else:
                     weight = np.nan
 
-                # Look up rank from formation date
-                lookup_idx = form_d * n_ids + bond_id
-                if lookup_idx < 0 or lookup_idx >= len(rank_lookup):
-                    continue
-
-                rank = rank_lookup[lookup_idx]
-                if np.isnan(rank) or np.isnan(ret_val):
-                    continue
-
-                # Skip bonds that don't exist at VW date
-                # This matches slow path's 3-way intersection logic
-                if np.isnan(weight):
-                    continue
-
-                p = int(rank) - 1
-                if p < 0 or p >= nport:
-                    continue
-
-                sum_ret[p] += ret_val
-                count[p] += 1
-
-                if weight > 0:
+                # STEP 5: VW - Only include if valid weight at weighting date
+                if not np.isnan(weight) and weight > 0:
                     sum_wret[p] += ret_val * weight
                     sum_weight[p] += weight
 
@@ -3732,16 +3740,18 @@ def compute_ls_returns_all_signals_staggered_v2(
                 if np.isnan(ret_val):
                     continue
 
-                # Look up VW from the appropriate date
-                vw_lookup_idx = vw_date * n_ids + bond_id
-                if vw_lookup_idx < 0 or vw_lookup_idx >= n_dates * n_ids:
+                # STEP 1: INTERSECTION CHECK - Always at formation date
+                # This matches slow path's intersect_id(It0, It1, It1m) where
+                # It1m is ALWAYS at formation date (form_d), not d-1.
+                # The dynamic_weights setting only affects VW weighting, not intersection.
+                form_vw_lookup_idx = form_d * n_ids + bond_id
+                if form_vw_lookup_idx < 0 or form_vw_lookup_idx >= n_dates * n_ids:
                     continue
-                weight = vw_lookup[vw_lookup_idx]
+                form_weight = vw_lookup[form_vw_lookup_idx]
+                if np.isnan(form_weight):
+                    continue  # Bond doesn't exist at formation date → skip
 
-                if np.isnan(weight):
-                    continue
-
-                # Look up rank from formation date
+                # STEP 2: Look up rank from formation date
                 rank_lookup_idx = form_d * n_ids + bond_id
                 if rank_lookup_idx < 0 or rank_lookup_idx >= n_dates * n_ids:
                     continue
@@ -3754,10 +3764,23 @@ def compute_ls_returns_all_signals_staggered_v2(
                 if p < 0 or p >= nport:
                     continue
 
+                # STEP 3: EW - Always include (bond passed intersection check at form_d)
                 sum_ret[p] += ret_val
-                sum_wret[p] += ret_val * weight
-                sum_weight[p] += weight
                 count[p] += 1
+
+                # STEP 4: VW WEIGHTING - Use appropriate date based on dynamic_weights
+                # - True: VW from d-1 (return date - 1) - same for all cohorts
+                # - False: VW from form_d (formation date) - different per cohort
+                vw_lookup_idx = vw_date * n_ids + bond_id
+                if vw_lookup_idx >= 0 and vw_lookup_idx < n_dates * n_ids:
+                    weight = vw_lookup[vw_lookup_idx]
+                else:
+                    weight = np.nan
+
+                # STEP 5: VW - Only include if valid weight at weighting date
+                if not np.isnan(weight) and weight > 0:
+                    sum_wret[p] += ret_val * weight
+                    sum_weight[p] += weight
 
             # Compute portfolio returns for this cohort (each portfolio independently)
             for p in range(nport):
