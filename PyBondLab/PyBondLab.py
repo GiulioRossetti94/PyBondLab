@@ -238,6 +238,9 @@ class StrategyFormation:
         if self.banding_threshold is not None:
             self.lag_rank = {}
 
+        # Track whether data preparation was already done (to avoid double print)
+        self._data_prepared = False
+
         # Characteristics tracking
         if self.chars:
             self.ew_ep_chars_dict = {}
@@ -744,6 +747,9 @@ class StrategyFormation:
         if self.verbose:
             print(f"Data prepared: {self.unique_bonds} unique bonds, {len(self.datelist)} periods")
 
+        # Mark data as prepared (to avoid double preparation in fit())
+        self._data_prepared = True
+
 
     def _get_sort_vars(self) -> Tuple[str, Optional[str]]:
         """Get primary and secondary sorting variables."""
@@ -1040,9 +1046,10 @@ class StrategyFormation:
         # Update column names if custom names are provided
         self._apply_column_mapping(IDvar, DATEvar, RETvar, RATINGvar, VWvar, PRICEvar)
 
-        # Validate and prepare data
-        self._validate_data()
-        self._prepare_data()
+        # Validate and prepare data (skip if already done by column mapping)
+        if not self._data_prepared:
+            self._validate_data()
+            self._prepare_data()
 
         self._computing_ep = False
         if self.verbose:

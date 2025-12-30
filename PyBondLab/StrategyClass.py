@@ -181,15 +181,15 @@ class Strategy(ABC):
 #==============================================================================
 #   SINGLE SORTING
 #==============================================================================
-class SingleSort(Strategy):   
+class SingleSort(Strategy):
     """Single sorting strategy class."""
     def __init__(
-        self, 
-        holding_period: int, 
+        self,
         sort_var: str,
+        holding_period: Optional[int] = None,
         num_portfolios: Optional[int] = None,
         breakpoints: Optional[List[float]] = None,
-        lookback_period: Optional[int] = None, 
+        lookback_period: Optional[int] = None,
         skip: Optional[int] = None,
         rebalance_frequency: Union[str, int] = 'monthly',
         rebalance_month: Union[int, List[int]] = 6,
@@ -201,10 +201,12 @@ class SingleSort(Strategy):
 
         Parameters
         ----------
-        holding_period : int
-            Holding period for the strategy
         sort_var : str
-            Primary sorting variable
+            Primary sorting variable (column name)
+        holding_period : int, optional
+            Holding period for the strategy. For non-staggered rebalancing (quarterly,
+            semi-annual, annual), this defaults to 1 as staggered portfolios are not used.
+            For monthly rebalancing, this is required.
         num_portfolios : int, optional
             Number of portfolios (inferred from breakpoints if not provided)
         breakpoints : list of float, optional
@@ -228,6 +230,25 @@ class SingleSort(Strategy):
         verbose : bool, default True
             Print initialization details
         """
+        # Determine if non-staggered rebalancing
+        is_nonstaggered = rebalance_frequency != 'monthly'
+
+        # Handle holding_period defaults and validation
+        if holding_period is None:
+            if is_nonstaggered:
+                # For non-staggered, default to 1 (staggered portfolios not used)
+                holding_period = 1
+            else:
+                raise ValueError(
+                    "holding_period is required for monthly (staggered) rebalancing. "
+                    "Example: SingleSort(sort_var='signal', holding_period=3, num_portfolios=5)"
+                )
+        elif is_nonstaggered and holding_period != 1:
+            raise ValueError(
+                f"For non-staggered rebalancing (rebalance_frequency='{rebalance_frequency}'), "
+                f"holding_period must be 1 (got {holding_period}). "
+                f"The actual holding period is determined by rebalance_frequency."
+            )
 
         # Validate parameter types (catch common mistakes early)
         if not isinstance(holding_period, (int, np.integer)):

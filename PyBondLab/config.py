@@ -416,6 +416,53 @@ class StrategyFormationConfig:
         ...     filters={'adj': 'trim', 'level': 0.01}
         ... )
         """
+        # Known kwargs that are valid for StrategyFormation
+        known_kwargs = {
+            'rating', 'subset_filter', 'chars',  # DataConfig
+            'dynamic_weights', 'turnover', 'save_idx', 'banding_threshold', 'verbose',  # FormationConfig
+            'filters',  # FilterConfig
+        }
+
+        # Check for unknown kwargs
+        unknown = set(kwargs.keys()) - known_kwargs
+        if unknown:
+            unknown_list = sorted(unknown)
+            # Provide helpful suggestions for common mistakes
+            suggestions = []
+            for key in unknown_list:
+                if key == 'rebalance_frequency':
+                    suggestions.append(
+                        f"  - '{key}': This parameter belongs to the strategy "
+                        f"(e.g., SingleSort(rebalance_frequency='{kwargs[key]}', ...))"
+                    )
+                elif key == 'rebalance_month':
+                    suggestions.append(
+                        f"  - '{key}': This parameter belongs to the strategy "
+                        f"(e.g., SingleSort(rebalance_month={kwargs[key]}, ...))"
+                    )
+                elif key == 'holding_period':
+                    suggestions.append(
+                        f"  - '{key}': This parameter belongs to the strategy "
+                        f"(e.g., SingleSort(holding_period={kwargs[key]}, ...))"
+                    )
+                elif key == 'num_portfolios':
+                    suggestions.append(
+                        f"  - '{key}': This parameter belongs to the strategy "
+                        f"(e.g., SingleSort(num_portfolios={kwargs[key]}, ...))"
+                    )
+                elif key == 'sort_var':
+                    suggestions.append(
+                        f"  - '{key}': This parameter belongs to the strategy "
+                        f"(e.g., SingleSort(sort_var='{kwargs[key]}', ...))"
+                    )
+                else:
+                    suggestions.append(f"  - '{key}'")
+
+            msg = f"Unknown parameter(s) passed to StrategyFormation: {unknown_list}\n"
+            if suggestions:
+                msg += "Suggestions:\n" + "\n".join(suggestions)
+            raise TypeError(msg)
+
         # Data config
         data = DataConfig(
             rating=kwargs.get('rating'),
