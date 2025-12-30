@@ -21,6 +21,47 @@ Dramatically speed up portfolio formation in PyBondLab using numba/prange, while
 
 ---
 
+## 🔍 Diagnostic Testing Results (Dec 30, 2025)
+
+Comprehensive diagnostic testing was performed across all major functionality areas.
+
+### Issues Found
+
+| Area | Issue | Severity | Status |
+|------|-------|----------|--------|
+| Non-staggered rebalancing | Turnover dates (22) != return dates (23) for quarterly | Low | Tracked |
+
+**Details:**
+- **Non-staggered turnover date mismatch**: With quarterly rebalancing, turnover has 22 dates while returns have 23 dates. This is a minor edge case that doesn't affect return calculations.
+
+### Areas Validated (No Issues)
+
+| Diagnostic | Tests | Result |
+|------------|-------|--------|
+| DataUncertaintyAnalysis | Fast vs slow path, HP=1/3, all filters | ✅ Pass |
+| BatchStrategyFormation | Fast path, multi-signal, HP=1/3 | ✅ Pass |
+| DoubleSort | Unconditional/conditional, HP=1/3, turnover, banding, chars | ✅ Pass |
+| Characteristics | SingleSort, HP=1/3, WithinFirmSort, banding, rating, quarterly | ✅ Pass |
+| dynamic_weights | True/False, HP=1/3, fast vs slow path | ✅ Pass |
+| Filter behavior | EA vs EP for trim/price/bounce filters | ✅ Pass |
+
+### Recent Bug Fixes (This Session)
+
+1. **Banding threshold comparison** (`PyBondLab.py:2456-2474`)
+   - Fixed: Changed `<` to `<=` in `calculate_qnew_vectorized()`
+   - Banding now correctly prevents reassignment when rank change equals threshold
+
+2. **WithinFirmSort fast path disabled** (`PyBondLab.py:1544-1571`)
+   - Disabled fast path due to ranking discrepancies between raw data and precomputed It0
+   - Slow path now always used for correctness
+
+### API Notes
+
+- **DoubleSort parameters**: Use `sort_var2` (not `cond_sort_var`), `num_portfolios2` (not `cond_num_portfolios`), `how='conditional'` (not `conditional=True`)
+- **EP results**: `get_long_short_ex_post()` only available when filters are applied; raises exception if no filters used
+
+---
+
 ## Performance Results (Current State)
 
 | Metric | Before | After | Improvement |
