@@ -1542,7 +1542,17 @@ class StrategyFormation:
         return True
 
     def _can_use_withinfirm_fast_path(self) -> bool:
-        """Check if WithinFirmSort fast path can be used."""
+        """Check if WithinFirmSort fast path can be used.
+
+        NOTE: Fast path is currently DISABLED due to ranking discrepancies
+        between fast path (raw data) and slow path (precomputed It0).
+        The slow path applies additional filtering through It0 that the
+        fast path doesn't replicate correctly. Always use slow path until fixed.
+        """
+        # Fast path disabled - always use slow path for correctness
+        return False
+
+        # Original conditions (kept for reference):
         # Only for WithinFirmSort strategy
         if self.strategy.__strategy_name__ != "Within-Firm Sort":
             return False
@@ -2454,12 +2464,17 @@ class StrategyFormation:
         return It1
 
     def calculate_qnew_vectorized(self, q_old, q_sig, nport, threshold):
-        """Vectorized banding calculation."""
+        """Vectorized banding calculation.
+
+        Banding prevents portfolio reassignment when rank change is small.
+        With banding=1 and nport=5, threshold_portfolios=1.0, meaning bonds
+        that move by exactly 1 portfolio keep their old rank.
+        """
         threshold_portfolios = threshold * nport
         rank_diff = np.abs(q_sig - q_old)
 
         q_new = np.where(
-            rank_diff < threshold_portfolios,
+            rank_diff <= threshold_portfolios,  # Fixed: was < (bonds moving exactly threshold kept switching)
             q_old,
             q_sig
         )

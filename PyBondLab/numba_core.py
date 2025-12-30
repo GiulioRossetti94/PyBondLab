@@ -5479,23 +5479,27 @@ def compute_within_firm_aggregation_with_lookup(
         p_idx = int(rank) - 1  # 0=LOW, 1=HIGH
 
         # Get VW from formation date (d-1) for dynamic weights
+        # This matches slow path: vw_map_t1m[date_t1_minus1] where date_t1_minus1 = form_d
         w = vw_lookup[form_d, bond_id]
+
+        # Skip if no valid VW at formation date (matching intersection logic)
+        # The slow path's intersect_id() filters out bonds without valid VW
+        if np.isnan(w) or w <= 0:
+            continue
 
         # EW: just sum returns and count
         ret_sum[return_d, rt_idx, f, p_idx] += r
         count[return_d, rt_idx, f, p_idx] += 1
 
-        # VW: weighted sum (only if weight is valid)
-        if not np.isnan(w) and w > 0:
-            wret_sum[return_d, rt_idx, f, p_idx] += r * w
-            vw_sum[return_d, rt_idx, f, p_idx] += w
+        # VW: weighted sum (weight already validated above)
+        wret_sum[return_d, rt_idx, f, p_idx] += r * w
+        vw_sum[return_d, rt_idx, f, p_idx] += w
 
-        # Simple aggregation for reporting
+        # Simple aggregation for reporting (weight already validated)
         simple_ret_sum[return_d, p_idx] += r
         simple_count[return_d, p_idx] += 1
-        if not np.isnan(w) and w > 0:
-            simple_wret_sum[return_d, p_idx] += r * w
-            simple_vw_sum[return_d, p_idx] += w
+        simple_wret_sum[return_d, p_idx] += r * w
+        simple_vw_sum[return_d, p_idx] += w
 
     # Output arrays (indexed by return date)
     ew_long_short = np.full(n_dates, np.nan, dtype=np.float64)
