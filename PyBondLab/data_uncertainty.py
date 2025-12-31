@@ -365,28 +365,68 @@ class DataUncertaintyResults:
 
         return result
 
-    def average_by_filter(self) -> pd.DataFrame:
+    def average_by_filter(
+        self,
+        include_location: bool = False,
+        aggregate_hp: bool = False
+    ) -> pd.DataFrame:
         """
-        Compute average statistics by (signal, hp, filter_type).
+        Compute average statistics by filter type.
 
-        This is a convenience method equivalent to:
-        ``summary(aggregate_by=['signal', 'hp', 'filter_type'])``
+        Parameters
+        ----------
+        include_location : bool, default=False
+            If True, disaggregate by tail location (left, right, both).
+            Shows trim_left, trim_right, trim_both as separate rows.
+            If False, averages across all locations within each filter_type.
+        aggregate_hp : bool, default=False
+            If True, average across all holding periods.
+            If False, show separate rows for each holding period.
 
         Returns
         -------
         pd.DataFrame
-            Averaged statistics with one row per (signal, hp, filter_type).
-            Useful for comparing baseline vs different filter types.
+            Averaged statistics. Columns depend on grouping:
+            - signal, filter_type (always)
+            - hp (if aggregate_hp=False)
+            - location (if include_location=True)
+            - rating (if ratings were used)
+            - ew_ea_mean, vw_ea_mean, ew_ep_mean, vw_ep_mean
+            - ea_ep_diff_ew, ea_ep_diff_vw, sharpe
 
         Examples
         --------
         >>> results = DataUncertaintyAnalysis(...).fit()
+
+        >>> # Default: by (signal, hp, filter_type)
         >>> avg = results.average_by_filter()
-        >>> print(avg[['signal', 'hp', 'filter_type', 'ew_ea_mean', 'vw_ea_mean']])
+
+        >>> # Disaggregate by location: trim_left, trim_right, trim_both
+        >>> avg = results.average_by_filter(include_location=True)
+
+        >>> # Aggregate over holding periods
+        >>> avg = results.average_by_filter(aggregate_hp=True)
+
+        >>> # Both: location detail, HP aggregated
+        >>> avg = results.average_by_filter(include_location=True, aggregate_hp=True)
         """
-        groupby_cols = ['signal', 'hp', 'filter_type']
-        if 'rating' in self._summary_cache.columns if self._summary_cache is not None else 'rating' in self._configs.columns:
-            groupby_cols.append('rating')
+        # Build groupby columns
+        groupby_cols = ['signal']
+
+        if not aggregate_hp:
+            groupby_cols.append('hp')
+
+        groupby_cols.append('filter_type')
+
+        if include_location:
+            groupby_cols.append('location')
+
+        # Add rating if present
+        summary_df = self.summary()
+        if 'rating' in summary_df.columns:
+            # Insert rating after signal
+            rating_idx = groupby_cols.index('signal') + 1
+            groupby_cols.insert(rating_idx, 'rating')
 
         return self.summary(aggregate_by=groupby_cols)
 
