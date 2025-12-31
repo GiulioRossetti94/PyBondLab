@@ -601,6 +601,128 @@ class DataUncertaintyResults:
             self._vw_ep.to_excel(writer, sheet_name='VW_EP')
             self._configs.to_excel(writer, sheet_name='Configs', index=False)
 
+    def to_panel(self) -> pd.DataFrame:
+        """
+        Convert results to a long-format panel DataFrame.
+
+        Returns a single DataFrame with one row per (date, configuration,
+        weighting, strategy) observation. This format is convenient for
+        analysis, pivoting, and filtering.
+
+        Returns
+        -------
+        pd.DataFrame
+            Panel with columns:
+            - date: Observation date
+            - factor: Signal/factor name
+            - hp: Holding period
+            - filter_type: 'baseline', 'trim', 'price', 'bounce', 'wins'
+            - level: Filter level value (e.g., 0.2, 99, [5, 200])
+            - location: Tail location ('left', 'right', 'both', or None)
+            - rating: Rating category ('IG', 'NIG', or None)
+            - weighting: 'ew' or 'vw'
+            - strategy: 'ea' or 'ep'
+            - return: Long-short return
+
+        Examples
+        --------
+        >>> results = DataUncertaintyAnalysis(...).fit()
+        >>> panel = results.to_panel()
+        >>> print(panel.head())
+               date    factor  hp filter_type level location rating weighting strategy    return
+        0  2020-01-31  momentum   1    baseline  None     None   None        ew       ea  0.012300
+        1  2020-01-31  momentum   1    baseline  None     None   None        ew       ep  0.011800
+        2  2020-01-31  momentum   1    baseline  None     None   None        vw       ea  0.014500
+        3  2020-01-31  momentum   1    baseline  None     None   None        vw       ep  0.014000
+        4  2020-01-31  momentum   1        trim   0.2    right   None        ew       ea  0.011500
+
+        >>> # Pivot to wide format
+        >>> wide = panel[panel['strategy'] == 'ea'].pivot_table(
+        ...     index='date',
+        ...     columns=['factor', 'weighting', 'filter_type'],
+        ...     values='return'
+        ... )
+
+        >>> # Filter to specific configurations
+        >>> baseline_ew = panel[(panel['filter_type'] == 'baseline') & (panel['weighting'] == 'ew')]
+        """
+        rows = []
+
+        # Get dates from index
+        dates = self._ew_ea.index
+
+        # Iterate over each configuration
+        for _, config in self._configs.iterrows():
+            col = config['column_name']
+
+            # Extract metadata
+            factor = config['signal']
+            hp = config['hp']
+            filter_type = config['filter_type']
+            level = config['level']
+            location = config['location']
+            rating = config.get('rating', None)
+
+            # Get return series for this config
+            ew_ea = self._ew_ea[col]
+            vw_ea = self._vw_ea[col]
+            ew_ep = self._ew_ep[col]
+            vw_ep = self._vw_ep[col]
+
+            # Build rows for each date
+            for date in dates:
+                base_row = {
+                    'date': date,
+                    'factor': factor,
+                    'hp': hp,
+                    'filter_type': filter_type,
+                    'level': level,
+                    'location': location,
+                    'rating': rating,
+                }
+
+                # EW EA
+                rows.append({
+                    **base_row,
+                    'weighting': 'ew',
+                    'strategy': 'ea',
+                    'return': ew_ea[date] if date in ew_ea.index else np.nan,
+                })
+
+                # EW EP
+                rows.append({
+                    **base_row,
+                    'weighting': 'ew',
+                    'strategy': 'ep',
+                    'return': ew_ep[date] if date in ew_ep.index else np.nan,
+                })
+
+                # VW EA
+                rows.append({
+                    **base_row,
+                    'weighting': 'vw',
+                    'strategy': 'ea',
+                    'return': vw_ea[date] if date in vw_ea.index else np.nan,
+                })
+
+                # VW EP
+                rows.append({
+                    **base_row,
+                    'weighting': 'vw',
+                    'strategy': 'ep',
+                    'return': vw_ep[date] if date in vw_ep.index else np.nan,
+                })
+
+        # Build DataFrame
+        panel = pd.DataFrame(rows)
+
+        # Ensure column order
+        col_order = ['date', 'factor', 'hp', 'filter_type', 'level', 'location',
+                     'rating', 'weighting', 'strategy', 'return']
+        panel = panel[col_order]
+
+        return panel
+
     def __repr__(self) -> str:
         n_configs = len(self._configs)
         n_dates = len(self._ew_ea)
