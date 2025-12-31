@@ -276,10 +276,12 @@ class DataUncertaintyResults:
             - vw_ea_mean, vw_ea_tstat
             - ew_ep_mean, ew_ep_tstat
             - vw_ep_mean, vw_ep_tstat
-            - ea_ep_diff_ew, ea_ep_diff_vw (EP - EA difference)
+            - ea_ep_diff_ew, ea_ep_diff_ew_tstat (EP - EA difference with t-stat)
+            - ea_ep_diff_vw, ea_ep_diff_vw_tstat
             - n_obs, sharpe (annualized EW EA Sharpe)
 
-            All means are in % (×100).
+            All means and diffs are in % (×100).
+            T-stats use Newey-West HAC standard errors with lag = int(T^0.25).
 
         Notes
         -----
@@ -306,9 +308,11 @@ class DataUncertaintyResults:
                 else:
                     sharpe = np.nan
 
-                # EA-EP difference (EP - EA), in percentage points
-                ea_ep_diff_ew = (ew_ep_mean - ew_ea_mean) * 100 if not (np.isnan(ew_ep_mean) or np.isnan(ew_ea_mean)) else np.nan
-                ea_ep_diff_vw = (vw_ep_mean - vw_ea_mean) * 100 if not (np.isnan(vw_ep_mean) or np.isnan(vw_ea_mean)) else np.nan
+                # EA-EP difference series and t-stat
+                ea_ep_diff_ew_series = self._ew_ep[col] - self._ew_ea[col]
+                ea_ep_diff_vw_series = self._vw_ep[col] - self._vw_ea[col]
+                ea_ep_diff_ew_mean, ea_ep_diff_ew_tstat, _ = compute_newey_west_tstat(ea_ep_diff_ew_series)
+                ea_ep_diff_vw_mean, ea_ep_diff_vw_tstat, _ = compute_newey_west_tstat(ea_ep_diff_vw_series)
 
                 row = {
                     'signal': config['signal'],
@@ -324,8 +328,10 @@ class DataUncertaintyResults:
                     'ew_ep_tstat': ew_ep_tstat,
                     'vw_ep_mean': vw_ep_mean * 100,
                     'vw_ep_tstat': vw_ep_tstat,
-                    'ea_ep_diff_ew': ea_ep_diff_ew,
-                    'ea_ep_diff_vw': ea_ep_diff_vw,
+                    'ea_ep_diff_ew': ea_ep_diff_ew_mean * 100,
+                    'ea_ep_diff_ew_tstat': ea_ep_diff_ew_tstat,
+                    'ea_ep_diff_vw': ea_ep_diff_vw_mean * 100,
+                    'ea_ep_diff_vw_tstat': ea_ep_diff_vw_tstat,
                     'n_obs': n_obs,
                     'sharpe': sharpe,
                 }
@@ -371,7 +377,11 @@ class DataUncertaintyResults:
         aggregate_hp: bool = False
     ) -> pd.DataFrame:
         """
-        Compute average statistics by filter type.
+        Compute average statistics by filter type with proper t-statistics.
+
+        Unlike summary(aggregate_by=...) which averages means (losing t-stats),
+        this method averages the raw return series first, then computes
+        Newey-West t-statistics on the averaged series.
 
         Parameters
         ----------
@@ -386,19 +396,22 @@ class DataUncertaintyResults:
         Returns
         -------
         pd.DataFrame
-            Averaged statistics. Columns depend on grouping:
+            Averaged statistics with proper t-stats. Columns:
             - signal, filter_type (always)
             - hp (if aggregate_hp=False)
             - location (if include_location=True)
             - rating (if ratings were used)
-            - ew_ea_mean, vw_ea_mean, ew_ep_mean, vw_ep_mean
-            - ea_ep_diff_ew, ea_ep_diff_vw, sharpe
+            - ew_ea_mean, ew_ea_tstat, vw_ea_mean, vw_ea_tstat
+            - ew_ep_mean, ew_ep_tstat, vw_ep_mean, vw_ep_tstat
+            - ea_ep_diff_ew, ea_ep_diff_ew_tstat
+            - ea_ep_diff_vw, ea_ep_diff_vw_tstat
+            - n_obs, sharpe
 
         Examples
         --------
         >>> results = DataUncertaintyAnalysis(...).fit()
 
-        >>> # Default: by (signal, hp, filter_type)
+        >>> # Default: by (signal, hp, filter_type) with t-stats
         >>> avg = results.average_by_filter()
 
         >>> # Disaggregate by location: trim_left, trim_right, trim_both
@@ -413,6 +426,10 @@ class DataUncertaintyResults:
         # Build groupby columns
         groupby_cols = ['signal']
 
+        # Add rating if present (insert after signal)
+        if 'rating' in self._configs.columns:
+            groupby_cols.append('rating')
+
         if not aggregate_hp:
             groupby_cols.append('hp')
 
@@ -421,14 +438,67 @@ class DataUncertaintyResults:
         if include_location:
             groupby_cols.append('location')
 
-        # Add rating if present
-        summary_df = self.summary()
-        if 'rating' in summary_df.columns:
-            # Insert rating after signal
-            rating_idx = groupby_cols.index('signal') + 1
-            groupby_cols.insert(rating_idx, 'rating')
+        # Group configs by the criteria
+        configs = self._configs.copy()
+        grouped = configs.groupby(groupby_cols, dropna=False)
 
-        return self.summary(aggregate_by=groupby_cols)
+        rows = []
+        for group_key, group_df in grouped:
+            # Get column names for this group
+            col_names = group_df['column_name'].tolist()
+
+            # Average the raw series across columns (nanmean handles missing)
+            ew_ea_avg = self._ew_ea[col_names].mean(axis=1)
+            vw_ea_avg = self._vw_ea[col_names].mean(axis=1)
+            ew_ep_avg = self._ew_ep[col_names].mean(axis=1)
+            vw_ep_avg = self._vw_ep[col_names].mean(axis=1)
+
+            # Compute Newey-West t-stats on averaged series
+            ew_ea_mean, ew_ea_tstat, n_obs = compute_newey_west_tstat(ew_ea_avg)
+            vw_ea_mean, vw_ea_tstat, _ = compute_newey_west_tstat(vw_ea_avg)
+            ew_ep_mean, ew_ep_tstat, _ = compute_newey_west_tstat(ew_ep_avg)
+            vw_ep_mean, vw_ep_tstat, _ = compute_newey_west_tstat(vw_ep_avg)
+
+            # EA-EP difference series and t-stat
+            ea_ep_diff_ew_series = ew_ep_avg - ew_ea_avg
+            ea_ep_diff_vw_series = vw_ep_avg - vw_ea_avg
+            ea_ep_diff_ew_mean, ea_ep_diff_ew_tstat, _ = compute_newey_west_tstat(ea_ep_diff_ew_series)
+            ea_ep_diff_vw_mean, ea_ep_diff_vw_tstat, _ = compute_newey_west_tstat(ea_ep_diff_vw_series)
+
+            # Annualized Sharpe ratio (EW EA)
+            ew_ea_clean = ew_ea_avg.dropna()
+            if len(ew_ea_clean) > 1 and ew_ea_clean.std() > 0:
+                sharpe = (ew_ea_clean.mean() / ew_ea_clean.std()) * np.sqrt(12)
+            else:
+                sharpe = np.nan
+
+            # Build row with group keys
+            if len(groupby_cols) == 1:
+                row = {groupby_cols[0]: group_key}
+            else:
+                row = dict(zip(groupby_cols, group_key))
+
+            # Add statistics
+            row.update({
+                'ew_ea_mean': ew_ea_mean * 100,
+                'ew_ea_tstat': ew_ea_tstat,
+                'vw_ea_mean': vw_ea_mean * 100,
+                'vw_ea_tstat': vw_ea_tstat,
+                'ew_ep_mean': ew_ep_mean * 100,
+                'ew_ep_tstat': ew_ep_tstat,
+                'vw_ep_mean': vw_ep_mean * 100,
+                'vw_ep_tstat': vw_ep_tstat,
+                'ea_ep_diff_ew': ea_ep_diff_ew_mean * 100,
+                'ea_ep_diff_ew_tstat': ea_ep_diff_ew_tstat,
+                'ea_ep_diff_vw': ea_ep_diff_vw_mean * 100,
+                'ea_ep_diff_vw_tstat': ea_ep_diff_vw_tstat,
+                'n_obs': n_obs,
+                'sharpe': sharpe,
+            })
+
+            rows.append(row)
+
+        return pd.DataFrame(rows)
 
     # Sentinel value to distinguish "not provided" from "filter for None"
     _NOT_PROVIDED = object()
