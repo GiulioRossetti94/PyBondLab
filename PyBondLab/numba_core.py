@@ -793,11 +793,15 @@ def compute_turnover_all_portfolios(
         if prev_seen_ew[p]:
             turn_ew[p] = prev_sum_ew[p] + curr_sum_ew[p] - 2.0 * sum_min_ew[p]
         else:
+            # Entry turnover: going from 0 to full position = sum of weights = 1.0
+            turn_ew[p] = curr_sum_ew[p]
             new_prev_seen_ew[p] = True
 
         if prev_seen_vw[p]:
             turn_vw[p] = prev_sum_vw[p] + curr_sum_vw[p] - 2.0 * sum_min_vw[p]
         else:
+            # Entry turnover: going from 0 to full position = sum of weights = 1.0
+            turn_vw[p] = curr_sum_vw[p]
             new_prev_seen_vw[p] = True
 
     return turn_ew, turn_vw, new_prev_seen_ew, new_prev_seen_vw, curr_sum_ew, curr_sum_vw

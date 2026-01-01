@@ -532,6 +532,10 @@ def accumulate_turnover(state: TurnoverState,
             # First time seeing this portfolio - mark as seen
             state.prev_seen_ew[cohort, k0] = True
 
+            # Entry turnover: going from 0 to full position = sum of weights = 1.0
+            curr_sum_ew = raw_ew.sum()
+            state.ew_turn_ea[tau, cohort, k0] = curr_sum_ew
+
             # === TRACKING LOGIC FOR FIRST OBSERVATION ===
             if state.logger is not None and TRACKING_AVAILABLE:
                 date_str = f"tau_{tau}"
@@ -545,14 +549,14 @@ def accumulate_turnover(state: TurnoverState,
                         weights_t=raw_ew,
                         ids_t_minus_1=np.array([]),
                         weights_t_minus_1=np.array([]),
-                        turnover_value=np.nan,
+                        turnover_value=curr_sum_ew,
                         returns=None,
                         cohort_id=cohort
                     )
                     state.logger.log(diagnostic)
                 except Exception:
                     pass
-        
+
         # ===== VALUE WEIGHTS =====
         if state.prev_seen_vw[cohort, k0]:
             # Get previous scaled weights for this cohort/portfolio
@@ -597,6 +601,10 @@ def accumulate_turnover(state: TurnoverState,
             # First time seeing this portfolio - mark as seen
             state.prev_seen_vw[cohort, k0] = True
 
+            # Entry turnover: going from 0 to full position = sum of weights = 1.0
+            curr_sum_vw = raw_vw.sum()
+            state.vw_turn_ea[tau, cohort, k0] = curr_sum_vw
+
             # === TRACKING LOGIC FOR FIRST OBSERVATION ===
             if state.logger is not None and TRACKING_AVAILABLE:
                 date_str = f"tau_{tau}"
@@ -610,14 +618,14 @@ def accumulate_turnover(state: TurnoverState,
                         weights_t=raw_vw,
                         ids_t_minus_1=np.array([]),
                         weights_t_minus_1=np.array([]),
-                        turnover_value=np.nan,
+                        turnover_value=curr_sum_vw,
                         returns=None,
                         cohort_id=cohort
                     )
                     state.logger.log(diagnostic)
                 except Exception:
                     pass
-        
+
         # ===== UPDATE STATE WITH SCALED WEIGHTS FOR NEXT PERIOD =====
         # Get scaled weights for this portfolio
         curr_ptf_scaled = weights_scaled_df[weights_scaled_df['ptf_rank'] == k].copy()
@@ -1129,6 +1137,12 @@ def finalize_turnover(state: TurnoverState, datelist: list, ptf_labels: list,
                         pass
     
     # ===== AVERAGE ACROSS COHORTS (STAGGERED ONLY) =====
+    # Alignment: We want turnover to have the SAME dates as returns.
+    # Returns DataFrame has: datelist[0] (NaN), datelist[1] (first return), ...
+    # So turnover should also have: datelist[0] (NaN), datelist[1] (entry turnover), ...
+    #
+    # state[i] = turnover from formation at datelist[i], for return at datelist[i+1]
+    # We use state[:TM-1] for formations 0..TM-2, then prepend NaN row for datelist[0]
     if state.is_staggered:
         # Ignore errors from NaN slices
         with np.errstate(invalid='ignore'):
@@ -1136,16 +1150,16 @@ def finalize_turnover(state: TurnoverState, datelist: list, ptf_labels: list,
                 warnings.filterwarnings("ignore", message="Mean of empty slice")
 
                 # Average over cohort dimension (axis=1)
-                # Skip first row (tau=0) as it has no turnover
+                # Include state[0] (entry turnover), exclude state[TM-1] (liquidation)
                 if use_nanmean:
                     # New behavior: ignore NaN values when averaging
-                    ew_mean_over_h = np.nanmean(state.ew_turn_ea[1:, :, :], axis=1)
-                    vw_mean_over_h = np.nanmean(state.vw_turn_ea[1:, :, :], axis=1)
+                    ew_mean_over_h = np.nanmean(state.ew_turn_ea[:TM-1, :, :], axis=1)
+                    vw_mean_over_h = np.nanmean(state.vw_turn_ea[:TM-1, :, :], axis=1)
                 else:
                     # Old behavior: propagate NaN values (backward compatibility)
-                    ew_mean_over_h = np.mean(state.ew_turn_ea[1:, :, :], axis=1)
-                    vw_mean_over_h = np.mean(state.vw_turn_ea[1:, :, :], axis=1)
-        
+                    ew_mean_over_h = np.mean(state.ew_turn_ea[:TM-1, :, :], axis=1)
+                    vw_mean_over_h = np.mean(state.vw_turn_ea[:TM-1, :, :], axis=1)
+
         # Ensure fully-empty rows stay as NaN (not 0 from nanmean of all-NaN)
         ew_mean_over_h = np.where(
             np.all(np.isnan(ew_mean_over_h), axis=1, keepdims=True),
@@ -1157,37 +1171,35 @@ def finalize_turnover(state: TurnoverState, datelist: list, ptf_labels: list,
             np.nan,
             vw_mean_over_h
         )
-        
-        # Create DataFrames (skip first date)
+
+        # Prepend NaN row for first formation date (no turnover yet)
+        # This aligns with returns DataFrame which has NaN at datelist[0]
+        nan_row = np.full((1, tot_nport), np.nan)
+        ew_mean_over_h = np.vstack([nan_row, ew_mean_over_h])
+        vw_mean_over_h = np.vstack([nan_row, vw_mean_over_h])
+
+        # Create DataFrames with FULL datelist as index (same as returns)
         ew_turnover_df = pd.DataFrame(
-            ew_mean_over_h, index=datelist[1:], columns=ptf_labels
+            ew_mean_over_h, index=datelist, columns=ptf_labels
         )
         vw_turnover_df = pd.DataFrame(
-            vw_mean_over_h, index=datelist[1:], columns=ptf_labels
+            vw_mean_over_h, index=datelist, columns=ptf_labels
         )
-
-        # ===== SHIFT(1) ALIGNMENT =====
-        # Shift turnover by 1 so that turnover[t] represents the cost incurred
-        # to generate return[t]. Without shift, turnover at index t is the cost
-        # incurred at formation date t-1. After shift(1):
-        # - turnover[t] = cost of entering positions that generate returns at t
-        # - First row becomes NaN (warmup period - no previous to compare)
-        ew_turnover_df = ew_turnover_df.shift(1)
-        vw_turnover_df = vw_turnover_df.shift(1)
 
         return ew_turnover_df, vw_turnover_df
     else:
         # For non-staggered, return the turnover arrays directly as DataFrames
+        # Include state[0] (entry turnover), exclude state[TM-1] (liquidation)
+        # Prepend NaN row for first formation date
+        nan_row = np.full((1, tot_nport), np.nan)
+        ew_data = np.vstack([nan_row, state.ew_turn_ea[:TM-1, :]])
+        vw_data = np.vstack([nan_row, state.vw_turn_ea[:TM-1, :]])
+
         ew_turnover_df = pd.DataFrame(
-            state.ew_turn_ea[1:, :], index=datelist[1:], columns=ptf_labels
+            ew_data, index=datelist, columns=ptf_labels
         )
         vw_turnover_df = pd.DataFrame(
-            state.vw_turn_ea[1:, :], index=datelist[1:], columns=ptf_labels
+            vw_data, index=datelist, columns=ptf_labels
         )
-
-        # ===== SHIFT(1) ALIGNMENT =====
-        # Same logic as staggered: shift so turnover[t] = cost for return[t]
-        ew_turnover_df = ew_turnover_df.shift(1)
-        vw_turnover_df = vw_turnover_df.shift(1)
 
         return ew_turnover_df, vw_turnover_df
