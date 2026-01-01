@@ -4982,18 +4982,20 @@ def compute_nonstaggered_full_fast(
 
                 # Compute turnover per portfolio
                 for p in range(nport):
-                    if not prev_seen[p]:
-                        # First time seeing this portfolio - mark as seen
-                        prev_seen[p] = True
-                        continue
-
-                    # Current weights sum
+                    # Current weights sum (needed for both entry and regular turnover)
                     curr_sum_ew = 0.0
                     curr_sum_vw = 0.0
                     for bond_id in range(n_ids):
                         if curr_ranks[bond_id] == p + 1:
                             curr_sum_ew += curr_ew[bond_id]
                             curr_sum_vw += curr_vw[bond_id]
+
+                    if not prev_seen[p]:
+                        # First time seeing this portfolio - entry turnover = sum of weights = 1.0
+                        prev_seen[p] = True
+                        ew_turnover[d, p] = curr_sum_ew
+                        vw_turnover[d, p] = curr_sum_vw
+                        continue
 
                     # Sum of min(prev_scaled, curr)
                     sum_min_ew = 0.0

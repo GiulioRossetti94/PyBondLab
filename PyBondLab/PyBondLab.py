@@ -1483,12 +1483,15 @@ class StrategyFormation:
 
         # Process turnover if computed
         if self.turnover:
-            # Skip first row (no turnover at first rebalancing)
+            # Use full datelist to align with returns (both have NaN at first date)
+            # Row 0: NaN (formation date, no prior turnover)
+            # Row 1: entry turnover = 1.0 (first return date)
+            # Row 2+: subsequent turnovers (or 0.0 during holding period)
             ew_turnover_df = pd.DataFrame(
-                ew_turn_arr[1:, :], index=self.datelist[1:], columns=ptf_labels
+                ew_turn_arr, index=self.datelist, columns=ptf_labels
             )
             vw_turnover_df = pd.DataFrame(
-                vw_turn_arr[1:, :], index=self.datelist[1:], columns=ptf_labels
+                vw_turn_arr, index=self.datelist, columns=ptf_labels
             )
         else:
             ew_turnover_df = None
