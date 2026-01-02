@@ -3384,10 +3384,10 @@ class StrategyResults:
         vw_turn = self.ea.turnover.vwturn_df.copy()
 
         if level == 'factor':
-            # Factor turnover = (P_N + P_1) / 2 = average of long and short legs
+            # Factor turnover = P_N + P_1 = sum of long and short legs (total trading)
             nport = ew_turn.shape[1]
-            ew_factor = (ew_turn.iloc[:, 0] + ew_turn.iloc[:, nport - 1]) / 2
-            vw_factor = (vw_turn.iloc[:, 0] + vw_turn.iloc[:, nport - 1]) / 2
+            ew_factor = ew_turn.iloc[:, 0] + ew_turn.iloc[:, nport - 1]
+            vw_factor = vw_turn.iloc[:, 0] + vw_turn.iloc[:, nport - 1]
 
             if naming is not None:
                 ew_name = make_factor_name(
@@ -3586,7 +3586,7 @@ date       | factor | freq | leg | weighting | return  | turnover | duration | m
 
 | Leg | Returns | Turnover | Chars |
 |-----|---------|----------|-------|
-| `ls` | Long minus short | Factor turnover (avg of L and S) | L minus S spread |
+| `ls` | Long minus short | Factor turnover (L + S sum) | L minus S spread |
 | `l` | Long portfolio | Long portfolio turnover | Long portfolio avg |
 | `s` | Short portfolio | Short portfolio turnover | Short portfolio avg |
 
@@ -3667,7 +3667,7 @@ def extract_panel(
     Notes
     -----
     - For sign-corrected factors, 'l' and 's' legs are swapped
-    - Turnover for 'ls' leg is factor turnover: (L + S) / 2
+    - Turnover for 'ls' leg is factor turnover: L + S (sum of both legs)
     - Chars for 'ls' leg is L - S spread
     - WithinFirmSort 'high' maps to 'l', 'low' maps to 's'
     """

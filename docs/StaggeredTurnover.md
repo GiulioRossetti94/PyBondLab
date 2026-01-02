@@ -398,9 +398,9 @@ result = StrategyFormation(
 ew_ls, vw_ls = result.get_long_short()
 ew_turn, vw_turn = result.get_turnover()
 
-# Compute factor-level turnover: average of long and short portfolios
+# Compute factor-level turnover: sum of long and short portfolios (total trading)
 n_port = ew_turn.shape[1]
-factor_turnover = (ew_turn.iloc[:, 0] + ew_turn.iloc[:, n_port - 1]) / 2
+factor_turnover = ew_turn.iloc[:, 0] + ew_turn.iloc[:, n_port - 1]
 
 # Set transaction cost (e.g., 20 bps per unit turnover)
 cost_per_unit = 0.002

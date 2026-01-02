@@ -571,11 +571,13 @@ class StrategyResults:
         vw_turn = self.turnover.vw_turnover_df.copy()
 
         if level == 'factor':
-            # Factor turnover = average of long and short leg turnovers
+            # Factor turnover = sum of long and short leg turnovers (total trading)
+            # For a L-S portfolio with 100% long and -100% short positions,
+            # the total turnover is the sum of both legs, not the average
             nport = ew_turn.shape[1]
 
             if self.second_signal is not None and self.num_portfolios is not None:
-                # DoubleSort: average across conditioning groups
+                # DoubleSort: average across conditioning groups, then sum legs
                 # Portfolio layout: (1,1), (1,2), ..., (1,n2), (2,1), ..., (n1,n2)
                 # where n1 = num_portfolios for main signal, n2 = nport // n1
                 n1 = self.num_portfolios  # portfolios for main signal
@@ -592,12 +594,12 @@ class StrategyResults:
                 vw_long_turn = vw_turn.iloc[:, long_cols].mean(axis=1)
                 vw_short_turn = vw_turn.iloc[:, short_cols].mean(axis=1)
 
-                ew_factor = (ew_long_turn + ew_short_turn) / 2
-                vw_factor = (vw_long_turn + vw_short_turn) / 2
+                ew_factor = ew_long_turn + ew_short_turn
+                vw_factor = vw_long_turn + vw_short_turn
             else:
-                # SingleSort: (P_N + P_1) / 2
-                ew_factor = (ew_turn.iloc[:, 0] + ew_turn.iloc[:, nport - 1]) / 2
-                vw_factor = (vw_turn.iloc[:, 0] + vw_turn.iloc[:, nport - 1]) / 2
+                # SingleSort: P_N + P_1 (sum of long and short)
+                ew_factor = ew_turn.iloc[:, 0] + ew_turn.iloc[:, nport - 1]
+                vw_factor = vw_turn.iloc[:, 0] + vw_turn.iloc[:, nport - 1]
 
             if naming is not None:
                 signal = self.signal_name or 'factor'

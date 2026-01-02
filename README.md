@@ -167,7 +167,7 @@ cfg = NamingConfig(weighting_prefix=True)
 ew, vw = results.get_long_short(naming=cfg)
 print(ew.name, vw.name)  # Output: ew_rating_num, vw_rating_num
 
-# Factor-level turnover (average of long and short legs)
+# Factor-level turnover (sum of long and short legs)
 ew_turn, vw_turn = results.get_turnover(level='factor', naming=cfg)
 print(ew_turn.name)  # Output: ew_rating_num_turnover
 ```

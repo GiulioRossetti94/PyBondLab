@@ -325,9 +325,9 @@ def test_net_of_cost_example():
     print(f"\nReturns dates: {len(ew_ls)} ({ew_ls.index[0]} to {ew_ls.index[-1]})")
     print(f"Turnover dates: {len(ew_turn)} ({ew_turn.index[0]} to {ew_turn.index[-1]})")
 
-    # Compute factor-level turnover: average of long and short portfolios
+    # Compute factor-level turnover: sum of long and short portfolios (total trading)
     n_port = ew_turn.shape[1]
-    factor_turnover = (ew_turn.iloc[:, 0] + ew_turn.iloc[:, n_port - 1]) / 2
+    factor_turnover = ew_turn.iloc[:, 0] + ew_turn.iloc[:, n_port - 1]
 
     # Set transaction cost
     cost_per_unit = 0.002  # 20 bps per unit turnover
