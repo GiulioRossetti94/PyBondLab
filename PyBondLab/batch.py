@@ -612,7 +612,8 @@ class BatchStrategyFormation:
                     _print_memory_config(parallel_config, len(signals), verbose=True)
             else:
                 # Manual chunk_size but still use auto-tuning for other params
-                self.n_jobs = n_jobs
+                # Use reduced n_workers if memory constraints require it
+                self.n_jobs = parallel_config['n_workers']
                 self.chunk_size = chunk_size
                 self.signals_per_worker = max(1, signals_per_worker) if signals_per_worker != 1 else parallel_config['signals_per_worker']
                 self.max_in_flight = parallel_config['max_in_flight']
