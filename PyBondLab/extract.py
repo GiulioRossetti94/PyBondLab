@@ -48,12 +48,14 @@ def extract_panel(
         - weighting: 'ew' or 'vw'
         - return: Portfolio return
         - turnover: Turnover (if computed, else NaN)
+        - count: Number of bonds in portfolio (if computed, else NaN)
         - {char_name}: Characteristic values (if computed, else not present)
 
     Notes
     -----
     - For sign-corrected factors, 'l' and 's' legs are swapped
     - Turnover for 'ls' leg is factor turnover: L + S (sum of both legs)
+    - Count for 'ls' leg is total bonds: L + S (sum of both legs)
     - Chars for 'ls' leg is L - S spread
     - WithinFirmSort 'high' maps to 'l', 'low' maps to 's'
 
@@ -97,6 +99,7 @@ def extract_panel(
     # Detect available features
     has_turnover = first_sr.has_turnover
     has_chars = first_sr.has_characteristics
+    has_counts = first_sr.has_bond_counts
     char_names = []
     if has_chars:
         char_names = first_sr.characteristics.available_characteristics
@@ -188,6 +191,34 @@ def extract_panel(
             ew_factor_turn = ew_long_turn + ew_short_turn
             vw_factor_turn = vw_long_turn + vw_short_turn
 
+        # Get bond counts if available
+        # Note: bond counts are the same for EW and VW (just count of bonds, not weighted)
+        long_count = None
+        short_count = None
+        factor_count = None
+
+        if has_counts:
+            count_df = sr.get_bond_count()
+            nport_count = count_df.shape[1]
+
+            # Check for DoubleSort (average across conditioning groups)
+            if second_signal is not None and num_portfolios is not None:
+                # DoubleSort: average across conditioning groups
+                n1 = num_portfolios
+                n2 = nport_count // n1
+                short_cols = list(range(n2))
+                long_cols = list(range((n1 - 1) * n2, n1 * n2))
+
+                long_count = count_df.iloc[:, long_cols].mean(axis=1)
+                short_count = count_df.iloc[:, short_cols].mean(axis=1)
+            else:
+                # SingleSort or WithinFirmSort
+                long_count = count_df.iloc[:, nport_count - 1]
+                short_count = count_df.iloc[:, 0]
+
+            # Factor count = sum of long and short (total bonds in factor)
+            factor_count = long_count + short_count
+
         # Get characteristics if available
         ew_chars_data = {}  # {char_name: {'long': Series, 'short': Series, 'ls': Series}}
         vw_chars_data = {}
@@ -260,6 +291,8 @@ def extract_panel(
             }
             if has_turnover:
                 row_ew_ls['turnover'] = safe_get(ew_factor_turn, date)
+            if has_counts:
+                row_ew_ls['count'] = safe_get(factor_count, date)
             if has_chars:
                 for char_name in char_names:
                     if char_name in ew_chars_data:
@@ -279,6 +312,8 @@ def extract_panel(
             }
             if has_turnover:
                 row_ew_l['turnover'] = safe_get(ew_long_turn, date)
+            if has_counts:
+                row_ew_l['count'] = safe_get(long_count, date)
             if has_chars:
                 for char_name in char_names:
                     if char_name in ew_chars_data:
@@ -296,6 +331,8 @@ def extract_panel(
             }
             if has_turnover:
                 row_ew_s['turnover'] = safe_get(ew_short_turn, date)
+            if has_counts:
+                row_ew_s['count'] = safe_get(short_count, date)
             if has_chars:
                 for char_name in char_names:
                     if char_name in ew_chars_data:
@@ -314,6 +351,8 @@ def extract_panel(
             }
             if has_turnover:
                 row_vw_ls['turnover'] = safe_get(vw_factor_turn, date)
+            if has_counts:
+                row_vw_ls['count'] = safe_get(factor_count, date)
             if has_chars:
                 for char_name in char_names:
                     if char_name in vw_chars_data:
@@ -333,6 +372,8 @@ def extract_panel(
             }
             if has_turnover:
                 row_vw_l['turnover'] = safe_get(vw_long_turn, date)
+            if has_counts:
+                row_vw_l['count'] = safe_get(long_count, date)
             if has_chars:
                 for char_name in char_names:
                     if char_name in vw_chars_data:
@@ -350,6 +391,8 @@ def extract_panel(
             }
             if has_turnover:
                 row_vw_s['turnover'] = safe_get(vw_short_turn, date)
+            if has_counts:
+                row_vw_s['count'] = safe_get(short_count, date)
             if has_chars:
                 for char_name in char_names:
                     if char_name in vw_chars_data:
@@ -363,6 +406,8 @@ def extract_panel(
     base_cols = ['date', 'factor', 'freq', 'leg', 'weighting', 'return']
     if has_turnover:
         base_cols.append('turnover')
+    if has_counts:
+        base_cols.append('count')
     if has_chars:
         base_cols.extend(char_names)
 
