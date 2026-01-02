@@ -621,7 +621,7 @@ class BatchStrategyFormation:
                 # Print warnings if memory is tight
                 for warning in parallel_config['warnings']:
                     if verbose:
-                        print(f"  ⚠ {warning}")
+                        print(f"  [!] {warning}")
         else:
             # Sequential or small batch - no auto-tuning needed
             self.n_jobs = n_jobs
@@ -1452,7 +1452,7 @@ class BatchStrategyFormation:
                 sample_data = self._get_minimal_data(work_items[0])
             min_size = sample_data.memory_usage(deep=True).sum() / 1024 / 1024
             reduction = (1 - min_size / full_size) * 100
-            print(f"  Data size: {full_size:.1f}MB → {min_size:.1f}MB per worker ({reduction:.0f}% reduction)")
+            print(f"  Data size: {full_size:.1f}MB -> {min_size:.1f}MB per worker ({reduction:.0f}% reduction)")
             if max_in_flight < len(work_items):
                 print(f"  Max in-flight: {max_in_flight} (lazy arg preparation)")
             del sample_data  # Free sample

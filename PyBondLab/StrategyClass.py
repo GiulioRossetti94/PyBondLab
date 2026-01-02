@@ -594,7 +594,7 @@ class Momentum(Strategy):
         | Option   | NaN in window (row exists)           | Description                          |
         |----------|--------------------------------------|--------------------------------------|
         | Default  | Signal=NaN                           | Standard rolling, NaN propagates     |
-        | fill_na  | NaN treated as 0%, signal computed   | Fixed J-row window, NaN → 0% return  |
+        | fill_na  | NaN treated as 0%, signal computed   | Fixed J-row window, NaN -> 0% return |
         | drop_na  | NaN skipped, uses J valid returns    | Variable window to get J valid obs   |
 
         The no_gap parameter can be combined with any of the above:
@@ -840,7 +840,7 @@ class LTreversal(Strategy):
         | Option   | NaN in window (row exists)           | Description                          |
         |----------|--------------------------------------|--------------------------------------|
         | Default  | Signal=NaN                           | Standard rolling, NaN propagates     |
-        | fill_na  | NaN treated as 0%, signal computed   | Fixed J-row window, NaN → 0% return  |
+        | fill_na  | NaN treated as 0%, signal computed   | Fixed J-row window, NaN -> 0% return |
         | drop_na  | NaN skipped, uses J valid returns    | Variable window to get J valid obs   |
 
         The no_gap parameter can be combined with any of the above:

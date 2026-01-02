@@ -82,7 +82,7 @@ class PerformancePlotter:
         panels = len(weight_types)
 
         if ax is not None:
-            # multiple panels → need list of Axes
+            # multiple panels - need list of Axes
             if panels > 1:
                 if not (isinstance(ax, (list, tuple)) and len(ax) == panels):
                     raise ValueError(f"Expected {panels} Axes, got {ax!r}")
@@ -92,7 +92,7 @@ class PerformancePlotter:
                 axes = [ax[0]] if isinstance(ax, (list, tuple)) else [ax]
             fig = axes[0].figure
         else:
-            # no ax → create new subplots
+            # no ax - create new subplots
             if figsize is None:
                 figsize = (6 * panels, 5)
             if panels > 1:
@@ -175,7 +175,7 @@ class PerformancePlotter:
         if ax is not None:
             if has_alpha:
                 if not (isinstance(ax, (list, tuple)) and len(ax) == 2):
-                    raise ValueError("Alpha present → must pass ax=[ax_avg, ax_alpha]")
+                    raise ValueError("Alpha present - must pass ax=[ax_avg, ax_alpha]")
                 axes = list(ax)
             else:
                 axes = [ax[0]] if isinstance(ax, (list, tuple)) else [ax]

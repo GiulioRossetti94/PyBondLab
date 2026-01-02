@@ -2628,8 +2628,8 @@ class StrategyFormation:
         # Extract custom returns and align with datelist
         # custom_returns may have fewer dates than datelist
         # Now we have both EW and VW properly computed:
-        # - EW: EW within firm → equal-weight across firms → avg across ratings
-        # - VW: VW within firm → cap-weight across firms → avg across ratings
+        # - EW: EW within firm -> equal-weight across firms -> avg across ratings
+        # - VW: VW within firm -> cap-weight across firms -> avg across ratings
 
         # Use new keys if available (fast path), fall back to legacy keys (slow path)
         if 'ew_long_short' in custom_returns:

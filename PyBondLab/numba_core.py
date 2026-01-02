@@ -1939,7 +1939,7 @@ def compute_staggered_returns_ultrafast(
                     continue
                 form_weight = vw_lookup[form_vw_lookup_idx]
                 if np.isnan(form_weight):
-                    continue  # Bond doesn't exist at formation date → skip
+                    continue  # Bond doesn't exist at formation date - skip
 
                 # STEP 2: Look up rank from formation date
                 lookup_idx = form_d * n_ids + bond_id
@@ -3753,7 +3753,7 @@ def compute_ls_returns_all_signals_staggered_v2(
                     continue
                 form_weight = vw_lookup[form_vw_lookup_idx]
                 if np.isnan(form_weight):
-                    continue  # Bond doesn't exist at formation date → skip
+                    continue  # Bond doesn't exist at formation date - skip
 
                 # STEP 2: Look up rank from formation date
                 rank_lookup_idx = form_d * n_ids + bond_id
@@ -5194,8 +5194,8 @@ def compute_within_firm_aggregation_fast(
     Fast within-firm return aggregation using numba.
 
     Computes BOTH EW and VW long-short factors:
-    - EW: EW returns within firm → equal-weighted across firms → avg across ratings
-    - VW: VW returns within firm → cap-weighted across firms → avg across ratings
+    - EW: EW returns within firm -> equal-weighted across firms -> avg across ratings
+    - VW: VW returns within firm -> cap-weighted across firms -> avg across ratings
 
     Parameters
     ----------
@@ -5219,9 +5219,9 @@ def compute_within_firm_aggregation_fast(
     Returns
     -------
     ew_long_short : np.ndarray
-        Shape (n_dates,) - EW within firm → equal-weight across firms → avg across ratings
+        Shape (n_dates,) - EW within firm -> equal-weight across firms -> avg across ratings
     vw_long_short : np.ndarray
-        Shape (n_dates,) - VW within firm → cap-weight across firms → avg across ratings
+        Shape (n_dates,) - VW within firm -> cap-weight across firms -> avg across ratings
     ew_high_ret : np.ndarray
         Shape (n_dates,) - Simple EW return of HIGH portfolio
     ew_low_ret : np.ndarray
@@ -5400,8 +5400,8 @@ def compute_within_firm_aggregation_with_lookup(
     - Look up rank, rating_terc, firm_idx from formation date
 
     Aggregation hierarchy:
-    - EW: EW returns within firm → equal-weight across firms → avg across ratings
-    - VW: VW returns within firm → cap-weight across firms → avg across ratings
+    - EW: EW returns within firm -> equal-weight across firms -> avg across ratings
+    - VW: VW returns within firm -> cap-weight across firms -> avg across ratings
 
     Parameters
     ----------

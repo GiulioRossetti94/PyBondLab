@@ -13,12 +13,12 @@ def compute_thresholds(
     Compute threshold edges for portfolio sorting.
 
     Parameters:
-    - data : pd.DataFrame — asset universe at t
-    - sig : str — signal column name
-    - breakpoints : int or list of float — 
+    - data : pd.DataFrame - asset universe at t
+    - sig : str - signal column name
+    - breakpoints : int or list of float -
         int = number of portfolios (even percentiles)
         list = custom percentiles (e.g. [30, 70])
-    - subset : optional pd.Series bool mask — restrict data used to compute breakpoints for example just NYSE stocks
+    - subset : optional pd.Series bool mask - restrict data used to compute breakpoints for example just NYSE stocks
 
     Returns:
     - np.ndarray of threshold edges

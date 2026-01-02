@@ -242,7 +242,7 @@ class AssayAnomalyRunner:
         self._precomp_cache = {}
 
         elapsed = time.time() - self._start_time
-        print(f"\n✓ Assaying complete in {elapsed:.2f}s ({elapsed/self._run_total:.3f}s per combination)")
+        print(f"\nAssaying complete in {elapsed:.2f}s ({elapsed/self._run_total:.3f}s per combination)")
 
         runs = pd.concat(runs, axis=0).sort_index()
         return AnomalyResults(

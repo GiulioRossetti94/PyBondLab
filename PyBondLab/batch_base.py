@@ -367,12 +367,12 @@ def _print_memory_config(config: Dict[str, Any], n_signals: int, verbose: bool =
         else:
             print(f"  Chunk size: None (all signals fit in memory)")
 
-        status = "✓ OK" if mem['is_safe'] else "⚠ HIGH"
+        status = "[OK]" if mem['is_safe'] else "[!] HIGH"
         print(f"  Est. peak memory: {mem['peak_mb']/1024:.1f} GB {status}")
 
     # Always print warnings
     for warning in config['warnings']:
-        print(f"  ⚠ {warning}")
+        print(f"  [!] {warning}")
 
 
 # =============================================================================
@@ -647,7 +647,7 @@ class BaseBatchFormation(ABC):
         full_size = self.data.memory_usage(deep=True).sum() / 1024 / 1024
         min_size = minimal_data.memory_usage(deep=True).sum() / 1024 / 1024
         reduction = (1 - min_size / full_size) * 100
-        print(f"  Data size: {full_size:.1f}MB → {min_size:.1f}MB per worker ({reduction:.0f}% reduction)")
+        print(f"  Data size: {full_size:.1f}MB -> {min_size:.1f}MB per worker ({reduction:.0f}% reduction)")
 
     def _print_summary(self, results, n_success: int, n_failed: int, total_time: float):
         """

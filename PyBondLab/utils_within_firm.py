@@ -245,8 +245,8 @@ def compute_within_firm_returns_aggregation_fast(
     that uses numba kernels for ~350x speedup.
 
     Returns both EW and VW:
-    - EW: EW returns within firm → equal-weighted across firms → avg across ratings
-    - VW: VW returns within firm → cap-weighted across firms → avg across ratings
+    - EW: EW returns within firm -> equal-weighted across firms -> avg across ratings
+    - VW: VW returns within firm -> cap-weighted across firms -> avg across ratings
     """
     from .numba_core import compute_within_firm_aggregation_fast
 
