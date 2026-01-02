@@ -26,6 +26,7 @@ from PyBondLab.naming import (
 __all__ = [
     "PortfolioReturns",
     "TurnoverResults",
+    "BondCountResults",
     "CharacteristicsResults",
     "StrategyResults",
     "FormationResults",
@@ -295,6 +296,40 @@ class TurnoverResults:
 
 
 # =============================================================================
+# Bond Count Results
+# =============================================================================
+@dataclass
+class BondCountResults:
+    """
+    Container for bond count statistics.
+
+    Attributes
+    ----------
+    count_df : pd.DataFrame
+        Number of bonds per portfolio at each date (time x portfolios).
+        For staggered rebalancing (HP>1), this is the average count across cohorts.
+    """
+
+    count_df: pd.DataFrame
+
+    def summary_stats(self) -> pd.DataFrame:
+        """
+        Compute summary statistics for bond counts.
+
+        Returns
+        -------
+        pd.DataFrame
+            Mean, min, max, and std of bond counts by portfolio
+        """
+        return pd.DataFrame({
+            "Mean": self.count_df.mean(),
+            "Min": self.count_df.min(),
+            "Max": self.count_df.max(),
+            "Std": self.count_df.std(),
+        })
+
+
+# =============================================================================
 # Characteristics Results
 # =============================================================================
 @dataclass
@@ -399,6 +434,8 @@ class StrategyResults:
         Portfolio returns
     turnover : TurnoverResults, optional
         Turnover statistics
+    bond_counts : BondCountResults, optional
+        Bond count statistics per portfolio
     characteristics : CharacteristicsResults, optional
         Portfolio characteristics
     port_idx : dict, optional
@@ -417,6 +454,7 @@ class StrategyResults:
 
     returns: PortfolioReturns
     turnover: Optional[TurnoverResults] = None
+    bond_counts: Optional[BondCountResults] = None
     characteristics: Optional[CharacteristicsResults] = None
     port_idx: Optional[Dict[pd.Timestamp, pd.DataFrame]] = None
     # Metadata for naming
@@ -430,6 +468,11 @@ class StrategyResults:
     def has_turnover(self) -> bool:
         """Check if turnover results are available."""
         return self.turnover is not None
+
+    @property
+    def has_bond_counts(self) -> bool:
+        """Check if bond count results are available."""
+        return self.bond_counts is not None
 
     @property
     def has_characteristics(self) -> bool:
@@ -694,6 +737,55 @@ class StrategyResults:
 
         return ew_chars, vw_chars
 
+    def get_bond_count(
+        self,
+        naming: Optional[NamingConfig] = None,
+    ) -> pd.DataFrame:
+        """
+        Get bond counts per portfolio at each date.
+
+        Returns a DataFrame with the number of bonds in each portfolio at each date.
+        For staggered rebalancing (HP>1), this is the average count across cohorts.
+        This is only available when turnover=True or chars is specified.
+
+        Parameters
+        ----------
+        naming : NamingConfig, optional
+            If provided, rename portfolio columns using naming conventions.
+
+        Returns
+        -------
+        pd.DataFrame
+            Bond counts with dates as index and portfolios as columns.
+
+        Raises
+        ------
+        ValueError
+            If bond count results not available
+        """
+        if not self.has_bond_counts:
+            raise ValueError(
+                "Bond count results not available. "
+                "Bond counts are computed when turnover=True or chars is specified."
+            )
+
+        count_df = self.bond_counts.count_df.copy()
+
+        if naming is not None:
+            signal = self.signal_name or 'factor'
+            nport = len(count_df.columns)
+            new_cols = [
+                make_portfolio_name(
+                    signal, i + 1, nport, naming,
+                    is_within_firm=self.is_within_firm,
+                    second_signal=self.second_signal,
+                )
+                for i in range(nport)
+            ]
+            count_df.columns = new_cols
+
+        return count_df
+
     def summary(self, periods_per_year: int = 12) -> dict[str, Any]:
         """
         Summary dict for returns, turnover, and characteristics.
@@ -760,6 +852,11 @@ class FormationResults:
     def has_ep(self) -> bool:
         """Check if ex-post results are available."""
         return self.ep is not None
+
+    @property
+    def has_bond_counts(self) -> bool:
+        """Check if bond count results are available."""
+        return self.ea.has_bond_counts
 
     def _get_strategy_results(self, strategy: str) -> StrategyResults:
         """Get EA or EP results with helpful error message."""
@@ -961,6 +1058,38 @@ class FormationResults:
         sr = self._get_strategy_results(strategy)
         return sr.get_characteristics(naming=naming)
 
+    def get_bond_count(
+        self,
+        strategy: str = "ea",
+        naming: Optional[NamingConfig] = None,
+    ) -> pd.DataFrame:
+        """
+        Get bond counts per portfolio at each date.
+
+        Returns a DataFrame with the number of bonds in each portfolio at each date.
+        For staggered rebalancing (HP>1), this is the average count across cohorts.
+        This is only available when turnover=True or chars is specified.
+
+        Parameters
+        ----------
+        strategy : {'ea', 'ep'}
+            Strategy type
+        naming : NamingConfig, optional
+            If provided, rename portfolio columns using naming conventions.
+
+        Returns
+        -------
+        pd.DataFrame
+            Bond counts with dates as index and portfolios as columns.
+
+        Raises
+        ------
+        ValueError
+            If strategy or bond count results not available
+        """
+        sr = self._get_strategy_results(strategy)
+        return sr.get_bond_count(naming=naming)
+
     def get_ptf_bins(self) -> dict:
         """
         Get the portfolio bins (indices) for all formation dates.
@@ -1105,6 +1234,7 @@ def build_strategy_results(
     vwls_short_df: Optional[pd.DataFrame] = None,
     turnover_ew_df: Optional[pd.DataFrame] = None,
     turnover_vw_df: Optional[pd.DataFrame] = None,
+    bond_count_df: Optional[pd.DataFrame] = None,
     chars_ew: Optional[Dict[str, pd.DataFrame]] = None,
     chars_vw: Optional[Dict[str, pd.DataFrame]] = None,
     port_idx: Optional[Dict[pd.Timestamp, pd.DataFrame]] = None,
@@ -1143,6 +1273,8 @@ def build_strategy_results(
         Equal-weighted turnover
     turnover_vw_df : pd.DataFrame, optional
         Value-weighted turnover
+    bond_count_df : pd.DataFrame, optional
+        Bond counts per portfolio (time x portfolios)
     chars_ew : dict, optional
         Equal-weighted characteristics
     chars_vw : dict, optional
@@ -1187,6 +1319,11 @@ def build_strategy_results(
             else pd.DataFrame(index=vwport_df.index, columns=vwport_df.columns),
         )
 
+    # Build BondCountResults if provided
+    bond_counts = None
+    if bond_count_df is not None:
+        bond_counts = BondCountResults(count_df=bond_count_df)
+
     # Build CharacteristicsResults if provided
     characteristics = None
     if chars_ew is not None or chars_vw is not None:
@@ -1198,6 +1335,7 @@ def build_strategy_results(
     return StrategyResults(
         returns=returns,
         turnover=turnover,
+        bond_counts=bond_counts,
         characteristics=characteristics,
         port_idx=port_idx,
         signal_name=signal_name,

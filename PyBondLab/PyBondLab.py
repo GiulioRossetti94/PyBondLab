@@ -1236,6 +1236,12 @@ class StrategyFormation:
             ew_chars_arr = None
             vw_chars_arr = None
 
+        # Initialize bond count array if turnover or chars is requested
+        if self.turnover or self.chars:
+            bond_counts_arr = np.full((TM, self.hor, tot_nport), np.nan)
+        else:
+            bond_counts_arr = None
+
         # Initialize turnover if requested
         if self.turnover:
             self.turnover_manager = TurnoverManager(
@@ -1253,13 +1259,15 @@ class StrategyFormation:
             self._form_cohort_portfolios(
                 t_idx, date_t, precomp,
                 ew_ret_arr, vw_ret_arr,
-                ew_chars_arr, vw_chars_arr
+                ew_chars_arr, vw_chars_arr,
+                bond_counts_arr
             )
 
         # Aggregate results
         results = self._aggregate_results_staggered(
             ew_ret_arr, vw_ret_arr,
-            ew_chars_arr, vw_chars_arr
+            ew_chars_arr, vw_chars_arr,
+            bond_counts_arr
         )
 
         return results
@@ -1297,6 +1305,12 @@ class StrategyFormation:
             ew_chars_arr = None
             vw_chars_arr = None
 
+        # Initialize bond count array if turnover or chars is requested
+        if self.turnover or self.chars:
+            bond_counts_arr = np.full((TM, tot_nport), np.nan)
+        else:
+            bond_counts_arr = None
+
         # Initialize turnover
         if self.turnover:
             self.turnover_manager = TurnoverManager(
@@ -1313,13 +1327,15 @@ class StrategyFormation:
                 rebal_idx, precomp,
                 ew_ret_arr, vw_ret_arr,
                 ew_chars_arr, vw_chars_arr,
-                rebal_dates_idx  # Phase 17: pass rebalancing dates for proper iteration
+                rebal_dates_idx,  # Phase 17: pass rebalancing dates for proper iteration
+                bond_counts_arr
             )
 
         # Aggregate results
         results = self._aggregate_results_nonstaggered(
             ew_ret_arr, vw_ret_arr,
-            ew_chars_arr, vw_chars_arr
+            ew_chars_arr, vw_chars_arr,
+            bond_counts_arr
         )
 
         return results
@@ -2110,7 +2126,8 @@ class StrategyFormation:
         return sub
 
     def _form_cohort_portfolios(self, t_idx, date_t, precomp,
-                                ew_ret_arr, vw_ret_arr, ew_chars_arr, vw_chars_arr):
+                                ew_ret_arr, vw_ret_arr, ew_chars_arr, vw_chars_arr,
+                                bond_counts_arr=None):
         """Form portfolios for one cohort (staggered rebalancing)."""
         tot_nport = self._get_total_portfolios()
 
@@ -2171,6 +2188,10 @@ class StrategyFormation:
                     ew_chars_arr[c][t1_idx, self.cohort, :] = result['chars_ew'][c].values
                     vw_chars_arr[c][t1_idx, self.cohort, :] = result['chars_vw'][c].values
 
+            # Store bond counts if requested (when turnover or chars is active)
+            if bond_counts_arr is not None and result['counts'] is not None:
+                bond_counts_arr[t1_idx, self.cohort, :] = result['counts']
+
             # Handle turnover if requested
             # CRITICAL: Only accumulate turnover for h=0 (first horizon)
             # For HP>1, multiple horizons share the same formation date (t_idx).
@@ -2198,7 +2219,7 @@ class StrategyFormation:
 
     def _form_nonstaggered_portfolio(self, rebal_idx, precomp,
                                     ew_ret_arr, vw_ret_arr, ew_chars_arr, vw_chars_arr,
-                                    rebal_dates_idx=None):
+                                    rebal_dates_idx=None, bond_counts_arr=None):
         """Form portfolio for one rebalancing period (non-staggered).
 
         Phase 17 fix: Now iterates through ALL months until next rebalancing,
@@ -2271,6 +2292,10 @@ class StrategyFormation:
                 for c in self.chars:
                     ew_chars_arr[c][t1_idx, :] = result['chars_ew'][c].values
                     vw_chars_arr[c][t1_idx, :] = result['chars_vw'][c].values
+
+            # Store bond counts if requested (when turnover or chars is active)
+            if bond_counts_arr is not None and result['counts'] is not None:
+                bond_counts_arr[t1_idx, :] = result['counts']
 
             # Handle turnover
             if self.turnover and not result['weights_df'].empty:
@@ -2358,6 +2383,17 @@ class StrategyFormation:
         It1['eweights'] = eweights_arr
         It1['count'] = counts_arr
 
+        # Compute per-portfolio bond counts (for bond count tracking)
+        # counts_arr is per-bond (each bond has count of its portfolio)
+        # counts_per_ptf is per-portfolio (shape: tot_nport)
+        # Note: ranks >= 1 filters out unassigned bonds (rank=0) for WithinFirmSort
+        valid_mask = ~np.isnan(ranks_arr) & (ranks_arr >= 1)
+        if np.any(valid_mask):
+            valid_ranks = ranks_arr[valid_mask].astype(np.int64) - 1  # 0-indexed
+            counts_per_ptf = np.bincount(valid_ranks, minlength=tot_nport).astype(np.float64)
+        else:
+            counts_per_ptf = np.zeros(tot_nport, dtype=np.float64)
+
         # Compute portfolio returns using numba kernel (replaces groupby)
         ew_ret_arr, vw_ret_arr = compute_portfolio_returns_single(
             ranks_arr, returns_arr, vw_arr, tot_nport
@@ -2433,7 +2469,8 @@ class StrategyFormation:
             'weights_df': weights_df,
             'weights_scaled_df': weights_scaled_df,
             'chars_ew': chars_ew,
-            'chars_vw': chars_vw
+            'chars_vw': chars_vw,
+            'counts': counts_per_ptf,
         }
 
     def _create_nan_result(self, tot_nport: int) -> Dict:
@@ -2445,7 +2482,8 @@ class StrategyFormation:
             'weights_df': pd.DataFrame(),
             'weights_scaled_df': pd.DataFrame(),
             'chars_ew': None,
-            'chars_vw': None
+            'chars_vw': None,
+            'counts': np.full(tot_nport, np.nan),
         }
 
         if self.chars:
@@ -2599,7 +2637,8 @@ class StrategyFormation:
         return ewls, vwls, ew_long, vw_long, ew_short, vw_short
 
     def _aggregate_within_firm_results(self, ew_ret_arr, vw_ret_arr,
-                                      ew_chars_arr, vw_chars_arr):
+                                      ew_chars_arr, vw_chars_arr,
+                                      bond_counts_arr=None):
         """
         Aggregate results for WithinFirmSort strategy using custom aggregation.
 
@@ -2793,6 +2832,14 @@ class StrategyFormation:
             turnover_ew, turnover_vw = self.turnover_manager.finalize(
                 self.turnover_state, ptf_labels)
 
+        # Finalize bond counts (average across cohorts)
+        bond_count_df = None
+        if bond_counts_arr is not None:
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', message='Mean of empty slice', category=RuntimeWarning)
+                bond_counts_avg = np.nanmean(bond_counts_arr, axis=1)  # (TM, nport)
+            bond_count_df = pd.DataFrame(bond_counts_avg, index=self.datelist, columns=ptf_labels)
+
         # Build and return StrategyResults
         naming_meta = self._get_naming_metadata()
         return build_strategy_results(
@@ -2806,20 +2853,23 @@ class StrategyFormation:
             vwls_short_df=vw_short_df,
             turnover_ew_df=turnover_ew,
             turnover_vw_df=turnover_vw,
+            bond_count_df=bond_count_df,
             chars_ew=chars_ew_dict,
             chars_vw=chars_vw_dict,
             **naming_meta,
         )
 
     def _aggregate_results_staggered(self, ew_ret_arr, vw_ret_arr,
-                                    ew_chars_arr, vw_chars_arr):
+                                    ew_chars_arr, vw_chars_arr,
+                                    bond_counts_arr=None):
         """Aggregate staggered portfolio results."""
         # Check if this is WithinFirmSort - if so, use custom aggregation
         is_within_firm = self.strategy.__strategy_name__ == "Within-Firm Sort"
 
         if is_within_firm:
             return self._aggregate_within_firm_results(ew_ret_arr, vw_ret_arr,
-                                                       ew_chars_arr, vw_chars_arr)
+                                                       ew_chars_arr, vw_chars_arr,
+                                                       bond_counts_arr)
 
         # Standard aggregation (existing code)
         # Average over horizons
@@ -2895,6 +2945,14 @@ class StrategyFormation:
             turnover_ew, turnover_vw = self.turnover_manager.finalize(
                 self.turnover_state, ptf_labels)
 
+        # Finalize bond counts (average across cohorts)
+        bond_count_df = None
+        if bond_counts_arr is not None:
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', message='Mean of empty slice', category=RuntimeWarning)
+                bond_counts_avg = np.nanmean(bond_counts_arr, axis=1)  # (TM, nport)
+            bond_count_df = pd.DataFrame(bond_counts_avg, index=self.datelist, columns=ptf_labels)
+
         # Build and return StrategyResults
         naming_meta = self._get_naming_metadata()
         return build_strategy_results(
@@ -2908,13 +2966,15 @@ class StrategyFormation:
             vwls_short_df=vw_short_df,
             turnover_ew_df=turnover_ew,
             turnover_vw_df=turnover_vw,
+            bond_count_df=bond_count_df,
             chars_ew=chars_ew_dict,
             chars_vw=chars_vw_dict,
             **naming_meta,
         )
 
     def _aggregate_results_nonstaggered(self, ew_ret_arr, vw_ret_arr,
-                                       ew_chars_arr, vw_chars_arr):
+                                       ew_chars_arr, vw_chars_arr,
+                                       bond_counts_arr=None):
         """Aggregate non-staggered portfolio results."""
         # tot_nport = self._get_total_portfolios()
         # ptf_labels = get_portfolio_labels(tot_nport)
@@ -2985,6 +3045,11 @@ class StrategyFormation:
                 self.turnover_state, ptf_labels
             )
 
+        # Finalize bond counts
+        bond_count_df = None
+        if bond_counts_arr is not None:
+            bond_count_df = pd.DataFrame(bond_counts_arr, index=self.datelist, columns=ptf_labels)
+
         # Build and return StrategyResults
         naming_meta = self._get_naming_metadata()
         return build_strategy_results(
@@ -2998,6 +3063,7 @@ class StrategyFormation:
             vwls_short_df=vw_short_df,
             turnover_ew_df=turnover_ew,
             turnover_vw_df=turnover_vw,
+            bond_count_df=bond_count_df,
             chars_ew=chars_ew_dict,
             chars_vw=chars_vw_dict,
             **naming_meta,
