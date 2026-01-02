@@ -95,7 +95,7 @@ def compute_portfolio_returns_single(
     return ew_ret, vw_ret
 
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True)  # fastmath=True breaks conditional checks, causing division by zero
 def compute_portfolio_weights_single(
     ranks: np.ndarray,
     value_weights: np.ndarray,
