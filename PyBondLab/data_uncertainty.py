@@ -200,13 +200,13 @@ class DataUncertaintyResults:
 
     Attributes
     ----------
-    ew_ea : pd.DataFrame
+    ew_ex_ante : pd.DataFrame
         EW Ex-Ante long-short factors (dates × configs)
-    vw_ea : pd.DataFrame
+    vw_ex_ante : pd.DataFrame
         VW Ex-Ante long-short factors (dates × configs)
-    ew_ep : pd.DataFrame
+    ew_ex_post : pd.DataFrame
         EW Ex-Post long-short factors (dates × configs)
-    vw_ep : pd.DataFrame
+    vw_ex_post : pd.DataFrame
         VW Ex-Post long-short factors (dates × configs)
     configs : pd.DataFrame
         Metadata for all configurations
@@ -214,38 +214,38 @@ class DataUncertaintyResults:
 
     def __init__(
         self,
-        ew_ea: pd.DataFrame,
-        vw_ea: pd.DataFrame,
-        ew_ep: pd.DataFrame,
-        vw_ep: pd.DataFrame,
+        ew_ex_ante: pd.DataFrame,
+        vw_ex_ante: pd.DataFrame,
+        ew_ex_post: pd.DataFrame,
+        vw_ex_post: pd.DataFrame,
         configs: pd.DataFrame
     ):
-        self._ew_ea = ew_ea
-        self._vw_ea = vw_ea
-        self._ew_ep = ew_ep
-        self._vw_ep = vw_ep
+        self._ew_ex_ante = ew_ex_ante
+        self._vw_ex_ante = vw_ex_ante
+        self._ew_ex_post = ew_ex_post
+        self._vw_ex_post = vw_ex_post
         self._configs = configs
         self._summary_cache = None
 
     @property
-    def ew_ea(self) -> pd.DataFrame:
+    def ew_ex_ante(self) -> pd.DataFrame:
         """EW Ex-Ante long-short factors."""
-        return self._ew_ea
+        return self._ew_ex_ante
 
     @property
-    def vw_ea(self) -> pd.DataFrame:
+    def vw_ex_ante(self) -> pd.DataFrame:
         """VW Ex-Ante long-short factors."""
-        return self._vw_ea
+        return self._vw_ex_ante
 
     @property
-    def ew_ep(self) -> pd.DataFrame:
+    def ew_ex_post(self) -> pd.DataFrame:
         """EW Ex-Post long-short factors."""
-        return self._ew_ep
+        return self._ew_ex_post
 
     @property
-    def vw_ep(self) -> pd.DataFrame:
+    def vw_ex_post(self) -> pd.DataFrame:
         """VW Ex-Post long-short factors."""
-        return self._vw_ep
+        return self._vw_ex_post
 
     @property
     def configs(self) -> pd.DataFrame:
@@ -296,21 +296,21 @@ class DataUncertaintyResults:
                 col = config['column_name']
 
                 # Compute stats for each panel
-                ew_ea_mean, ew_ea_tstat, n_obs = compute_newey_west_tstat(self._ew_ea[col])
-                vw_ea_mean, vw_ea_tstat, _ = compute_newey_west_tstat(self._vw_ea[col])
-                ew_ep_mean, ew_ep_tstat, _ = compute_newey_west_tstat(self._ew_ep[col])
-                vw_ep_mean, vw_ep_tstat, _ = compute_newey_west_tstat(self._vw_ep[col])
+                ew_ea_mean, ew_ea_tstat, n_obs = compute_newey_west_tstat(self._ew_ex_ante[col])
+                vw_ea_mean, vw_ea_tstat, _ = compute_newey_west_tstat(self._vw_ex_ante[col])
+                ew_ep_mean, ew_ep_tstat, _ = compute_newey_west_tstat(self._ew_ex_post[col])
+                vw_ep_mean, vw_ep_tstat, _ = compute_newey_west_tstat(self._vw_ex_post[col])
 
                 # Annualized Sharpe ratio (EW EA)
-                ew_ea_series = self._ew_ea[col].dropna()
+                ew_ea_series = self._ew_ex_ante[col].dropna()
                 if len(ew_ea_series) > 1 and ew_ea_series.std() > 0:
                     sharpe = (ew_ea_series.mean() / ew_ea_series.std()) * np.sqrt(12)
                 else:
                     sharpe = np.nan
 
                 # EA-EP difference series and t-stat
-                ea_ep_diff_ew_series = self._ew_ep[col] - self._ew_ea[col]
-                ea_ep_diff_vw_series = self._vw_ep[col] - self._vw_ea[col]
+                ea_ep_diff_ew_series = self._ew_ex_post[col] - self._ew_ex_ante[col]
+                ea_ep_diff_vw_series = self._vw_ex_post[col] - self._vw_ex_ante[col]
                 ea_ep_diff_ew_mean, ea_ep_diff_ew_tstat, _ = compute_newey_west_tstat(ea_ep_diff_ew_series)
                 ea_ep_diff_vw_mean, ea_ep_diff_vw_tstat, _ = compute_newey_west_tstat(ea_ep_diff_vw_series)
 
@@ -448,10 +448,10 @@ class DataUncertaintyResults:
             col_names = group_df['column_name'].tolist()
 
             # Average the raw series across columns (nanmean handles missing)
-            ew_ea_avg = self._ew_ea[col_names].mean(axis=1)
-            vw_ea_avg = self._vw_ea[col_names].mean(axis=1)
-            ew_ep_avg = self._ew_ep[col_names].mean(axis=1)
-            vw_ep_avg = self._vw_ep[col_names].mean(axis=1)
+            ew_ea_avg = self._ew_ex_ante[col_names].mean(axis=1)
+            vw_ea_avg = self._vw_ex_ante[col_names].mean(axis=1)
+            ew_ep_avg = self._ew_ex_post[col_names].mean(axis=1)
+            vw_ep_avg = self._vw_ex_post[col_names].mean(axis=1)
 
             # Compute Newey-West t-stats on averaged series
             ew_ea_mean, ew_ea_tstat, n_obs = compute_newey_west_tstat(ew_ea_avg)
@@ -575,10 +575,10 @@ class DataUncertaintyResults:
         cols = filtered_configs['column_name'].tolist()
 
         return DataUncertaintyResults(
-            ew_ea=self._ew_ea[cols],
-            vw_ea=self._vw_ea[cols],
-            ew_ep=self._ew_ep[cols],
-            vw_ep=self._vw_ep[cols],
+            ew_ex_ante=self._ew_ex_ante[cols],
+            vw_ex_ante=self._vw_ex_ante[cols],
+            ew_ex_post=self._ew_ex_post[cols],
+            vw_ex_post=self._vw_ex_post[cols],
             configs=filtered_configs
         )
 
@@ -595,10 +595,10 @@ class DataUncertaintyResults:
         """
         with pd.ExcelWriter(path, engine='openpyxl') as writer:
             self.summary().to_excel(writer, sheet_name='Summary', index=False)
-            self._ew_ea.to_excel(writer, sheet_name='EW_EA')
-            self._vw_ea.to_excel(writer, sheet_name='VW_EA')
-            self._ew_ep.to_excel(writer, sheet_name='EW_EP')
-            self._vw_ep.to_excel(writer, sheet_name='VW_EP')
+            self._ew_ex_ante.to_excel(writer, sheet_name='EW_EA')
+            self._vw_ex_ante.to_excel(writer, sheet_name='VW_EA')
+            self._ew_ex_post.to_excel(writer, sheet_name='EW_EP')
+            self._vw_ex_post.to_excel(writer, sheet_name='VW_EP')
             self._configs.to_excel(writer, sheet_name='Configs', index=False)
 
     def to_panel(self) -> pd.DataFrame:
@@ -649,7 +649,7 @@ class DataUncertaintyResults:
         rows = []
 
         # Get dates from index
-        dates = self._ew_ea.index
+        dates = self._ew_ex_ante.index
 
         # Iterate over each configuration
         for _, config in self._configs.iterrows():
@@ -664,10 +664,10 @@ class DataUncertaintyResults:
             rating = config.get('rating', None)
 
             # Get return series for this config
-            ew_ea = self._ew_ea[col]
-            vw_ea = self._vw_ea[col]
-            ew_ep = self._ew_ep[col]
-            vw_ep = self._vw_ep[col]
+            ew_ea = self._ew_ex_ante[col]
+            vw_ea = self._vw_ex_ante[col]
+            ew_ep = self._ew_ex_post[col]
+            vw_ep = self._vw_ex_post[col]
 
             # Build rows for each date
             for date in dates:
@@ -725,7 +725,7 @@ class DataUncertaintyResults:
 
     def __repr__(self) -> str:
         n_configs = len(self._configs)
-        n_dates = len(self._ew_ea)
+        n_dates = len(self._ew_ex_ante)
         signals = self._configs['signal'].unique().tolist()
         hps = sorted(self._configs['hp'].unique().tolist())
         return (
@@ -1404,10 +1404,10 @@ class DataUncertaintyAnalysis:
             print(f"Completed in {elapsed:.1f}s")
 
         return DataUncertaintyResults(
-            ew_ea=ew_ea,
-            vw_ea=vw_ea,
-            ew_ep=ew_ep,
-            vw_ep=vw_ep,
+            ew_ex_ante=ew_ea,
+            vw_ex_ante=vw_ea,
+            ew_ex_post=ew_ep,
+            vw_ex_post=vw_ep,
             configs=configs
         )
 
@@ -1703,10 +1703,10 @@ class DataUncertaintyAnalysis:
             print(f"BLAZING FAST PATH completed in {elapsed:.1f}s")
 
         return DataUncertaintyResults(
-            ew_ea=ew_ea,
-            vw_ea=vw_ea,
-            ew_ep=ew_ep,
-            vw_ep=vw_ep,
+            ew_ex_ante=ew_ea,
+            vw_ex_ante=vw_ea,
+            ew_ex_post=ew_ep,
+            vw_ex_post=vw_ep,
             configs=configs
         )
 
