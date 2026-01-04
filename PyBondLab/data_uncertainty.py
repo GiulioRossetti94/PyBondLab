@@ -898,12 +898,6 @@ class DataUncertaintyAnalysis:
         - 'annual' or 12: Rebalance every 12 months
     rebalance_month : int or list of int, default=6
         Month(s) when rebalancing occurs (1=Jan, 6=Jun, 12=Dec)
-    columns : dict, optional
-        Column name mapping from PyBondLab expected names to your data's names.
-        Keys are PyBondLab names: 'date', 'ID', 'ret', 'VW', 'RATING_NUM', 'PRICE'
-        Values are the corresponding column names in your data.
-        Only specify columns that have different names in your data.
-        Example: {'ID': 'cusip_id', 'VW': 'mcap_e', 'PRICE': 'prc_eom'}
     n_jobs : int
         Number of parallel workers (default: 1)
     verbose : bool
@@ -919,19 +913,18 @@ class DataUncertaintyAnalysis:
     ...     filters={'trim': [0.2, 0.5]},
     ... ).fit()
 
-    >>> # With custom column names
+    >>> # With custom column names (mapped in .fit())
     >>> results = DataUncertaintyAnalysis(
     ...     data=data,
     ...     signals=['var_90'],
     ...     holding_periods=[1, 3],
-    ...     filters={'trim': [0.2], 'price': [50, 200]},
-    ...     columns={
-    ...         'ID': 'cusip_id',
-    ...         'VW': 'mcap_e',
-    ...         'RATING_NUM': 'spc_rat',
-    ...         'PRICE': 'prc_eom',
-    ...     },
-    ... ).fit()
+    ...     filters={'trim': [0.2]},
+    ... ).fit(
+    ...     IDvar='cusip_id',
+    ...     RETvar='ret_vw',
+    ...     VWvar='mcap_e',
+    ...     RATINGvar='spc_rat',
+    ... )
     """
 
     def __init__(
@@ -949,7 +942,6 @@ class DataUncertaintyAnalysis:
         subset_filter: Optional[SubsetFilter] = None,
         rebalance_frequency: Union[str, int] = 'monthly',
         rebalance_month: Union[int, List[int]] = 6,
-        columns: Optional[Dict[str, str]] = None,
         n_jobs: int = 1,
         verbose: bool = True,
         use_fast_path: bool = True
@@ -1000,16 +992,12 @@ class DataUncertaintyAnalysis:
         # Determine if this is non-staggered rebalancing
         self._is_nonstaggered = self._check_nonstaggered()
 
-        # Build column mapping (merge defaults with user-provided)
-        self.columns = DEFAULT_COLUMNS.copy()
-        if columns is not None:
-            self.columns.update(columns)
-
         # Parse filter configurations
         self._filter_configs = self._parse_filters()
 
-        # Prepare data (rename columns, subset to required columns only)
-        self.data = self._prepare_data()
+        # Data will be prepared in .fit() after column mapping is applied
+        self.data = None
+        self.columns = None
 
     def _check_nonstaggered(self) -> bool:
         """Check if this is non-staggered (non-monthly) rebalancing."""
@@ -1158,8 +1146,8 @@ class DataUncertaintyAnalysis:
         if missing_cols:
             raise ValueError(
                 f"Missing required columns: {missing_cols}. "
-                f"Use the 'columns' parameter to map your column names. "
-                f"Example: columns={{'ID': 'your_id_col', 'VW': 'your_vw_col'}}"
+                f"Use .fit() parameters to map your column names. "
+                f"Example: .fit(IDvar='your_id_col', VWvar='your_vw_col', RETvar='your_ret_col', RATINGvar='your_rating_col')"
             )
 
         # Add signal columns (keep original names)
@@ -1214,15 +1202,64 @@ class DataUncertaintyAnalysis:
 
         return configs
 
-    def fit(self) -> DataUncertaintyResults:
+    def fit(
+        self,
+        IDvar: Optional[str] = None,
+        RETvar: Optional[str] = None,
+        VWvar: Optional[str] = None,
+        RATINGvar: Optional[str] = None,
+        PRICEvar: Optional[str] = None,
+    ) -> DataUncertaintyResults:
         """
         Run the data uncertainty analysis.
+
+        Parameters
+        ----------
+        IDvar : str, optional
+            Column name for bond identifier. Maps to 'ID'.
+        RETvar : str, optional
+            Column name for returns. Maps to 'ret'.
+        VWvar : str, optional
+            Column name for value weights. Maps to 'VW'.
+        RATINGvar : str, optional
+            Column name for ratings. Maps to 'RATING_NUM'.
+        PRICEvar : str, optional
+            Column name for prices. Maps to 'PRICE' (only needed for price filters).
 
         Returns
         -------
         DataUncertaintyResults
             Results container with factor returns and summary statistics
+
+        Examples
+        --------
+        >>> results = DataUncertaintyAnalysis(
+        ...     data=data,
+        ...     signals=['momentum'],
+        ...     holding_periods=[1, 3],
+        ... ).fit(
+        ...     IDvar='cusip',
+        ...     RETvar='ret_vw',
+        ...     VWvar='mcap_e',
+        ...     RATINGvar='spc_rat',
+        ... )
         """
+        # Build column mapping from parameters
+        self.columns = DEFAULT_COLUMNS.copy()
+        if IDvar is not None:
+            self.columns['ID'] = IDvar
+        if RETvar is not None:
+            self.columns['ret'] = RETvar
+        if VWvar is not None:
+            self.columns['VW'] = VWvar
+        if RATINGvar is not None:
+            self.columns['RATING_NUM'] = RATINGvar
+        if PRICEvar is not None:
+            self.columns['PRICE'] = PRICEvar
+
+        # Prepare data (rename columns, subset to required columns only)
+        self.data = self._prepare_data()
+
         # Check if fast path can be used
         if self._can_use_fast_path():
             return self._fit_fast_all_signals()
