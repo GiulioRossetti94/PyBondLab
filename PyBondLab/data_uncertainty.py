@@ -208,6 +208,22 @@ class DataUncertaintyResults:
         EW Ex-Post long-short factors (dates × configs)
     vw_ex_post : pd.DataFrame
         VW Ex-Post long-short factors (dates × configs)
+    ew_long_ex_ante : pd.DataFrame
+        EW Ex-Ante long leg (P_N) (dates × configs)
+    vw_long_ex_ante : pd.DataFrame
+        VW Ex-Ante long leg (P_N) (dates × configs)
+    ew_long_ex_post : pd.DataFrame
+        EW Ex-Post long leg (P_N) (dates × configs)
+    vw_long_ex_post : pd.DataFrame
+        VW Ex-Post long leg (P_N) (dates × configs)
+    ew_short_ex_ante : pd.DataFrame
+        EW Ex-Ante short leg (P_1) (dates × configs)
+    vw_short_ex_ante : pd.DataFrame
+        VW Ex-Ante short leg (P_1) (dates × configs)
+    ew_short_ex_post : pd.DataFrame
+        EW Ex-Post short leg (P_1) (dates × configs)
+    vw_short_ex_post : pd.DataFrame
+        VW Ex-Post short leg (P_1) (dates × configs)
     configs : pd.DataFrame
         Metadata for all configurations
     """
@@ -218,12 +234,28 @@ class DataUncertaintyResults:
         vw_ex_ante: pd.DataFrame,
         ew_ex_post: pd.DataFrame,
         vw_ex_post: pd.DataFrame,
-        configs: pd.DataFrame
+        configs: pd.DataFrame,
+        ew_long_ex_ante: Optional[pd.DataFrame] = None,
+        vw_long_ex_ante: Optional[pd.DataFrame] = None,
+        ew_long_ex_post: Optional[pd.DataFrame] = None,
+        vw_long_ex_post: Optional[pd.DataFrame] = None,
+        ew_short_ex_ante: Optional[pd.DataFrame] = None,
+        vw_short_ex_ante: Optional[pd.DataFrame] = None,
+        ew_short_ex_post: Optional[pd.DataFrame] = None,
+        vw_short_ex_post: Optional[pd.DataFrame] = None
     ):
         self._ew_ex_ante = ew_ex_ante
         self._vw_ex_ante = vw_ex_ante
         self._ew_ex_post = ew_ex_post
         self._vw_ex_post = vw_ex_post
+        self._ew_long_ex_ante = ew_long_ex_ante if ew_long_ex_ante is not None else pd.DataFrame()
+        self._vw_long_ex_ante = vw_long_ex_ante if vw_long_ex_ante is not None else pd.DataFrame()
+        self._ew_long_ex_post = ew_long_ex_post if ew_long_ex_post is not None else pd.DataFrame()
+        self._vw_long_ex_post = vw_long_ex_post if vw_long_ex_post is not None else pd.DataFrame()
+        self._ew_short_ex_ante = ew_short_ex_ante if ew_short_ex_ante is not None else pd.DataFrame()
+        self._vw_short_ex_ante = vw_short_ex_ante if vw_short_ex_ante is not None else pd.DataFrame()
+        self._ew_short_ex_post = ew_short_ex_post if ew_short_ex_post is not None else pd.DataFrame()
+        self._vw_short_ex_post = vw_short_ex_post if vw_short_ex_post is not None else pd.DataFrame()
         self._configs = configs
         self._summary_cache = None
 
@@ -246,6 +278,46 @@ class DataUncertaintyResults:
     def vw_ex_post(self) -> pd.DataFrame:
         """VW Ex-Post long-short factors."""
         return self._vw_ex_post
+
+    @property
+    def ew_long_ex_ante(self) -> pd.DataFrame:
+        """EW Ex-Ante long leg (P_N)."""
+        return self._ew_long_ex_ante
+
+    @property
+    def vw_long_ex_ante(self) -> pd.DataFrame:
+        """VW Ex-Ante long leg (P_N)."""
+        return self._vw_long_ex_ante
+
+    @property
+    def ew_long_ex_post(self) -> pd.DataFrame:
+        """EW Ex-Post long leg (P_N)."""
+        return self._ew_long_ex_post
+
+    @property
+    def vw_long_ex_post(self) -> pd.DataFrame:
+        """VW Ex-Post long leg (P_N)."""
+        return self._vw_long_ex_post
+
+    @property
+    def ew_short_ex_ante(self) -> pd.DataFrame:
+        """EW Ex-Ante short leg (P_1)."""
+        return self._ew_short_ex_ante
+
+    @property
+    def vw_short_ex_ante(self) -> pd.DataFrame:
+        """VW Ex-Ante short leg (P_1)."""
+        return self._vw_short_ex_ante
+
+    @property
+    def ew_short_ex_post(self) -> pd.DataFrame:
+        """EW Ex-Post short leg (P_1)."""
+        return self._ew_short_ex_post
+
+    @property
+    def vw_short_ex_post(self) -> pd.DataFrame:
+        """VW Ex-Post short leg (P_1)."""
+        return self._vw_short_ex_post
 
     @property
     def configs(self) -> pd.DataFrame:
@@ -574,12 +646,27 @@ class DataUncertaintyResults:
         filtered_configs = self._configs[mask].reset_index(drop=True)
         cols = filtered_configs['column_name'].tolist()
 
+        # Filter leg DataFrames if they exist and have the columns
+        def filter_df(df, columns):
+            if df.empty:
+                return pd.DataFrame()
+            available_cols = [c for c in columns if c in df.columns]
+            return df[available_cols] if available_cols else pd.DataFrame()
+
         return DataUncertaintyResults(
             ew_ex_ante=self._ew_ex_ante[cols],
             vw_ex_ante=self._vw_ex_ante[cols],
             ew_ex_post=self._ew_ex_post[cols],
             vw_ex_post=self._vw_ex_post[cols],
-            configs=filtered_configs
+            configs=filtered_configs,
+            ew_long_ex_ante=filter_df(self._ew_long_ex_ante, cols),
+            vw_long_ex_ante=filter_df(self._vw_long_ex_ante, cols),
+            ew_long_ex_post=filter_df(self._ew_long_ex_post, cols),
+            vw_long_ex_post=filter_df(self._vw_long_ex_post, cols),
+            ew_short_ex_ante=filter_df(self._ew_short_ex_ante, cols),
+            vw_short_ex_ante=filter_df(self._vw_short_ex_ante, cols),
+            ew_short_ex_post=filter_df(self._ew_short_ex_post, cols),
+            vw_short_ex_post=filter_df(self._vw_short_ex_post, cols)
         )
 
     def to_excel(self, path: str):
@@ -835,12 +922,35 @@ def _run_single_config(
             # EP not available (no filter applied or wins filter)
             ew_ep, vw_ep = ew_ea.copy(), vw_ea.copy()
 
+        # Extract leg returns (long = P_N, short = P_1)
+        ew_long_ea, vw_long_ea = result.get_long_leg(strategy='ea')
+        ew_short_ea, vw_short_ea = result.get_short_leg(strategy='ea')
+
+        # Get EP leg returns
+        try:
+            ew_long_ep, vw_long_ep = result.get_long_leg(strategy='ep')
+            ew_short_ep, vw_short_ep = result.get_short_leg(strategy='ep')
+        except (ValueError, AttributeError):
+            # EP not available (no filter applied or wins filter)
+            ew_long_ep = ew_long_ea.copy()
+            vw_long_ep = vw_long_ea.copy()
+            ew_short_ep = ew_short_ea.copy()
+            vw_short_ep = vw_short_ea.copy()
+
         return {
             'column_name': column_name,
             'ew_ea': ew_ea,
             'vw_ea': vw_ea,
             'ew_ep': ew_ep,
             'vw_ep': vw_ep,
+            'ew_long_ea': ew_long_ea,
+            'vw_long_ea': vw_long_ea,
+            'ew_long_ep': ew_long_ep,
+            'vw_long_ep': vw_long_ep,
+            'ew_short_ea': ew_short_ea,
+            'vw_short_ea': vw_short_ea,
+            'ew_short_ep': ew_short_ep,
+            'vw_short_ep': vw_short_ep,
             'success': True,
             'error': None,
             'warning': filter_warning
@@ -853,6 +963,14 @@ def _run_single_config(
             'vw_ea': None,
             'ew_ep': None,
             'vw_ep': None,
+            'ew_long_ea': None,
+            'vw_long_ea': None,
+            'ew_long_ep': None,
+            'vw_long_ep': None,
+            'ew_short_ea': None,
+            'vw_short_ea': None,
+            'ew_short_ep': None,
+            'vw_short_ep': None,
             'success': False,
             'error': str(e),
             'warning': None
@@ -1365,6 +1483,15 @@ class DataUncertaintyAnalysis:
         vw_ea_dict = {}
         ew_ep_dict = {}
         vw_ep_dict = {}
+        # Leg dictionaries
+        ew_long_ea_dict = {}
+        vw_long_ea_dict = {}
+        ew_long_ep_dict = {}
+        vw_long_ep_dict = {}
+        ew_short_ea_dict = {}
+        vw_short_ea_dict = {}
+        ew_short_ep_dict = {}
+        vw_short_ep_dict = {}
         config_rows = []
 
         for result, ac in zip(results_list, analysis_configs):
@@ -1375,6 +1502,15 @@ class DataUncertaintyAnalysis:
                 vw_ea_dict[col] = result['vw_ea']
                 ew_ep_dict[col] = result['ew_ep']
                 vw_ep_dict[col] = result['vw_ep']
+                # Leg data
+                ew_long_ea_dict[col] = result['ew_long_ea']
+                vw_long_ea_dict[col] = result['vw_long_ea']
+                ew_long_ep_dict[col] = result['ew_long_ep']
+                vw_long_ep_dict[col] = result['vw_long_ep']
+                ew_short_ea_dict[col] = result['ew_short_ea']
+                vw_short_ea_dict[col] = result['vw_short_ea']
+                ew_short_ep_dict[col] = result['ew_short_ep']
+                vw_short_ep_dict[col] = result['vw_short_ep']
             else:
                 # Create NaN series for failed configs
                 # Use first successful result to get date index
@@ -1382,6 +1518,15 @@ class DataUncertaintyAnalysis:
                 vw_ea_dict[col] = pd.Series(dtype=float)
                 ew_ep_dict[col] = pd.Series(dtype=float)
                 vw_ep_dict[col] = pd.Series(dtype=float)
+                # Leg data
+                ew_long_ea_dict[col] = pd.Series(dtype=float)
+                vw_long_ea_dict[col] = pd.Series(dtype=float)
+                ew_long_ep_dict[col] = pd.Series(dtype=float)
+                vw_long_ep_dict[col] = pd.Series(dtype=float)
+                ew_short_ea_dict[col] = pd.Series(dtype=float)
+                vw_short_ea_dict[col] = pd.Series(dtype=float)
+                ew_short_ep_dict[col] = pd.Series(dtype=float)
+                vw_short_ep_dict[col] = pd.Series(dtype=float)
 
             config_rows.append({
                 'column_name': col,
@@ -1397,6 +1542,15 @@ class DataUncertaintyAnalysis:
         vw_ea = pd.DataFrame(vw_ea_dict)
         ew_ep = pd.DataFrame(ew_ep_dict)
         vw_ep = pd.DataFrame(vw_ep_dict)
+        # Leg DataFrames
+        ew_long_ea = pd.DataFrame(ew_long_ea_dict)
+        vw_long_ea = pd.DataFrame(vw_long_ea_dict)
+        ew_long_ep = pd.DataFrame(ew_long_ep_dict)
+        vw_long_ep = pd.DataFrame(vw_long_ep_dict)
+        ew_short_ea = pd.DataFrame(ew_short_ea_dict)
+        vw_short_ea = pd.DataFrame(vw_short_ea_dict)
+        ew_short_ep = pd.DataFrame(ew_short_ep_dict)
+        vw_short_ep = pd.DataFrame(vw_short_ep_dict)
         configs = pd.DataFrame(config_rows)
 
         elapsed = time.time() - t0
@@ -1408,7 +1562,15 @@ class DataUncertaintyAnalysis:
             vw_ex_ante=vw_ea,
             ew_ex_post=ew_ep,
             vw_ex_post=vw_ep,
-            configs=configs
+            configs=configs,
+            ew_long_ex_ante=ew_long_ea,
+            vw_long_ex_ante=vw_long_ea,
+            ew_long_ex_post=ew_long_ep,
+            vw_long_ex_post=vw_long_ep,
+            ew_short_ex_ante=ew_short_ea,
+            vw_short_ex_ante=vw_short_ea,
+            ew_short_ex_post=ew_short_ep,
+            vw_short_ex_post=vw_short_ep
         )
 
     # =========================================================================
@@ -1662,6 +1824,15 @@ class DataUncertaintyAnalysis:
         all_vw_ea = {}
         all_ew_ep = {}
         all_vw_ep = {}
+        # Leg accumulators
+        all_ew_long_ea = {}
+        all_vw_long_ea = {}
+        all_ew_long_ep = {}
+        all_vw_long_ep = {}
+        all_ew_short_ea = {}
+        all_vw_short_ea = {}
+        all_ew_short_ep = {}
+        all_vw_short_ep = {}
         all_config_rows = []
 
         if use_strategy_path:
@@ -1674,6 +1845,15 @@ class DataUncertaintyAnalysis:
                 all_vw_ea.update(result['vw_ea'])
                 all_ew_ep.update(result['ew_ep'])
                 all_vw_ep.update(result['vw_ep'])
+                # Merge leg results
+                all_ew_long_ea.update(result['ew_long_ea'])
+                all_vw_long_ea.update(result['vw_long_ea'])
+                all_ew_long_ep.update(result['ew_long_ep'])
+                all_vw_long_ep.update(result['vw_long_ep'])
+                all_ew_short_ea.update(result['ew_short_ea'])
+                all_vw_short_ea.update(result['vw_short_ea'])
+                all_ew_short_ep.update(result['ew_short_ep'])
+                all_vw_short_ep.update(result['vw_short_ep'])
                 all_config_rows.extend(result['configs'])
         else:
             # Route to pre-computed signal path
@@ -1686,6 +1866,15 @@ class DataUncertaintyAnalysis:
                     all_vw_ea.update(result['vw_ea'])
                     all_ew_ep.update(result['ew_ep'])
                     all_vw_ep.update(result['vw_ep'])
+                    # Merge leg results
+                    all_ew_long_ea.update(result['ew_long_ea'])
+                    all_vw_long_ea.update(result['vw_long_ea'])
+                    all_ew_long_ep.update(result['ew_long_ep'])
+                    all_vw_long_ep.update(result['vw_long_ep'])
+                    all_ew_short_ea.update(result['ew_short_ea'])
+                    all_vw_short_ea.update(result['vw_short_ea'])
+                    all_ew_short_ep.update(result['ew_short_ep'])
+                    all_vw_short_ep.update(result['vw_short_ep'])
                     all_config_rows.extend(result['configs'])
 
         # Create DataFrames
@@ -1696,6 +1885,15 @@ class DataUncertaintyAnalysis:
         vw_ea = pd.DataFrame(all_vw_ea, index=dates)
         ew_ep = pd.DataFrame(all_ew_ep, index=dates)
         vw_ep = pd.DataFrame(all_vw_ep, index=dates)
+        # Leg DataFrames
+        ew_long_ea = pd.DataFrame(all_ew_long_ea, index=dates)
+        vw_long_ea = pd.DataFrame(all_vw_long_ea, index=dates)
+        ew_long_ep = pd.DataFrame(all_ew_long_ep, index=dates)
+        vw_long_ep = pd.DataFrame(all_vw_long_ep, index=dates)
+        ew_short_ea = pd.DataFrame(all_ew_short_ea, index=dates)
+        vw_short_ea = pd.DataFrame(all_vw_short_ea, index=dates)
+        ew_short_ep = pd.DataFrame(all_ew_short_ep, index=dates)
+        vw_short_ep = pd.DataFrame(all_vw_short_ep, index=dates)
         configs = pd.DataFrame(all_config_rows)
 
         elapsed = time.time() - t0
@@ -1707,7 +1905,15 @@ class DataUncertaintyAnalysis:
             vw_ex_ante=vw_ea,
             ew_ex_post=ew_ep,
             vw_ex_post=vw_ep,
-            configs=configs
+            configs=configs,
+            ew_long_ex_ante=ew_long_ea,
+            vw_long_ex_ante=vw_long_ea,
+            ew_long_ex_post=ew_long_ep,
+            vw_long_ex_post=vw_long_ep,
+            ew_short_ex_ante=ew_short_ea,
+            vw_short_ex_ante=vw_short_ea,
+            ew_short_ex_post=ew_short_ep,
+            vw_short_ex_post=vw_short_ep
         )
 
     def _fit_fast_single(
@@ -1883,6 +2089,15 @@ class DataUncertaintyAnalysis:
         vw_ea_dict = {}
         ew_ep_dict = {}
         vw_ep_dict = {}
+        # Leg dictionaries
+        ew_long_ea_dict = {}
+        vw_long_ea_dict = {}
+        ew_long_ep_dict = {}
+        vw_long_ep_dict = {}
+        ew_short_ea_dict = {}
+        vw_short_ea_dict = {}
+        ew_short_ep_dict = {}
+        vw_short_ep_dict = {}
         config_rows = []
 
         for hp in self.holding_periods:
@@ -1890,13 +2105,17 @@ class DataUncertaintyAnalysis:
 
             if hp == 1:
                 # HP=1: Use optimized kernel for HP=1
-                ew_ea_ls, vw_ea_ls, ew_ep_ls, vw_ep_ls = compute_ls_returns_all_filters_hp1(
+                (ew_ea_ls, vw_ea_ls, ew_ep_ls, vw_ep_ls,
+                 ew_ea_long, vw_ea_long, ew_ep_long, vw_ep_long,
+                 ew_ea_short, vw_ea_short, ew_ep_short, vw_ep_short) = compute_ls_returns_all_filters_hp1(
                     date_idx, id_idx, ret, filtered_returns, vw_d_minus_1,
                     rank_lookups, n_dates, n_ids, nport, n_filters
                 )
             else:
                 # HP>1: Use staggered rebalancing kernel
-                ew_ea_ls, vw_ea_ls, ew_ep_ls, vw_ep_ls = compute_ls_returns_all_filters_staggered(
+                (ew_ea_ls, vw_ea_ls, ew_ep_ls, vw_ep_ls,
+                 ew_ea_long, vw_ea_long, ew_ep_long, vw_ep_long,
+                 ew_ea_short, vw_ea_short, ew_ep_short, vw_ep_short) = compute_ls_returns_all_filters_staggered(
                     date_idx, id_idx, ret, filtered_returns, vw_lookup,
                     rank_lookups, n_dates, n_ids, nport, n_filters, hp, self.dynamic_weights
                 )
@@ -1915,12 +2134,30 @@ class DataUncertaintyAnalysis:
                     vw_ea_dict[col_name] = np.full(n_dates, np.nan)
                     ew_ep_dict[col_name] = ew_ep_ls[:, f_idx]
                     vw_ep_dict[col_name] = vw_ep_ls[:, f_idx]
+                    # Leg data: EA is NaN for wins, EP has values
+                    ew_long_ea_dict[col_name] = np.full(n_dates, np.nan)
+                    vw_long_ea_dict[col_name] = np.full(n_dates, np.nan)
+                    ew_long_ep_dict[col_name] = ew_ep_long[:, f_idx]
+                    vw_long_ep_dict[col_name] = vw_ep_long[:, f_idx]
+                    ew_short_ea_dict[col_name] = np.full(n_dates, np.nan)
+                    vw_short_ea_dict[col_name] = np.full(n_dates, np.nan)
+                    ew_short_ep_dict[col_name] = ew_ep_short[:, f_idx]
+                    vw_short_ep_dict[col_name] = vw_ep_short[:, f_idx]
                 else:
                     # For other filters: both EA and EP have computed values
                     ew_ea_dict[col_name] = ew_ea_ls[:, f_idx]
                     vw_ea_dict[col_name] = vw_ea_ls[:, f_idx]
                     ew_ep_dict[col_name] = ew_ep_ls[:, f_idx]
                     vw_ep_dict[col_name] = vw_ep_ls[:, f_idx]
+                    # Leg data
+                    ew_long_ea_dict[col_name] = ew_ea_long[:, f_idx]
+                    vw_long_ea_dict[col_name] = vw_ea_long[:, f_idx]
+                    ew_long_ep_dict[col_name] = ew_ep_long[:, f_idx]
+                    vw_long_ep_dict[col_name] = vw_ep_long[:, f_idx]
+                    ew_short_ea_dict[col_name] = ew_ea_short[:, f_idx]
+                    vw_short_ea_dict[col_name] = vw_ea_short[:, f_idx]
+                    ew_short_ep_dict[col_name] = ew_ep_short[:, f_idx]
+                    vw_short_ep_dict[col_name] = vw_ep_short[:, f_idx]
 
                 config_rows.append({
                     'column_name': col_name,
@@ -1941,6 +2178,14 @@ class DataUncertaintyAnalysis:
             'vw_ea': vw_ea_dict,
             'ew_ep': ew_ep_dict,
             'vw_ep': vw_ep_dict,
+            'ew_long_ea': ew_long_ea_dict,
+            'vw_long_ea': vw_long_ea_dict,
+            'ew_long_ep': ew_long_ep_dict,
+            'vw_long_ep': vw_long_ep_dict,
+            'ew_short_ea': ew_short_ea_dict,
+            'vw_short_ea': vw_short_ea_dict,
+            'ew_short_ep': ew_short_ep_dict,
+            'vw_short_ep': vw_short_ep_dict,
             'configs': config_rows
         }
 
@@ -2232,6 +2477,15 @@ class DataUncertaintyAnalysis:
         vw_ea_dict = {}
         ew_ep_dict = {}
         vw_ep_dict = {}
+        # Leg dictionaries
+        ew_long_ea_dict = {}
+        vw_long_ea_dict = {}
+        ew_long_ep_dict = {}
+        vw_long_ep_dict = {}
+        ew_short_ea_dict = {}
+        vw_short_ea_dict = {}
+        ew_short_ep_dict = {}
+        vw_short_ep_dict = {}
         config_rows = []
 
         for hp in self.holding_periods:
@@ -2239,13 +2493,17 @@ class DataUncertaintyAnalysis:
 
             if hp == 1:
                 # HP=1: Use optimized kernel
-                ew_ea_ls, vw_ea_ls, ew_ep_ls, vw_ep_ls = compute_ls_returns_all_filters_hp1(
+                (ew_ea_ls, vw_ea_ls, ew_ep_ls, vw_ep_ls,
+                 ew_ea_long, vw_ea_long, ew_ep_long, vw_ep_long,
+                 ew_ea_short, vw_ea_short, ew_ep_short, vw_ep_short) = compute_ls_returns_all_filters_hp1(
                     date_idx, id_idx, ret, filtered_returns, vw_d_minus_1,
                     rank_lookups, n_dates, n_ids, nport, n_filters
                 )
             else:
                 # HP>1: Use staggered rebalancing kernel
-                ew_ea_ls, vw_ea_ls, ew_ep_ls, vw_ep_ls = compute_ls_returns_all_filters_staggered(
+                (ew_ea_ls, vw_ea_ls, ew_ep_ls, vw_ep_ls,
+                 ew_ea_long, vw_ea_long, ew_ep_long, vw_ep_long,
+                 ew_ea_short, vw_ea_short, ew_ep_short, vw_ep_short) = compute_ls_returns_all_filters_staggered(
                     date_idx, id_idx, ret, filtered_returns, vw_lookup,
                     rank_lookups, n_dates, n_ids, nport, n_filters, hp, self.dynamic_weights
                 )
@@ -2261,6 +2519,15 @@ class DataUncertaintyAnalysis:
                 vw_ea_dict[col_name] = vw_ea_ls[:, f_idx]
                 ew_ep_dict[col_name] = ew_ep_ls[:, f_idx]
                 vw_ep_dict[col_name] = vw_ep_ls[:, f_idx]
+                # Leg data
+                ew_long_ea_dict[col_name] = ew_ea_long[:, f_idx]
+                vw_long_ea_dict[col_name] = vw_ea_long[:, f_idx]
+                ew_long_ep_dict[col_name] = ew_ep_long[:, f_idx]
+                vw_long_ep_dict[col_name] = vw_ep_long[:, f_idx]
+                ew_short_ea_dict[col_name] = ew_ea_short[:, f_idx]
+                vw_short_ea_dict[col_name] = vw_ea_short[:, f_idx]
+                ew_short_ep_dict[col_name] = ew_ep_short[:, f_idx]
+                vw_short_ep_dict[col_name] = vw_ep_short[:, f_idx]
 
                 config_rows.append({
                     'column_name': col_name,
@@ -2281,5 +2548,13 @@ class DataUncertaintyAnalysis:
             'vw_ea': vw_ea_dict,
             'ew_ep': ew_ep_dict,
             'vw_ep': vw_ep_dict,
+            'ew_long_ea': ew_long_ea_dict,
+            'vw_long_ea': vw_long_ea_dict,
+            'ew_long_ep': ew_long_ep_dict,
+            'vw_long_ep': vw_long_ep_dict,
+            'ew_short_ea': ew_short_ea_dict,
+            'vw_short_ea': vw_short_ea_dict,
+            'ew_short_ep': ew_short_ep_dict,
+            'vw_short_ep': vw_short_ep_dict,
             'configs': config_rows
         }

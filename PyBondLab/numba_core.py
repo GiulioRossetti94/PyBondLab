@@ -2565,7 +2565,9 @@ def compute_ls_returns_all_filters_hp1(
     n_ids: int,
     nport: int,
     n_filters: int
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray,
+           np.ndarray, np.ndarray, np.ndarray, np.ndarray,
+           np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Compute long-short returns for ALL dates and ALL filters (HP=1).
 
@@ -2573,11 +2575,19 @@ def compute_ls_returns_all_filters_hp1(
 
     Returns
     -------
-    Tuple of 4 arrays:
+    Tuple of 12 arrays:
         ew_ea_ls: (n_dates, n_filters) - EW EA long-short per filter
         vw_ea_ls: (n_dates, n_filters) - VW EA long-short per filter
         ew_ep_ls: (n_dates, n_filters) - EW EP long-short per filter
         vw_ep_ls: (n_dates, n_filters) - VW EP long-short per filter
+        ew_ea_long: (n_dates, n_filters) - EW EA long leg (P_N)
+        vw_ea_long: (n_dates, n_filters) - VW EA long leg (P_N)
+        ew_ep_long: (n_dates, n_filters) - EW EP long leg (P_N)
+        vw_ep_long: (n_dates, n_filters) - VW EP long leg (P_N)
+        ew_ea_short: (n_dates, n_filters) - EW EA short leg (P_1)
+        vw_ea_short: (n_dates, n_filters) - VW EA short leg (P_1)
+        ew_ep_short: (n_dates, n_filters) - EW EP short leg (P_1)
+        vw_ep_short: (n_dates, n_filters) - VW EP short leg (P_1)
     """
     n_ret = len(ret_date_idx)
 
@@ -2586,6 +2596,18 @@ def compute_ls_returns_all_filters_hp1(
     vw_ea_ls = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
     ew_ep_ls = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
     vw_ep_ls = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
+
+    # Output: long leg (P_N) per date per filter
+    ew_ea_long = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
+    vw_ea_long = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
+    ew_ep_long = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
+    vw_ep_long = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
+
+    # Output: short leg (P_1) per date per filter
+    ew_ea_short = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
+    vw_ea_short = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
+    ew_ep_short = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
+    vw_ep_short = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
 
     # Process in parallel over (date, filter) combinations
     n_combos = n_dates * n_filters
@@ -2669,6 +2691,17 @@ def compute_ls_returns_all_filters_hp1(
             if ep_sum_weight[p] > 0:
                 vw_ep_ptf[p] = ep_sum_wret[p] / ep_sum_weight[p]
 
+        # Store individual legs
+        ew_ea_long[d, f] = ew_ea_ptf[nport-1]
+        vw_ea_long[d, f] = vw_ea_ptf[nport-1]
+        ew_ep_long[d, f] = ew_ep_ptf[nport-1]
+        vw_ep_long[d, f] = vw_ep_ptf[nport-1]
+
+        ew_ea_short[d, f] = ew_ea_ptf[0]
+        vw_ea_short[d, f] = vw_ea_ptf[0]
+        ew_ep_short[d, f] = ew_ep_ptf[0]
+        vw_ep_short[d, f] = vw_ep_ptf[0]
+
         # Long-short (high - low)
         if not np.isnan(ew_ea_ptf[nport-1]) and not np.isnan(ew_ea_ptf[0]):
             ew_ea_ls[d, f] = ew_ea_ptf[nport-1] - ew_ea_ptf[0]
@@ -2679,7 +2712,9 @@ def compute_ls_returns_all_filters_hp1(
         if not np.isnan(vw_ep_ptf[nport-1]) and not np.isnan(vw_ep_ptf[0]):
             vw_ep_ls[d, f] = vw_ep_ptf[nport-1] - vw_ep_ptf[0]
 
-    return ew_ea_ls, vw_ea_ls, ew_ep_ls, vw_ep_ls
+    return (ew_ea_ls, vw_ea_ls, ew_ep_ls, vw_ep_ls,
+            ew_ea_long, vw_ea_long, ew_ep_long, vw_ep_long,
+            ew_ea_short, vw_ea_short, ew_ep_short, vw_ep_short)
 
 
 @njit(cache=True, parallel=True)
@@ -2696,18 +2731,49 @@ def compute_ls_returns_all_filters_staggered(
     n_filters: int,
     hp: int,
     use_dynamic_weights: bool
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray,
+           np.ndarray, np.ndarray, np.ndarray, np.ndarray,
+           np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Compute long-short returns for ALL dates and ALL filters with staggered rebalancing (HP>1).
 
     Each filter uses its own ranking for both EA and EP returns.
+
+    Returns
+    -------
+    Tuple of 12 arrays:
+        ew_ea_ls: (n_dates, n_filters) - EW EA long-short per filter
+        vw_ea_ls: (n_dates, n_filters) - VW EA long-short per filter
+        ew_ep_ls: (n_dates, n_filters) - EW EP long-short per filter
+        vw_ep_ls: (n_dates, n_filters) - VW EP long-short per filter
+        ew_ea_long: (n_dates, n_filters) - EW EA long leg (P_N)
+        vw_ea_long: (n_dates, n_filters) - VW EA long leg (P_N)
+        ew_ep_long: (n_dates, n_filters) - EW EP long leg (P_N)
+        vw_ep_long: (n_dates, n_filters) - VW EP long leg (P_N)
+        ew_ea_short: (n_dates, n_filters) - EW EA short leg (P_1)
+        vw_ea_short: (n_dates, n_filters) - VW EA short leg (P_1)
+        ew_ep_short: (n_dates, n_filters) - EW EP short leg (P_1)
+        vw_ep_short: (n_dates, n_filters) - VW EP short leg (P_1)
     """
     n_ret = len(ret_date_idx)
 
+    # Output: long-short returns per date per filter
     ew_ea_ls = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
     vw_ea_ls = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
     ew_ep_ls = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
     vw_ep_ls = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
+
+    # Output: long leg (P_N) per date per filter
+    ew_ea_long = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
+    vw_ea_long = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
+    ew_ep_long = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
+    vw_ep_long = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
+
+    # Output: short leg (P_1) per date per filter
+    ew_ea_short = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
+    vw_ea_short = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
+    ew_ep_short = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
+    vw_ep_short = np.full((n_dates, n_filters), np.nan, dtype=np.float64)
 
     # Process in parallel over (date, filter) combinations
     n_combos = n_dates * n_filters
@@ -2843,7 +2909,18 @@ def compute_ls_returns_all_filters_staggered(
             if vw_ep_cnt > 0:
                 vw_ep_ptf[p] = vw_ep_sum / vw_ep_cnt
 
-        # Long-short
+        # Store individual legs
+        ew_ea_long[d, f] = ew_ea_ptf[nport-1]
+        vw_ea_long[d, f] = vw_ea_ptf[nport-1]
+        ew_ep_long[d, f] = ew_ep_ptf[nport-1]
+        vw_ep_long[d, f] = vw_ep_ptf[nport-1]
+
+        ew_ea_short[d, f] = ew_ea_ptf[0]
+        vw_ea_short[d, f] = vw_ea_ptf[0]
+        ew_ep_short[d, f] = ew_ep_ptf[0]
+        vw_ep_short[d, f] = vw_ep_ptf[0]
+
+        # Long-short (high - low)
         if not np.isnan(ew_ea_ptf[nport-1]) and not np.isnan(ew_ea_ptf[0]):
             ew_ea_ls[d, f] = ew_ea_ptf[nport-1] - ew_ea_ptf[0]
         if not np.isnan(vw_ea_ptf[nport-1]) and not np.isnan(vw_ea_ptf[0]):
@@ -2853,7 +2930,9 @@ def compute_ls_returns_all_filters_staggered(
         if not np.isnan(vw_ep_ptf[nport-1]) and not np.isnan(vw_ep_ptf[0]):
             vw_ep_ls[d, f] = vw_ep_ptf[nport-1] - vw_ep_ptf[0]
 
-    return ew_ea_ls, vw_ea_ls, ew_ep_ls, vw_ep_ls
+    return (ew_ea_ls, vw_ea_ls, ew_ep_ls, vw_ep_ls,
+            ew_ea_long, vw_ea_long, ew_ep_long, vw_ep_long,
+            ew_ea_short, vw_ea_short, ew_ep_short, vw_ep_short)
 
 
 # =============================================================================
