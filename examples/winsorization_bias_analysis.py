@@ -4,18 +4,17 @@ Winsorization Bias Analysis
 Compares winsorized vs actual factor returns to quantify the bias
 introduced by asymmetric return winsorization.
 
-Outputs:
-- Long leg (P_N): μ̃, μ, Bias, Bias_t, %Bias
-- Short leg (P_1): μ̃, μ, Bias, Bias_t, %Bias
-- Long-Short: μ̃, μ, Bias, Bias_t, %Bias, Sharpe
+Output format:
+                 ──────── Long ────────   ──────── Short ────────   ────── Long-Short ──────
+Factor           μ̃_L    μ_L   Bias_L      μ̃_S    μ_S   Bias_S      μ̃_LS   μ_LS   Bias_LS
+b_dunc           0.58   0.51   0.07       0.50   0.45   0.05        0.08   0.06    0.02
+                (3.20) (2.80) (1.50)     (2.10) (1.90) (0.80)      (1.50) (1.20)  (0.50)
 
 Where:
 - μ̃ = Winsorized mean (ex-post with wins filter)
 - μ = Actual mean (baseline, no filter)
 - Bias = μ̃ - μ
-- Bias_t = NW t-stat on the bias series
-- %Bias = Bias / |μ| × 100
-- Sharpe = Annualized Sharpe ratio (baseline)
+- Values in parentheses = NW t-statistics
 """
 
 import sys
@@ -104,27 +103,13 @@ def compute_nw_tstat(series: pd.Series) -> float:
     return np.nan
 
 
-def compute_annualized_sharpe(series: pd.Series) -> float:
-    """Compute annualized Sharpe ratio (assuming monthly data)."""
-    series = series.dropna()
-    if len(series) < 12:
-        return np.nan
-
-    mean = series.mean()
-    std = series.std()
-
-    if std > 0:
-        return (mean / std) * np.sqrt(12)
-    return np.nan
-
-
 def run_analysis(
     data: pd.DataFrame,
     signals: list,
     wins_location: str,
     wins_level: float = 99.5,
     verbose: bool = True
-) -> pd.DataFrame:
+) -> dict:
     """
     Run winsorization bias analysis for a set of signals.
 
@@ -143,8 +128,8 @@ def run_analysis(
 
     Returns
     -------
-    pd.DataFrame
-        Analysis results with columns for each metric
+    dict
+        Dictionary with 'means' and 'tstats' DataFrames
     """
     # Filter to signals that exist in data
     available_signals = [s for s in signals if s in data.columns]
@@ -155,7 +140,7 @@ def run_analysis(
 
     if not available_signals:
         print("  Error: No signals available!")
-        return pd.DataFrame()
+        return {'means': pd.DataFrame(), 'tstats': pd.DataFrame()}
 
     if verbose:
         print(f"  Running DataUncertaintyAnalysis for {len(available_signals)} signals...")
@@ -179,8 +164,9 @@ def run_analysis(
     if verbose:
         print(f"  Analysis complete. Extracting results...")
 
-    # Build results table
-    rows = []
+    # Build results tables (means and t-stats separately)
+    mean_rows = []
+    tstat_rows = []
 
     for signal in available_signals:
         # Filter to this signal
@@ -214,128 +200,120 @@ def run_analysis(
         bias_long = vw_long_wins - vw_long_base
         bias_short = vw_short_wins - vw_short_base
 
-        # Compute statistics
-        row = {'Factor': signal}
+        # Means row
+        mean_row = {
+            'Factor': signal,
+            'μ̃_L': round(vw_long_wins.mean() * 100, 2),
+            'μ_L': round(vw_long_base.mean() * 100, 2),
+            'Bias_L': round(bias_long.mean() * 100, 2),
+            'μ̃_S': round(vw_short_wins.mean() * 100, 2),
+            'μ_S': round(vw_short_base.mean() * 100, 2),
+            'Bias_S': round(bias_short.mean() * 100, 2),
+            'μ̃_LS': round(vw_ls_wins.mean() * 100, 2),
+            'μ_LS': round(vw_ls_base.mean() * 100, 2),
+            'Bias_LS': round(bias_ls.mean() * 100, 2),
+        }
+        mean_rows.append(mean_row)
 
-        # Long leg
-        row['L_wins'] = vw_long_wins.mean() * 100  # Convert to %
-        row['L_base'] = vw_long_base.mean() * 100
-        row['L_bias'] = bias_long.mean() * 100
-        row['L_bias_t'] = compute_nw_tstat(bias_long)
-        row['L_pct_bias'] = (bias_long.mean() / abs(vw_long_base.mean()) * 100) if vw_long_base.mean() != 0 else np.nan
+        # T-stats row (in parentheses format)
+        tstat_row = {
+            'Factor': '',  # Empty for alignment
+            'μ̃_L': f"({compute_nw_tstat(vw_long_wins):.2f})",
+            'μ_L': f"({compute_nw_tstat(vw_long_base):.2f})",
+            'Bias_L': f"({compute_nw_tstat(bias_long):.2f})",
+            'μ̃_S': f"({compute_nw_tstat(vw_short_wins):.2f})",
+            'μ_S': f"({compute_nw_tstat(vw_short_base):.2f})",
+            'Bias_S': f"({compute_nw_tstat(bias_short):.2f})",
+            'μ̃_LS': f"({compute_nw_tstat(vw_ls_wins):.2f})",
+            'μ_LS': f"({compute_nw_tstat(vw_ls_base):.2f})",
+            'Bias_LS': f"({compute_nw_tstat(bias_ls):.2f})",
+        }
+        tstat_rows.append(tstat_row)
 
-        # Short leg
-        row['S_wins'] = vw_short_wins.mean() * 100
-        row['S_base'] = vw_short_base.mean() * 100
-        row['S_bias'] = bias_short.mean() * 100
-        row['S_bias_t'] = compute_nw_tstat(bias_short)
-        row['S_pct_bias'] = (bias_short.mean() / abs(vw_short_base.mean()) * 100) if vw_short_base.mean() != 0 else np.nan
+    return {
+        'means': pd.DataFrame(mean_rows),
+        'tstats': pd.DataFrame(tstat_rows)
+    }
 
-        # Long-Short
-        row['LS_wins'] = vw_ls_wins.mean() * 100
-        row['LS_base'] = vw_ls_base.mean() * 100
-        row['LS_bias'] = bias_ls.mean() * 100
-        row['LS_bias_t'] = compute_nw_tstat(bias_ls)
-        row['LS_pct_bias'] = (bias_ls.mean() / abs(vw_ls_base.mean()) * 100) if vw_ls_base.mean() != 0 else np.nan
-        row['LS_sharpe'] = compute_annualized_sharpe(vw_ls_base)
 
-        # T-stats for means (for reference)
-        row['L_base_t'] = compute_nw_tstat(vw_long_base)
-        row['S_base_t'] = compute_nw_tstat(vw_short_base)
-        row['LS_base_t'] = compute_nw_tstat(vw_ls_base)
+def build_display_table(results: dict) -> pd.DataFrame:
+    """
+    Build a display table with means and t-stats interleaved.
 
-        rows.append(row)
+    Each factor has two rows:
+    - Row 1: means (numeric)
+    - Row 2: t-stats in parentheses (string)
+    """
+    if results['means'].empty:
+        return pd.DataFrame()
+
+    means_df = results['means']
+    tstats_df = results['tstats']
+
+    # Interleave rows
+    rows = []
+    for i in range(len(means_df)):
+        # Add means row
+        mean_row = means_df.iloc[i].to_dict()
+        rows.append(mean_row)
+
+        # Add t-stats row
+        tstat_row = tstats_df.iloc[i].to_dict()
+        rows.append(tstat_row)
 
     return pd.DataFrame(rows)
 
 
-def format_table(df: pd.DataFrame, title: str) -> pd.DataFrame:
-    """
-    Format the results DataFrame for display.
-
-    Returns a formatted DataFrame with proper column ordering and rounding.
-    """
-    if df.empty:
-        return df
-
-    # Column order for display
-    display_cols = [
-        'Factor',
-        # Long
-        'L_wins', 'L_base', 'L_bias', 'L_bias_t', 'L_pct_bias',
-        # Short
-        'S_wins', 'S_base', 'S_bias', 'S_bias_t', 'S_pct_bias',
-        # Long-Short
-        'LS_wins', 'LS_base', 'LS_bias', 'LS_bias_t', 'LS_pct_bias', 'LS_sharpe',
-    ]
-
-    # Select and order columns
-    df_display = df[[c for c in display_cols if c in df.columns]].copy()
-
-    # Round numeric columns
-    for col in df_display.columns:
-        if col == 'Factor':
-            continue
-        elif 'pct_bias' in col:
-            df_display[col] = df_display[col].round(1)
-        elif '_t' in col:
-            df_display[col] = df_display[col].round(2)
-        elif 'sharpe' in col:
-            df_display[col] = df_display[col].round(2)
-        else:
-            df_display[col] = df_display[col].round(3)
-
-    return df_display
-
-
-def print_table(df: pd.DataFrame, title: str):
+def print_table(results: dict, title: str):
     """Print formatted table to console."""
     print()
-    print("=" * 120)
+    print("=" * 100)
     print(title)
-    print("=" * 120)
+    print("=" * 100)
     print()
 
-    if df.empty:
+    if results['means'].empty:
         print("  No results to display.")
         return
 
-    # Column renaming for display
-    col_rename = {
-        'L_wins': 'μ̃_L', 'L_base': 'μ_L', 'L_bias': 'Bias_L',
-        'L_bias_t': 't(Bias)_L', 'L_pct_bias': '%Bias_L',
-        'S_wins': 'μ̃_S', 'S_base': 'μ_S', 'S_bias': 'Bias_S',
-        'S_bias_t': 't(Bias)_S', 'S_pct_bias': '%Bias_S',
-        'LS_wins': 'μ̃_LS', 'LS_base': 'μ_LS', 'LS_bias': 'Bias_LS',
-        'LS_bias_t': 't(Bias)_LS', 'LS_pct_bias': '%Bias_LS', 'LS_sharpe': 'Sharpe',
-    }
-
-    df_print = df.rename(columns=col_rename)
-
-    # Print header info
-    print("  Columns:")
-    print("    μ̃ = Winsorized mean (%), μ = Baseline mean (%)")
-    print("    Bias = μ̃ - μ (%), t(Bias) = NW t-stat on bias")
-    print("    %Bias = Bias/|μ| × 100, Sharpe = Annualized Sharpe (baseline)")
+    print("  Legend: μ̃ = Winsorized mean (%), μ = Baseline mean (%), Bias = μ̃ - μ (%)")
+    print("          Values in parentheses are NW t-statistics")
     print()
 
-    # Print sections
-    print("  " + "-" * 50 + " Long " + "-" * 50)
-    long_cols = ['Factor', 'μ̃_L', 'μ_L', 'Bias_L', 't(Bias)_L', '%Bias_L']
-    long_cols = [c for c in long_cols if c in df_print.columns]
-    print(df_print[long_cols].to_string(index=False))
-    print()
+    # Column order
+    cols = ['Factor', 'μ̃_L', 'μ_L', 'Bias_L', 'μ̃_S', 'μ_S', 'Bias_S', 'μ̃_LS', 'μ_LS', 'Bias_LS']
 
-    print("  " + "-" * 50 + " Short " + "-" * 49)
-    short_cols = ['Factor', 'μ̃_S', 'μ_S', 'Bias_S', 't(Bias)_S', '%Bias_S']
-    short_cols = [c for c in short_cols if c in df_print.columns]
-    print(df_print[short_cols].to_string(index=False))
-    print()
+    # Build display table
+    display_df = build_display_table(results)
 
-    print("  " + "-" * 48 + " Long-Short " + "-" * 47)
-    ls_cols = ['Factor', 'μ̃_LS', 'μ_LS', 'Bias_LS', 't(Bias)_LS', '%Bias_LS', 'Sharpe']
-    ls_cols = [c for c in ls_cols if c in df_print.columns]
-    print(df_print[ls_cols].to_string(index=False))
+    # Print header
+    header = "  {:12s}  {:>8s} {:>8s} {:>8s}   {:>8s} {:>8s} {:>8s}   {:>8s} {:>8s} {:>8s}".format(
+        '', '──Long──', '', '', '──Short─', '', '', '───L-S──', '', ''
+    )
+    print(header)
+
+    col_header = "  {:12s}  {:>8s} {:>8s} {:>8s}   {:>8s} {:>8s} {:>8s}   {:>8s} {:>8s} {:>8s}".format(
+        'Factor', 'μ̃_L', 'μ_L', 'Bias_L', 'μ̃_S', 'μ_S', 'Bias_S', 'μ̃_LS', 'μ_LS', 'Bias_LS'
+    )
+    print(col_header)
+    print("  " + "-" * 97)
+
+    # Print rows
+    for i, row in display_df.iterrows():
+        factor = row['Factor'] if row['Factor'] else ''
+        values = []
+        for col in cols[1:]:  # Skip Factor
+            val = row[col]
+            if isinstance(val, (int, float)):
+                values.append(f"{val:8.2f}")
+            else:
+                values.append(f"{val:>8s}")
+
+        line = "  {:12s}  {:>8s} {:>8s} {:>8s}   {:>8s} {:>8s} {:>8s}   {:>8s} {:>8s} {:>8s}".format(
+            factor, *values
+        )
+        print(line)
+
     print()
 
 
@@ -351,12 +329,12 @@ def main(data: pd.DataFrame):
     Returns
     -------
     tuple of pd.DataFrame
-        (left_tail_results, right_tail_results)
+        (left_tail_results, right_tail_results) - each is the display table
     """
     print()
-    print("=" * 120)
+    print("=" * 100)
     print("WINSORIZATION BIAS ANALYSIS")
-    print("=" * 120)
+    print("=" * 100)
     print()
     print(f"Configuration:")
     print(f"  Holding Period: {HOLDING_PERIOD}")
@@ -376,31 +354,31 @@ def main(data: pd.DataFrame):
     # Run left-tail analysis
     print("LEFT-TAIL WINSORIZATION (0.50%)")
     print("-" * 40)
-    df_left = run_analysis(
+    results_left = run_analysis(
         data_mapped,
         LEFT_TAIL_SIGNALS,
         wins_location='left',
         wins_level=99.5,  # 99.5% left = 0.5% left tail
         verbose=True
     )
-    df_left_fmt = format_table(df_left, "Left-Tail Winsorization")
-    print_table(df_left_fmt, "LEFT-TAIL ASYMMETRIC RETURN WINSORIZATION (0.50%)")
+    print_table(results_left, "LEFT-TAIL ASYMMETRIC RETURN WINSORIZATION (0.50%)")
+    df_left = build_display_table(results_left)
 
     # Run right-tail analysis
     print()
     print("RIGHT-TAIL WINSORIZATION (99.50%)")
     print("-" * 40)
-    df_right = run_analysis(
+    results_right = run_analysis(
         data_mapped,
         RIGHT_TAIL_SIGNALS,
         wins_location='right',
         wins_level=99.5,  # 99.5% right = 99.5% right tail
         verbose=True
     )
-    df_right_fmt = format_table(df_right, "Right-Tail Winsorization")
-    print_table(df_right_fmt, "RIGHT-TAIL ASYMMETRIC RETURN WINSORIZATION (99.50%)")
+    print_table(results_right, "RIGHT-TAIL ASYMMETRIC RETURN WINSORIZATION (99.50%)")
+    df_right = build_display_table(results_right)
 
-    return df_left_fmt, df_right_fmt
+    return df_left, df_right
 
 
 # =============================================================================
@@ -453,6 +431,6 @@ if __name__ == "__main__":
     print("RAW DATAFRAMES (for inspection)")
     print("=" * 60)
     print("\nLeft-tail results:")
-    print(df_left)
+    print(df_left.to_string(index=False))
     print("\nRight-tail results:")
-    print(df_right)
+    print(df_right.to_string(index=False))
