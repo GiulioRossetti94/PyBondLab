@@ -46,7 +46,7 @@ LEFT_TAIL_SIGNALS = [
     'ltr48_12', 'ltr30_6',
     'ivol_bbw', 'ivol_vp',
     'b_dvix_vp', 'b_psb_m', 'b_amd_m',
-    'var_95', 'es_95'
+    'var_95', 'es_90'
 ]
 
 RIGHT_TAIL_SIGNALS = [
@@ -108,6 +108,7 @@ def run_analysis(
     signals: list,
     wins_location: str,
     wins_level: float = 99.5,
+    rating: str = None,
     verbose: bool = True
 ) -> dict:
     """
@@ -123,6 +124,8 @@ def run_analysis(
         'left' or 'right' for tail to winsorize
     wins_level : float
         Winsorization percentile (e.g., 99.5 for 0.5% tail)
+    rating : str, optional
+        Rating filter: 'IG', 'NIG', or None for all bonds
     verbose : bool
         Print progress
 
@@ -142,9 +145,11 @@ def run_analysis(
         print("  Error: No signals available!")
         return {'means': pd.DataFrame(), 'tstats': pd.DataFrame()}
 
+    rating_str = rating if rating else "All"
     if verbose:
         print(f"  Running DataUncertaintyAnalysis for {len(available_signals)} signals...")
         print(f"  Winsorization: {wins_level}% {wins_location}-tail")
+        print(f"  Rating: {rating_str}")
 
     # Run analysis with baseline + wins filter
     with warnings.catch_warnings():
@@ -158,6 +163,7 @@ def run_analysis(
             include_baseline=True,
             num_portfolios=NUM_PORTFOLIOS,
             dynamic_weights=True,
+            rating=rating,
             verbose=False,
         ).fit()
 
@@ -168,20 +174,24 @@ def run_analysis(
     mean_rows = []
     tstat_rows = []
 
+    # Rating suffix for column names
+    rating_suffix = f"_{rating}" if rating else ""
+
     for signal in available_signals:
         # Filter to this signal
         sig_results = results.filter(signal=signal)
 
-        # Get baseline and wins columns
-        baseline_col = f"{signal}_hp{HOLDING_PERIOD}_baseline"
-        wins_col = f"{signal}_hp{HOLDING_PERIOD}_wins_{wins_level}_{wins_location}"
+        # Get baseline and wins columns (with rating suffix if applicable)
+        baseline_col = f"{signal}_hp{HOLDING_PERIOD}_baseline{rating_suffix}"
+        wins_col = f"{signal}_hp{HOLDING_PERIOD}_wins_{wins_level}_{wins_location}{rating_suffix}"
 
         # Check columns exist
         if baseline_col not in sig_results.vw_ex_ante.columns:
-            print(f"  Warning: Baseline column not found for {signal}")
+            print(f"  Warning: Baseline column not found for {signal}: {baseline_col}")
+            print(f"  Available columns: {list(sig_results.vw_ex_ante.columns)[:5]}...")
             continue
         if wins_col not in sig_results.vw_ex_post.columns:
-            print(f"  Warning: Wins column not found for {signal}")
+            print(f"  Warning: Wins column not found for {signal}: {wins_col}")
             continue
 
         # Extract series for each leg
@@ -328,8 +338,12 @@ def main(data: pd.DataFrame):
 
     Returns
     -------
-    tuple of pd.DataFrame
-        (left_tail_results, right_tail_results) - each is the display table
+    dict
+        Dictionary with results for each (tail, rating) combination:
+        {
+            'left_all': DataFrame, 'left_IG': DataFrame, 'left_NIG': DataFrame,
+            'right_all': DataFrame, 'right_IG': DataFrame, 'right_NIG': DataFrame
+        }
     """
     print()
     print("=" * 100)
@@ -340,6 +354,7 @@ def main(data: pd.DataFrame):
     print(f"  Holding Period: {HOLDING_PERIOD}")
     print(f"  Num Portfolios: {NUM_PORTFOLIOS}")
     print(f"  Weighting: VW only")
+    print(f"  Ratings: All, IG, NIG")
     print()
 
     # Apply column mapping
@@ -351,34 +366,49 @@ def main(data: pd.DataFrame):
         print(f"Column mapping applied: {cols_to_rename}")
         print()
 
-    # Run left-tail analysis
-    print("LEFT-TAIL WINSORIZATION (0.50%)")
-    print("-" * 40)
-    results_left = run_analysis(
-        data_mapped,
-        LEFT_TAIL_SIGNALS,
-        wins_location='left',
-        wins_level=99.5,  # 99.5% left = 0.5% left tail
-        verbose=True
-    )
-    print_table(results_left, "LEFT-TAIL ASYMMETRIC RETURN WINSORIZATION (0.50%)")
-    df_left = build_display_table(results_left)
+    # Rating categories to analyze
+    ratings = [None, 'IG', 'NIG']  # None = All bonds
+    rating_labels = {None: 'All', 'IG': 'IG', 'NIG': 'NIG'}
 
-    # Run right-tail analysis
-    print()
-    print("RIGHT-TAIL WINSORIZATION (99.50%)")
-    print("-" * 40)
-    results_right = run_analysis(
-        data_mapped,
-        RIGHT_TAIL_SIGNALS,
-        wins_location='right',
-        wins_level=99.5,  # 99.5% right = 99.5% right tail
-        verbose=True
-    )
-    print_table(results_right, "RIGHT-TAIL ASYMMETRIC RETURN WINSORIZATION (99.50%)")
-    df_right = build_display_table(results_right)
+    all_results = {}
 
-    return df_left, df_right
+    # Run left-tail analysis for each rating
+    for rating in ratings:
+        rating_label = rating_labels[rating]
+        print()
+        print(f"LEFT-TAIL WINSORIZATION (0.50%) - {rating_label} Bonds")
+        print("-" * 50)
+        results_left = run_analysis(
+            data_mapped,
+            LEFT_TAIL_SIGNALS,
+            wins_location='left',
+            wins_level=99.5,  # 99.5% left = 0.5% left tail
+            rating=rating,
+            verbose=True
+        )
+        title = f"LEFT-TAIL ASYMMETRIC RETURN WINSORIZATION (0.50%) - {rating_label} Bonds"
+        print_table(results_left, title)
+        all_results[f'left_{rating_label}'] = build_display_table(results_left)
+
+    # Run right-tail analysis for each rating
+    for rating in ratings:
+        rating_label = rating_labels[rating]
+        print()
+        print(f"RIGHT-TAIL WINSORIZATION (99.50%) - {rating_label} Bonds")
+        print("-" * 50)
+        results_right = run_analysis(
+            data_mapped,
+            RIGHT_TAIL_SIGNALS,
+            wins_location='right',
+            wins_level=99.5,  # 99.5% right = 99.5% right tail
+            rating=rating,
+            verbose=True
+        )
+        title = f"RIGHT-TAIL ASYMMETRIC RETURN WINSORIZATION (99.50%) - {rating_label} Bonds"
+        print_table(results_right, title)
+        all_results[f'right_{rating_label}'] = build_display_table(results_right)
+
+    return all_results
 
 
 # =============================================================================
@@ -425,12 +455,12 @@ if __name__ == "__main__":
     LEFT_TAIL_SIGNALS = ['b_dunc']
     RIGHT_TAIL_SIGNALS = ['mom3_1', 'mom6_1', 'mom12_1']
 
-    df_left, df_right = main(test_data)
+    all_results = main(test_data)
 
     print("\n" + "=" * 60)
     print("RAW DATAFRAMES (for inspection)")
     print("=" * 60)
-    print("\nLeft-tail results:")
-    print(df_left.to_string(index=False))
-    print("\nRight-tail results:")
-    print(df_right.to_string(index=False))
+    for key, df in all_results.items():
+        if not df.empty:
+            print(f"\n{key}:")
+            print(df.to_string(index=False))
