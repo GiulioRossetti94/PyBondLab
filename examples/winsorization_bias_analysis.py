@@ -212,8 +212,13 @@ def run_analysis(
     Returns
     -------
     dict
-        Dictionary with 'means', 'tstats' DataFrames for returns,
-        and 'alpha_means', 'alpha_tstats' DataFrames for alphas (if mktb provided)
+        Dictionary with:
+        - 'means', 'tstats': DataFrames for return summary tables
+        - 'alpha_means', 'alpha_tstats': DataFrames for alpha summary tables (if mktb provided)
+        - 'ts_long_wins', 'ts_long_base': Time series DataFrames for long leg
+        - 'ts_short_wins', 'ts_short_base': Time series DataFrames for short leg
+        - 'ts_ls_wins', 'ts_ls_base': Time series DataFrames for long-short
+        - 'ts_bias_long', 'ts_bias_short', 'ts_bias_ls': Time series DataFrames for bias
     """
     # Filter to signals that exist in data
     available_signals = [s for s in signals if s in data.columns]
@@ -257,6 +262,17 @@ def run_analysis(
     alpha_mean_rows = []
     alpha_tstat_rows = []
 
+    # Time series storage (using signal name as column - homogeneous naming)
+    ts_long_wins = {}
+    ts_long_base = {}
+    ts_short_wins = {}
+    ts_short_base = {}
+    ts_ls_wins = {}
+    ts_ls_base = {}
+    ts_bias_long = {}
+    ts_bias_short = {}
+    ts_bias_ls = {}
+
     # Rating suffix for column names
     rating_suffix = f"_{rating}" if rating else ""
 
@@ -292,6 +308,17 @@ def run_analysis(
         bias_ls = vw_ls_wins - vw_ls_base
         bias_long = vw_long_wins - vw_long_base
         bias_short = vw_short_wins - vw_short_base
+
+        # Store time series with homogeneous naming (just signal name)
+        ts_long_wins[signal] = vw_long_wins
+        ts_long_base[signal] = vw_long_base
+        ts_short_wins[signal] = vw_short_wins
+        ts_short_base[signal] = vw_short_base
+        ts_ls_wins[signal] = vw_ls_wins
+        ts_ls_base[signal] = vw_ls_base
+        ts_bias_long[signal] = bias_long
+        ts_bias_short[signal] = bias_short
+        ts_bias_ls[signal] = bias_ls
 
         # Means row
         mean_row = {
@@ -373,9 +400,20 @@ def run_analysis(
             }
             alpha_tstat_rows.append(alpha_tstat_row)
 
+    # Build result dict
     result = {
         'means': pd.DataFrame(mean_rows),
-        'tstats': pd.DataFrame(tstat_rows)
+        'tstats': pd.DataFrame(tstat_rows),
+        # Time series DataFrames (columns = factor names, index = dates)
+        'ts_long_wins': pd.DataFrame(ts_long_wins),
+        'ts_long_base': pd.DataFrame(ts_long_base),
+        'ts_short_wins': pd.DataFrame(ts_short_wins),
+        'ts_short_base': pd.DataFrame(ts_short_base),
+        'ts_ls_wins': pd.DataFrame(ts_ls_wins),
+        'ts_ls_base': pd.DataFrame(ts_ls_base),
+        'ts_bias_long': pd.DataFrame(ts_bias_long),
+        'ts_bias_short': pd.DataFrame(ts_bias_short),
+        'ts_bias_ls': pd.DataFrame(ts_bias_ls),
     }
 
     if mktb is not None and len(alpha_mean_rows) > 0:
@@ -558,12 +596,14 @@ def main(data: pd.DataFrame, mktb: pd.Series = None):
     Returns
     -------
     dict
-        Dictionary with results for each (tail, rating) combination:
-        {
-            'left_All': DataFrame, 'left_IG': DataFrame, 'left_NIG': DataFrame,
-            'right_All': DataFrame, 'right_IG': DataFrame, 'right_NIG': DataFrame,
-            'left_All_alpha': DataFrame, ...  # Alpha tables if mktb available
-        }
+        Dictionary with:
+        - Display tables: 'left_All', 'left_IG', 'left_NIG', 'right_All', etc.
+        - Alpha tables: 'left_All_alpha', etc. (if mktb available)
+        - Time series DataFrames for each (tail, rating):
+            'ts_left_All': dict with keys 'long_wins', 'long_base', 'short_wins',
+                           'short_base', 'ls_wins', 'ls_base', 'bias_long',
+                           'bias_short', 'bias_ls'
+            Each value is a DataFrame with columns = factor names, index = dates
     """
     print()
     print("=" * 100)
@@ -677,7 +717,32 @@ def main(data: pd.DataFrame, mktb: pd.Series = None):
             print_alpha_table(results_right, title)
             all_results[f'right_{rating_label}_alpha'] = build_alpha_display_table(results_right)
 
-    # Clean up raw results from output dict
+    # =========================================================================
+    # EXTRACT TIME SERIES DATAFRAMES
+    # =========================================================================
+    # Collect time series from each (tail, rating) combination
+    # Keys: 'ts_{tail}_{rating}' -> dict of DataFrames
+    ts_keys = ['ts_long_wins', 'ts_long_base', 'ts_short_wins', 'ts_short_base',
+               'ts_ls_wins', 'ts_ls_base', 'ts_bias_long', 'ts_bias_short', 'ts_bias_ls']
+
+    for tail in ['left', 'right']:
+        for rating in ratings:
+            rating_label = rating_labels[rating]
+            raw_key = f'{tail}_{rating_label}_raw'
+
+            if raw_key in all_results:
+                raw = all_results[raw_key]
+                # Store each time series type under a descriptive key
+                ts_dict = {}
+                for ts_key in ts_keys:
+                    if ts_key in raw and not raw[ts_key].empty:
+                        # Rename key to shorter form: 'ts_long_wins' -> 'long_wins'
+                        short_key = ts_key.replace('ts_', '')
+                        ts_dict[short_key] = raw[ts_key]
+
+                all_results[f'ts_{tail}_{rating_label}'] = ts_dict
+
+    # Clean up raw results from output dict (keep ts_ keys)
     keys_to_remove = [k for k in all_results if k.endswith('_raw')]
     for k in keys_to_remove:
         del all_results[k]
@@ -739,9 +804,46 @@ if __name__ == "__main__":
     all_results = main(test_data, mktb=mktb_test)
 
     print("\n" + "=" * 60)
-    print("RAW DATAFRAMES (for inspection)")
+    print("DISPLAY TABLES (for inspection)")
     print("=" * 60)
-    for key, df in all_results.items():
-        if df is not None and not df.empty:
+    for key, val in all_results.items():
+        if key.startswith('ts_'):
+            continue  # Skip time series for this section
+        if isinstance(val, pd.DataFrame) and not val.empty:
             print(f"\n{key}:")
-            print(df.to_string(index=False))
+            print(val.to_string(index=False))
+
+    print("\n" + "=" * 60)
+    print("TIME SERIES DATAFRAMES (for inspection)")
+    print("=" * 60)
+    for key, val in all_results.items():
+        if key.startswith('ts_'):
+            print(f"\n{key}:")
+            if isinstance(val, dict):
+                for ts_name, ts_df in val.items():
+                    if isinstance(ts_df, pd.DataFrame) and not ts_df.empty:
+                        print(f"  {ts_name}: shape={ts_df.shape}, columns={list(ts_df.columns)}")
+                        print(f"    Date range: {ts_df.index.min()} to {ts_df.index.max()}")
+                        print(f"    Sample (first 3 rows):")
+                        print(ts_df.head(3).to_string())
+                        print()
+
+    print("\n" + "=" * 60)
+    print("USAGE EXAMPLE: Computing bias from time series")
+    print("=" * 60)
+    print("""
+    # Access time series for left-tail, All bonds
+    ts = all_results['ts_left_All']
+
+    # Get long-short returns
+    ls_wins = ts['ls_wins']      # Winsorized L-S returns (DataFrame)
+    ls_base = ts['ls_base']      # Baseline L-S returns (DataFrame)
+
+    # Bias = winsorized - baseline
+    ls_bias = ls_wins - ls_base  # Same as ts['bias_ls']
+
+    # Or access individual factor
+    b_dunc_wins = ts['ls_wins']['b_dunc']
+    b_dunc_base = ts['ls_base']['b_dunc']
+    b_dunc_bias = b_dunc_wins - b_dunc_base
+    """)
