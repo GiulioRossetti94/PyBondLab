@@ -15,6 +15,9 @@ Where:
 - μ = Actual mean (baseline, no filter)
 - Bias = μ̃ - μ
 - Values in parentheses = NW t-statistics
+
+Alpha tables show the same structure but with regression alphas (intercepts from
+regressing factor returns on mktb).
 """
 
 import sys
@@ -23,6 +26,7 @@ sys.path.insert(0, '.')
 import numpy as np
 import pandas as pd
 import warnings
+from pathlib import Path
 
 from PyBondLab import DataUncertaintyAnalysis
 
@@ -39,6 +43,11 @@ except ImportError:
 # =============================================================================
 # Configuration
 # =============================================================================
+
+# --- Paths ---
+BASE_REPO = Path(r"C:\Users\ASUS\Documents\GitHub\trace-data-pipeline-private")
+BASE_STAGE2 = BASE_REPO / "stage2"
+STAGE0_DATE_STAMP = "20251126"
 
 # Signal groups
 LEFT_TAIL_SIGNALS = [
@@ -64,6 +73,34 @@ COLUMN_MAPPING = {
 # Analysis settings
 HOLDING_PERIOD = 1
 NUM_PORTFOLIOS = 10
+
+
+# =============================================================================
+# Factor Loading
+# =============================================================================
+
+def load_mktb_factor() -> pd.Series:
+    """
+    Load the market factor (mktb) from the BBW factors parquet file.
+
+    Returns
+    -------
+    pd.Series
+        mktb factor with date index
+    """
+    factor_path = BASE_STAGE2 / "data" / f"bbw_factors_{STAGE0_DATE_STAMP}.parquet"
+
+    if not factor_path.exists():
+        print(f"  Warning: Factor file not found: {factor_path}")
+        return pd.Series(dtype=float)
+
+    dff = pd.read_parquet(factor_path).reset_index()
+    dff["date"] = pd.to_datetime(dff["date"])
+    dff = dff.set_index("date").sort_index()
+    mktb = dff['MKTB'].copy()
+    mktb.name = 'mktb'
+
+    return mktb
 
 
 # =============================================================================
@@ -103,12 +140,53 @@ def compute_nw_tstat(series: pd.Series) -> float:
     return np.nan
 
 
+def compute_alpha(y: pd.Series, mktb: pd.Series) -> tuple:
+    """
+    Compute alpha (intercept) from regressing y on mktb.
+
+    Uses Newey-West HAC standard errors.
+
+    Parameters
+    ----------
+    y : pd.Series
+        Dependent variable (factor returns)
+    mktb : pd.Series
+        Market factor
+
+    Returns
+    -------
+    tuple
+        (alpha, t_stat) - both as floats
+    """
+    if not HAS_STATSMODELS:
+        return np.nan, np.nan
+
+    # Align series by date
+    df = pd.DataFrame({'y': y, 'mktb': mktb}).dropna()
+
+    if len(df) < 10:
+        return np.nan, np.nan
+
+    T = len(df)
+    lag = int(T ** 0.25)
+
+    try:
+        X = add_constant(df['mktb'].values)
+        model = OLS(df['y'].values, X).fit(cov_type='HAC', cov_kwds={'maxlags': lag})
+        alpha = model.params[0]
+        t_stat = model.tvalues[0]
+        return alpha, t_stat
+    except Exception:
+        return np.nan, np.nan
+
+
 def run_analysis(
     data: pd.DataFrame,
     signals: list,
     wins_location: str,
     wins_level: float = 99.5,
     rating: str = None,
+    mktb: pd.Series = None,
     verbose: bool = True
 ) -> dict:
     """
@@ -126,13 +204,16 @@ def run_analysis(
         Winsorization percentile (e.g., 99.5 for 0.5% tail)
     rating : str, optional
         Rating filter: 'IG', 'NIG', or None for all bonds
+    mktb : pd.Series, optional
+        Market factor for alpha computation. If None, alpha tables not computed.
     verbose : bool
         Print progress
 
     Returns
     -------
     dict
-        Dictionary with 'means' and 'tstats' DataFrames
+        Dictionary with 'means', 'tstats' DataFrames for returns,
+        and 'alpha_means', 'alpha_tstats' DataFrames for alphas (if mktb provided)
     """
     # Filter to signals that exist in data
     available_signals = [s for s in signals if s in data.columns]
@@ -173,6 +254,8 @@ def run_analysis(
     # Build results tables (means and t-stats separately)
     mean_rows = []
     tstat_rows = []
+    alpha_mean_rows = []
+    alpha_tstat_rows = []
 
     # Rating suffix for column names
     rating_suffix = f"_{rating}" if rating else ""
@@ -240,10 +323,66 @@ def run_analysis(
         }
         tstat_rows.append(tstat_row)
 
-    return {
+        # Alpha computation (if mktb provided)
+        if mktb is not None and len(mktb) > 0:
+            # Compute alphas for each leg
+            alpha_long_wins, t_long_wins = compute_alpha(vw_long_wins, mktb)
+            alpha_long_base, t_long_base = compute_alpha(vw_long_base, mktb)
+            alpha_short_wins, t_short_wins = compute_alpha(vw_short_wins, mktb)
+            alpha_short_base, t_short_base = compute_alpha(vw_short_base, mktb)
+            alpha_ls_wins, t_ls_wins = compute_alpha(vw_ls_wins, mktb)
+            alpha_ls_base, t_ls_base = compute_alpha(vw_ls_base, mktb)
+
+            # Alpha bias = alpha_wins - alpha_base
+            alpha_bias_long = alpha_long_wins - alpha_long_base if not (np.isnan(alpha_long_wins) or np.isnan(alpha_long_base)) else np.nan
+            alpha_bias_short = alpha_short_wins - alpha_short_base if not (np.isnan(alpha_short_wins) or np.isnan(alpha_short_base)) else np.nan
+            alpha_bias_ls = alpha_ls_wins - alpha_ls_base if not (np.isnan(alpha_ls_wins) or np.isnan(alpha_ls_base)) else np.nan
+
+            # For bias t-stat, compute from bias series regression
+            _, t_bias_long = compute_alpha(bias_long, mktb)
+            _, t_bias_short = compute_alpha(bias_short, mktb)
+            _, t_bias_ls = compute_alpha(bias_ls, mktb)
+
+            # Alpha means row
+            alpha_mean_row = {
+                'Factor': signal,
+                'α̃_L': round(alpha_long_wins * 100, 2) if not np.isnan(alpha_long_wins) else np.nan,
+                'α_L': round(alpha_long_base * 100, 2) if not np.isnan(alpha_long_base) else np.nan,
+                'Bias_L': round(alpha_bias_long * 100, 2) if not np.isnan(alpha_bias_long) else np.nan,
+                'α̃_S': round(alpha_short_wins * 100, 2) if not np.isnan(alpha_short_wins) else np.nan,
+                'α_S': round(alpha_short_base * 100, 2) if not np.isnan(alpha_short_base) else np.nan,
+                'Bias_S': round(alpha_bias_short * 100, 2) if not np.isnan(alpha_bias_short) else np.nan,
+                'α̃_LS': round(alpha_ls_wins * 100, 2) if not np.isnan(alpha_ls_wins) else np.nan,
+                'α_LS': round(alpha_ls_base * 100, 2) if not np.isnan(alpha_ls_base) else np.nan,
+                'Bias_LS': round(alpha_bias_ls * 100, 2) if not np.isnan(alpha_bias_ls) else np.nan,
+            }
+            alpha_mean_rows.append(alpha_mean_row)
+
+            # Alpha t-stats row
+            alpha_tstat_row = {
+                'Factor': '',
+                'α̃_L': f"({t_long_wins:.2f})" if not np.isnan(t_long_wins) else "(nan)",
+                'α_L': f"({t_long_base:.2f})" if not np.isnan(t_long_base) else "(nan)",
+                'Bias_L': f"({t_bias_long:.2f})" if not np.isnan(t_bias_long) else "(nan)",
+                'α̃_S': f"({t_short_wins:.2f})" if not np.isnan(t_short_wins) else "(nan)",
+                'α_S': f"({t_short_base:.2f})" if not np.isnan(t_short_base) else "(nan)",
+                'Bias_S': f"({t_bias_short:.2f})" if not np.isnan(t_bias_short) else "(nan)",
+                'α̃_LS': f"({t_ls_wins:.2f})" if not np.isnan(t_ls_wins) else "(nan)",
+                'α_LS': f"({t_ls_base:.2f})" if not np.isnan(t_ls_base) else "(nan)",
+                'Bias_LS': f"({t_bias_ls:.2f})" if not np.isnan(t_bias_ls) else "(nan)",
+            }
+            alpha_tstat_rows.append(alpha_tstat_row)
+
+    result = {
         'means': pd.DataFrame(mean_rows),
         'tstats': pd.DataFrame(tstat_rows)
     }
+
+    if mktb is not None and len(alpha_mean_rows) > 0:
+        result['alpha_means'] = pd.DataFrame(alpha_mean_rows)
+        result['alpha_tstats'] = pd.DataFrame(alpha_tstat_rows)
+
+    return result
 
 
 def build_display_table(results: dict) -> pd.DataFrame:
@@ -275,7 +414,7 @@ def build_display_table(results: dict) -> pd.DataFrame:
 
 
 def print_table(results: dict, title: str):
-    """Print formatted table to console."""
+    """Print formatted return table to console."""
     print()
     print("=" * 100)
     print(title)
@@ -327,7 +466,85 @@ def print_table(results: dict, title: str):
     print()
 
 
-def main(data: pd.DataFrame):
+def build_alpha_display_table(results: dict) -> pd.DataFrame:
+    """
+    Build a display table for alpha results with means and t-stats interleaved.
+    """
+    if 'alpha_means' not in results or results['alpha_means'].empty:
+        return pd.DataFrame()
+
+    means_df = results['alpha_means']
+    tstats_df = results['alpha_tstats']
+
+    # Interleave rows
+    rows = []
+    for i in range(len(means_df)):
+        mean_row = means_df.iloc[i].to_dict()
+        rows.append(mean_row)
+        tstat_row = tstats_df.iloc[i].to_dict()
+        rows.append(tstat_row)
+
+    return pd.DataFrame(rows)
+
+
+def print_alpha_table(results: dict, title: str):
+    """Print formatted alpha table to console."""
+    print()
+    print("=" * 100)
+    print(title)
+    print("=" * 100)
+    print()
+
+    if 'alpha_means' not in results or results['alpha_means'].empty:
+        print("  No alpha results to display (mktb factor not available).")
+        return
+
+    print("  Legend: α̃ = Winsorized alpha (%), α = Baseline alpha (%), Bias = α̃ - α (%)")
+    print("          Alpha = intercept from regressing factor returns on mktb")
+    print("          Values in parentheses are NW t-statistics")
+    print()
+
+    # Column order for alpha
+    cols = ['Factor', 'α̃_L', 'α_L', 'Bias_L', 'α̃_S', 'α_S', 'Bias_S', 'α̃_LS', 'α_LS', 'Bias_LS']
+
+    # Build display table
+    display_df = build_alpha_display_table(results)
+
+    # Print header
+    header = "  {:12s}  {:>8s} {:>8s} {:>8s}   {:>8s} {:>8s} {:>8s}   {:>8s} {:>8s} {:>8s}".format(
+        '', '──Long──', '', '', '──Short─', '', '', '───L-S──', '', ''
+    )
+    print(header)
+
+    col_header = "  {:12s}  {:>8s} {:>8s} {:>8s}   {:>8s} {:>8s} {:>8s}   {:>8s} {:>8s} {:>8s}".format(
+        'Factor', 'α̃_L', 'α_L', 'Bias_L', 'α̃_S', 'α_S', 'Bias_S', 'α̃_LS', 'α_LS', 'Bias_LS'
+    )
+    print(col_header)
+    print("  " + "-" * 97)
+
+    # Print rows
+    for i, row in display_df.iterrows():
+        factor = row['Factor'] if row['Factor'] else ''
+        values = []
+        for col in cols[1:]:  # Skip Factor
+            val = row[col]
+            if isinstance(val, (int, float)):
+                if pd.isna(val):
+                    values.append("     nan")
+                else:
+                    values.append(f"{val:8.2f}")
+            else:
+                values.append(f"{val:>8s}")
+
+        line = "  {:12s}  {:>8s} {:>8s} {:>8s}   {:>8s} {:>8s} {:>8s}   {:>8s} {:>8s} {:>8s}".format(
+            factor, *values
+        )
+        print(line)
+
+    print()
+
+
+def main(data: pd.DataFrame, mktb: pd.Series = None):
     """
     Main analysis function.
 
@@ -335,14 +552,17 @@ def main(data: pd.DataFrame):
     ----------
     data : pd.DataFrame
         Bond panel data with required columns
+    mktb : pd.Series, optional
+        Market factor for alpha computation. If None, will try to load from file.
 
     Returns
     -------
     dict
         Dictionary with results for each (tail, rating) combination:
         {
-            'left_all': DataFrame, 'left_IG': DataFrame, 'left_NIG': DataFrame,
-            'right_all': DataFrame, 'right_IG': DataFrame, 'right_NIG': DataFrame
+            'left_All': DataFrame, 'left_IG': DataFrame, 'left_NIG': DataFrame,
+            'right_All': DataFrame, 'right_IG': DataFrame, 'right_NIG': DataFrame,
+            'left_All_alpha': DataFrame, ...  # Alpha tables if mktb available
         }
     """
     print()
@@ -356,6 +576,16 @@ def main(data: pd.DataFrame):
     print(f"  Weighting: VW only")
     print(f"  Ratings: All, IG, NIG")
     print()
+
+    # Load mktb factor if not provided
+    if mktb is None:
+        print("Loading mktb factor...")
+        mktb = load_mktb_factor()
+        if len(mktb) > 0:
+            print(f"  Loaded mktb factor: {len(mktb)} observations ({mktb.index.min()} to {mktb.index.max()})")
+        else:
+            print("  Warning: mktb factor not available. Alpha tables will be skipped.")
+        print()
 
     # Apply column mapping
     data_mapped = data.copy()
@@ -372,6 +602,14 @@ def main(data: pd.DataFrame):
 
     all_results = {}
 
+    # =========================================================================
+    # RETURN TABLES
+    # =========================================================================
+    print()
+    print("#" * 100)
+    print("# PART 1: RETURN BIAS TABLES")
+    print("#" * 100)
+
     # Run left-tail analysis for each rating
     for rating in ratings:
         rating_label = rating_labels[rating]
@@ -384,11 +622,14 @@ def main(data: pd.DataFrame):
             wins_location='left',
             wins_level=99.5,  # 99.5% left = 0.5% left tail
             rating=rating,
+            mktb=mktb,
             verbose=True
         )
         title = f"LEFT-TAIL ASYMMETRIC RETURN WINSORIZATION (0.50%) - {rating_label} Bonds"
         print_table(results_left, title)
         all_results[f'left_{rating_label}'] = build_display_table(results_left)
+        # Store raw results for alpha tables
+        all_results[f'left_{rating_label}_raw'] = results_left
 
     # Run right-tail analysis for each rating
     for rating in ratings:
@@ -402,11 +643,44 @@ def main(data: pd.DataFrame):
             wins_location='right',
             wins_level=99.5,  # 99.5% right = 99.5% right tail
             rating=rating,
+            mktb=mktb,
             verbose=True
         )
         title = f"RIGHT-TAIL ASYMMETRIC RETURN WINSORIZATION (99.50%) - {rating_label} Bonds"
         print_table(results_right, title)
         all_results[f'right_{rating_label}'] = build_display_table(results_right)
+        # Store raw results for alpha tables
+        all_results[f'right_{rating_label}_raw'] = results_right
+
+    # =========================================================================
+    # ALPHA TABLES
+    # =========================================================================
+    if mktb is not None and len(mktb) > 0:
+        print()
+        print("#" * 100)
+        print("# PART 2: ALPHA BIAS TABLES")
+        print("#" * 100)
+
+        # Left-tail alpha tables
+        for rating in ratings:
+            rating_label = rating_labels[rating]
+            results_left = all_results[f'left_{rating_label}_raw']
+            title = f"LEFT-TAIL ALPHA BIAS (0.50%) - {rating_label} Bonds"
+            print_alpha_table(results_left, title)
+            all_results[f'left_{rating_label}_alpha'] = build_alpha_display_table(results_left)
+
+        # Right-tail alpha tables
+        for rating in ratings:
+            rating_label = rating_labels[rating]
+            results_right = all_results[f'right_{rating_label}_raw']
+            title = f"RIGHT-TAIL ALPHA BIAS (99.50%) - {rating_label} Bonds"
+            print_alpha_table(results_right, title)
+            all_results[f'right_{rating_label}_alpha'] = build_alpha_display_table(results_right)
+
+    # Clean up raw results from output dict
+    keys_to_remove = [k for k in all_results if k.endswith('_raw')]
+    for k in keys_to_remove:
+        del all_results[k]
 
     return all_results
 
@@ -419,7 +693,7 @@ if __name__ == "__main__":
     print("\nThis script requires your data to be loaded.")
     print("Usage:")
     print("  from examples.winsorization_bias_analysis import main")
-    print("  df_left, df_right = main(your_data)")
+    print("  all_results = main(your_data)")
     print()
     print("Or modify the script to load your data directly.")
 
@@ -451,16 +725,23 @@ if __name__ == "__main__":
 
     test_data = pd.DataFrame(rows)
 
+    # Create synthetic mktb factor for testing
+    mktb_test = pd.Series(
+        np.random.normal(0.005, 0.03, n_dates),
+        index=dates,
+        name='mktb'
+    )
+
     # Override signal lists for test
     LEFT_TAIL_SIGNALS = ['b_dunc']
     RIGHT_TAIL_SIGNALS = ['mom3_1', 'mom6_1', 'mom12_1']
 
-    all_results = main(test_data)
+    all_results = main(test_data, mktb=mktb_test)
 
     print("\n" + "=" * 60)
     print("RAW DATAFRAMES (for inspection)")
     print("=" * 60)
     for key, df in all_results.items():
-        if not df.empty:
+        if df is not None and not df.empty:
             print(f"\n{key}:")
             print(df.to_string(index=False))
