@@ -1146,11 +1146,19 @@ class DataUncertaintyAnalysis:
 
             if filter_type == 'price':
                 # Price filter: requires nested format [[left_levels], [right_levels]]
-                # e.g., [[1,2,5,10], [125,150,200]]
+                # or [[left_levels], [right_levels], 'zip'] for zip mode
+                # e.g., [[1,2,5,10], [125,150,200]] - generates all combinations
+                # e.g., [[1,2,5,10], [125,150,200,250], 'zip'] - generates zip pairs only
+                use_zip = False
+                if isinstance(levels, (list, tuple)) and len(levels) == 3 and levels[2] == 'zip':
+                    use_zip = True
+                    levels = levels[:2]  # Remove 'zip' marker
+
                 if not (isinstance(levels, (list, tuple)) and len(levels) == 2 and
                         isinstance(levels[0], (list, tuple)) and isinstance(levels[1], (list, tuple))):
                     raise ValueError(
                         f"Price filter requires nested format: [[left_levels], [right_levels]]\n"
+                        f"Or with zip mode: [[left_levels], [right_levels], 'zip']\n"
                         f"Example: 'price': [[1, 5, 10], [125, 150, 200]]\n"
                         f"Got: {levels}"
                     )
@@ -1174,14 +1182,29 @@ class DataUncertaintyAnalysis:
                         location='right'
                     ))
 
-                # Both configs (all combinations)
-                for left_lvl in left_levels:
-                    for right_lvl in right_levels:
+                # Both configs
+                if use_zip:
+                    # Zip mode: pair corresponding elements (must have same length)
+                    if len(left_levels) != len(right_levels):
+                        raise ValueError(
+                            f"Price filter with 'zip' mode requires equal-length lists.\n"
+                            f"Got {len(left_levels)} left levels and {len(right_levels)} right levels."
+                        )
+                    for left_lvl, right_lvl in zip(left_levels, right_levels):
                         configs.append(FilterConfig(
                             filter_type='price',
                             level=[left_lvl, right_lvl],
                             location='both'
                         ))
+                else:
+                    # Product mode (default): all combinations
+                    for left_lvl in left_levels:
+                        for right_lvl in right_levels:
+                            configs.append(FilterConfig(
+                                filter_type='price',
+                                level=[left_lvl, right_lvl],
+                                location='both'
+                            ))
 
             elif filter_type == 'wins':
                 # Wins: tuple of (percentile, location)
