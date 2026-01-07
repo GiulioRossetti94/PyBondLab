@@ -1836,8 +1836,11 @@ class DataUncertaintyAnalysis:
                 print(f"  Holding periods: {self.holding_periods}")
         else:
             n_signals = len(self.signals)
+            total_configs = n_signals * n_ratings * n_filters * n_hps
             if self.verbose:
-                print(f"DataUncertaintyAnalysis FAST PATH: {n_signals} signals × {n_ratings} ratings × {n_filters} filters × {n_hps} HPs")
+                print(f"DataUncertaintyAnalysis FAST PATH")
+                print(f"  {n_signals} signals x {n_filters} filters x {n_hps} HPs = {total_configs} configurations")
+                print(f"  Processing {n_signals} signals sequentially")
                 print(f"  Signals: {self.signals}")
                 print(f"  Ratings: {self.ratings}")
                 print(f"  Holding periods: {self.holding_periods}")
@@ -1880,7 +1883,13 @@ class DataUncertaintyAnalysis:
                 all_config_rows.extend(result['configs'])
         else:
             # Route to pre-computed signal path
-            for signal_col in self.signals:
+            n_signals = len(self.signals)
+            for sig_idx, signal_col in enumerate(self.signals):
+                sig_start = time.time()
+
+                if self.verbose:
+                    print(f"\n--- Signal {sig_idx + 1}/{n_signals}: {signal_col} ---")
+
                 for rating_cat in self.ratings:
                     result = self._fit_fast_single(signal_col, rating_cat)
 
@@ -1899,6 +1908,11 @@ class DataUncertaintyAnalysis:
                     all_ew_short_ep.update(result['ew_short_ep'])
                     all_vw_short_ep.update(result['vw_short_ep'])
                     all_config_rows.extend(result['configs'])
+
+                if self.verbose:
+                    sig_elapsed = time.time() - sig_start
+                    progress_pct = (sig_idx + 1) / n_signals * 100
+                    print(f"  Signal {sig_idx + 1} complete: {sig_elapsed:.1f}s ({progress_pct:.1f}% done)")
 
         # Create DataFrames
         dates = self.data['date'].unique()
@@ -1921,7 +1935,12 @@ class DataUncertaintyAnalysis:
 
         elapsed = time.time() - t0
         if self.verbose:
-            print(f"BLAZING FAST PATH completed in {elapsed:.1f}s")
+            n_output_cols = len(all_ew_ea)
+            if use_strategy_path:
+                print(f"\nFAST PATH complete: {n_output_cols} configurations in {elapsed:.1f}s")
+            else:
+                print(f"\nFAST PATH complete: {len(self.signals)} signals in {elapsed:.1f}s")
+                print(f"  Total configurations: {n_output_cols}")
 
         return DataUncertaintyResults(
             ew_ex_ante=ew_ea,
