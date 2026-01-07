@@ -1720,6 +1720,102 @@ def compute_ranks_all_dates_fast(
 
 
 @njit(cache=True, parallel=True)
+def compute_ranks_with_custom_thresholds(
+    date_idx: np.ndarray,           # (n,) date index for each row
+    signal: np.ndarray,             # (n,) signal values to rank
+    custom_thresholds: np.ndarray,  # (n_dates, nport+1) pre-computed thresholds per date
+    n_dates: int,
+    nport: int
+) -> np.ndarray:
+    """
+    Compute portfolio ranks using pre-computed custom thresholds.
+
+    This function is used when custom breakpoints or breakpoint_universe_func
+    are specified. The thresholds are pre-computed in Python (using np.percentile)
+    and passed to this numba function.
+
+    Parameters
+    ----------
+    date_idx : np.ndarray
+        Date index (0-indexed) for each observation
+    signal : np.ndarray
+        Signal values to rank (NaN = excluded from ranking)
+    custom_thresholds : np.ndarray
+        Pre-computed thresholds per date, shape (n_dates, nport+1).
+        Each row: [-inf, thresh1, thresh2, ..., threshN]
+    n_dates : int
+        Total number of dates
+    nport : int
+        Number of portfolios
+
+    Returns
+    -------
+    np.ndarray
+        Portfolio rank (1-indexed) for each observation, NaN for missing signal
+    """
+    n = len(date_idx)
+    ranks = np.full(n, np.nan, dtype=np.float64)
+
+    # Count valid observations per date (excluding NaN signals)
+    counts = np.zeros(n_dates, dtype=np.int64)
+    for i in range(n):
+        d = date_idx[i]
+        if d >= 0 and d < n_dates and not np.isnan(signal[i]):
+            counts[d] += 1
+
+    # First pass: collect indices per date (serial - needed for setup)
+    date_starts = np.zeros(n_dates + 1, dtype=np.int64)
+    for d in range(n_dates):
+        date_starts[d + 1] = date_starts[d] + counts[d]
+
+    total_valid = date_starts[n_dates]
+    valid_indices = np.zeros(total_valid, dtype=np.int64)
+    valid_signals = np.zeros(total_valid, dtype=np.float64)
+
+    # Current position for each date
+    pos = np.zeros(n_dates, dtype=np.int64)
+    for d in range(n_dates):
+        pos[d] = date_starts[d]
+
+    # Fill valid indices and signals
+    for i in range(n):
+        d = date_idx[i]
+        if d >= 0 and d < n_dates and not np.isnan(signal[i]):
+            valid_indices[pos[d]] = i
+            valid_signals[pos[d]] = signal[i]
+            pos[d] += 1
+
+    # Process each date in parallel
+    for d in prange(n_dates):
+        start = date_starts[d]
+        end = date_starts[d + 1]
+        count = end - start
+
+        if count == 0:
+            continue
+
+        # Get signals and indices for this date
+        date_signals = valid_signals[start:end]
+        date_indices = valid_indices[start:end]
+
+        # Use pre-computed thresholds for this date
+        thresholds = custom_thresholds[d]
+
+        # Assign bins based on value > thres[p] AND value <= thres[p+1]
+        # (matching slow path's assign_bond_bins)
+        for i in range(count):
+            orig_idx = date_indices[i]
+            val = date_signals[i]
+
+            for p in range(nport):
+                if val > thresholds[p] and val <= thresholds[p + 1]:
+                    ranks[orig_idx] = p + 1
+                    break
+
+    return ranks
+
+
+@njit(cache=True, parallel=True)
 def compute_all_returns_ultrafast(
     ret_date_idx: np.ndarray,    # (n,) date index for return observations
     ret_id_idx: np.ndarray,      # (n,) bond ID index for return observations

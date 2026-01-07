@@ -68,6 +68,7 @@ from .numba_core import (
     align_ranks_staggered_fast,
     # Ultra-fast path (bypasses pandas)
     compute_ranks_all_dates_fast,
+    compute_ranks_with_custom_thresholds,
     compute_all_returns_ultrafast,
     compute_staggered_returns_ultrafast,
     build_vw_lookup_and_dynamic_weights,
@@ -1570,6 +1571,8 @@ class StrategyFormation:
         # TODO: Fix fast path to properly handle (formation_date, return_date) ID intersection
         if self.config.has_filters:
             return False
+        # Custom breakpoints and breakpoint_universe_func ARE NOW SUPPORTED in fast path
+        # Thresholds are pre-computed in Python and passed to numba kernel
         # Fast path supports both dynamic_weights=True and False:
         # - True: VW from day before return date (d-1)
         # - False: VW from formation date (different per cohort for hp>1)
@@ -1889,7 +1892,52 @@ class StrategyFormation:
 
         # Step 2: Compute ranks for ALL dates in parallel using numba
         # This replaces the slow per-date pandas groupby/rank operations
-        ranks = compute_ranks_all_dates_fast(date_idx, signal, TM, tot_nport)
+        # Check for custom breakpoints or breakpoint_universe_func
+        breakpoints = getattr(self.strategy, 'breakpoints', None)
+        bp_func = getattr(self.strategy, 'breakpoint_universe_func', None)
+
+        if breakpoints is not None or bp_func is not None:
+            # Pre-compute thresholds for each date using slow path's compute_thresholds
+            # This ensures exact match with the slow path
+            from .utils import compute_thresholds
+
+            if self.verbose:
+                if breakpoints is not None:
+                    print(f"  Custom breakpoints: {breakpoints}")
+                if bp_func is not None:
+                    print(f"  Custom breakpoint_universe_func: {bp_func}")
+
+            # Build threshold array: (TM, tot_nport+1)
+            custom_thresholds = np.full((TM, tot_nport + 1), np.nan, dtype=np.float64)
+
+            for d_idx, date_t in enumerate(self.datelist):
+                # Get data for this date
+                date_mask = data[ColumnNames.DATE] == date_t
+                date_data = data[date_mask].copy()
+
+                if len(date_data) == 0:
+                    continue
+
+                # Apply breakpoint_universe_func to get subset mask
+                subset_mask = None
+                if bp_func is not None:
+                    subset_mask = bp_func(date_data)
+
+                # Compute thresholds using slow path function
+                # This handles both int (num_portfolios) and list (custom breakpoints)
+                bp_arg = breakpoints if breakpoints is not None else tot_nport
+                thres = compute_thresholds(date_data, sort_var_main, bp_arg, subset=subset_mask)
+
+                # Store thresholds for this date
+                custom_thresholds[d_idx, :] = thres
+
+            # Use custom thresholds for ranking
+            ranks = compute_ranks_with_custom_thresholds(
+                date_idx, signal, custom_thresholds, TM, tot_nport
+            )
+        else:
+            # Standard case: equal percentiles computed in numba
+            ranks = compute_ranks_all_dates_fast(date_idx, signal, TM, tot_nport)
 
         # Step 3: Prepare VW data for portfolio weighting
         # Build VW lookup table: vw_lookup[date * n_ids + bond_id] = VW
