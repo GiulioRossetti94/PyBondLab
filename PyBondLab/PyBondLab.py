@@ -1918,6 +1918,33 @@ class StrategyFormation:
                 if len(date_data) == 0:
                     continue
 
+                # BUG FIX: Apply the same rating/subset_filter to date_data before
+                # computing thresholds. This ensures thresholds are computed on the
+                # same filtered universe as the signal (which was NaN-masked earlier).
+                # Without this, thresholds are based on ALL data but signal only has
+                # values for filtered data, causing mismatch and NaN assignments.
+                if self.rating is not None or self.subset_filter is not None:
+                    date_filter_mask = np.ones(len(date_data), dtype=np.bool_)
+
+                    if self.rating is not None:
+                        rating_vals = date_data[ColumnNames.RATING].values
+                        if isinstance(self.rating, str):
+                            min_r, max_r = get_rating_bounds(self.rating)
+                        else:
+                            min_r, max_r = self.rating
+                        date_filter_mask &= (rating_vals >= min_r) & (rating_vals <= max_r)
+
+                    if self.subset_filter is not None:
+                        for col, (min_val, max_val) in self.subset_filter.items():
+                            col_vals = date_data[col].values
+                            date_filter_mask &= (col_vals >= min_val) & (col_vals <= max_val)
+
+                    # Filter date_data to match the signal masking
+                    date_data = date_data[date_filter_mask]
+
+                    if len(date_data) == 0:
+                        continue
+
                 # Apply breakpoint_universe_func to get subset mask
                 subset_mask = None
                 if bp_func is not None:
