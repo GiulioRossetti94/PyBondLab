@@ -91,6 +91,35 @@ except ImportError as e:
     print(f"Warning: Could not import extract_panel: {e}")
     extract_panel = None
 
+# Specification validator
+try:
+    from .spec_validator import (
+        validate_specs,
+        SpecificationValidator,
+        ValidationResult,
+        generate_spec_list,
+        get_valid_spec_list,
+        filter_spec_list,
+    )
+except ImportError as e:
+    print(f"Warning: Could not import spec_validator: {e}")
+    validate_specs = SpecificationValidator = ValidationResult = None
+    generate_spec_list = get_valid_spec_list = filter_spec_list = None
+
+# Fast anomaly assayer (numba-optimized)
+try:
+    from .anomaly_assay_fast import assay_anomaly_fast, AnomalyAssayResult
+except ImportError as e:
+    print(f"Warning: Could not import anomaly_assay_fast: {e}")
+    assay_anomaly_fast = AnomalyAssayResult = None
+
+# Batch anomaly assayer
+try:
+    from .batch_assay import BatchAssayAnomaly, BatchAssayResults, batch_assay_anomaly
+except ImportError as e:
+    print(f"Warning: Could not import batch_assay: {e}")
+    BatchAssayAnomaly = BatchAssayResults = batch_assay_anomaly = None
+
 __version__ = '0.2.0'
 __all__ = [
     'StrategyFormation',
@@ -115,5 +144,16 @@ __all__ = [
     'DataUncertaintyResults',
     'NamingConfig',
     'extract_panel',
+    'validate_specs',
+    'SpecificationValidator',
+    'ValidationResult',
+    'generate_spec_list',
+    'get_valid_spec_list',
+    'filter_spec_list',
+    'assay_anomaly_fast',
+    'AnomalyAssayResult',
+    'BatchAssayAnomaly',
+    'BatchAssayResults',
+    'batch_assay_anomaly',
 ]
 name = 'PyBondLab'
