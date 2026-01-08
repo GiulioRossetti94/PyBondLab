@@ -714,6 +714,7 @@ class StrategyFormation:
 
         # Vectorized, deterministic ID mapping
         codes, uniques = pd.factorize(self.data[ColumnNames.ID], sort=True)
+        uniques = np.asarray(uniques)  # Strip categorical metadata to fix ID encoding bug
         self.data[ColumnNames.ID] = codes.astype(np.int64) + 1
         self.data_raw[ColumnNames.ID] = pd.Categorical(
             self.data_raw[ColumnNames.ID],
