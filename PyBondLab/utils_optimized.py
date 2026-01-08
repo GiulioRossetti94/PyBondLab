@@ -480,7 +480,7 @@ def create_subset_mask(
         mask = subset_function(data)
         if not isinstance(mask, pd.Series):
             mask = pd.Series(mask, index=data.index)
-        if mask.dtype != bool:
+        if not pd.api.types.is_bool_dtype(mask):
             raise ValueError("subset_function must return a boolean Series")
         return mask
 
