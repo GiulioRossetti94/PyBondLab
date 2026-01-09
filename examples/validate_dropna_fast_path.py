@@ -109,14 +109,14 @@ def test_numba_kernel_directly():
 
 
 def test_ltreversal_kernel():
-    """Test LTreversal kernel with drop_na."""
+    """Test LTreversal kernel with drop_na using realistic parameters."""
     print("\n" + "=" * 60)
-    print("TEST 2: LTreversal Kernel Test")
+    print("TEST 2: LTreversal Kernel Test (lookback=48, skip=12)")
     print("=" * 60)
 
-    # Create simple test data
-    n_bonds = 3
-    n_dates = 15
+    # Create test data with enough history for lookback=48
+    n_bonds = 5
+    n_dates = 72  # 6 years of monthly data
     n_obs = n_bonds * n_dates
 
     id_idx = np.repeat(np.arange(n_bonds), n_dates)
@@ -125,18 +125,17 @@ def test_ltreversal_kernel():
     np.random.seed(42)
     ret = np.random.randn(n_obs) * 0.02
 
-    # Inject some NaNs
-    ret[0 * n_dates + 5] = np.nan
-    ret[1 * n_dates + 3] = np.nan
-    ret[1 * n_dates + 7] = np.nan
-    ret[2 * n_dates + 2] = np.nan
-    ret[2 * n_dates + 8] = np.nan
-    ret[2 * n_dates + 10] = np.nan
+    # Inject ~10% NaNs scattered throughout
+    n_nans = int(n_obs * 0.10)
+    nan_positions = np.random.choice(n_obs, n_nans, replace=False)
+    for pos in nan_positions:
+        ret[pos] = np.nan
 
     logret = np.log(1 + ret).reshape(-1, 1)
 
-    lookback = 6  # LT reversal uses longer lookback
-    skip = 1
+    # LTreversal with standard parameters: 48-month lookback, 12-month skip
+    lookback = 48
+    skip = 12
 
     signals_default = compute_ltreversal_signals_panel(logret, bond_starts, lookback, skip)[:, 0]
     signals_dropna = compute_ltreversal_signals_panel_dropna(logret, bond_starts, lookback, skip)[:, 0]
@@ -144,11 +143,12 @@ def test_ltreversal_kernel():
     n_valid_default = np.sum(~np.isnan(signals_default))
     n_valid_dropna = np.sum(~np.isnan(signals_dropna))
 
-    print(f"\nLookback={lookback}, Skip={skip}")
-    print(f"Valid signals:")
-    print(f"  Default: {n_valid_default}")
-    print(f"  drop_na: {n_valid_dropna}")
-    print(f"  Improvement: +{n_valid_dropna - n_valid_default} signals")
+    print(f"\nLTreversal(lookback_period={lookback}, skip={skip})")
+    print(f"Data: {n_bonds} bonds × {n_dates} months, {n_nans} NaN returns ({100*n_nans/n_obs:.1f}%)")
+    print(f"\nValid signals:")
+    print(f"  Default (drop_na=False): {n_valid_default}")
+    print(f"  drop_na=True:            {n_valid_dropna}")
+    print(f"  Improvement:             +{n_valid_dropna - n_valid_default} signals")
 
     assert n_valid_dropna >= n_valid_default, "drop_na should produce at least as many signals"
 
@@ -157,15 +157,16 @@ def test_ltreversal_kernel():
 
 
 def test_data_uncertainty_fast_path():
-    """Test DataUncertaintyAnalysis with drop_na via fast path."""
+    """Test DataUncertaintyAnalysis with drop_na via fast path using LTreversal."""
     print("\n" + "=" * 60)
-    print("TEST 3: DataUncertaintyAnalysis Fast Path Test")
+    print("TEST 3: DataUncertaintyAnalysis Fast Path Test (LTreversal)")
     print("=" * 60)
 
     # Generate synthetic data with some NaN returns
+    # Need longer history for LTreversal with lookback=48
     np.random.seed(42)
     data = generate_synthetic_data_fast(
-        n_dates=60,
+        n_dates=72,  # 6 years of monthly data
         n_bonds=300,
         seed=42,
         balanced_panel=False,
@@ -182,13 +183,12 @@ def test_data_uncertainty_fast_path():
     print(f"NaN returns: {data['ret'].isna().sum()} ({100*data['ret'].isna().mean():.1f}%)")
 
     # Test with drop_na=False (default)
-    print("\n--- Running with drop_na=False (default) ---")
-    mom_default = Momentum(lookback_period=3, skip=1)
-    # Momentum class doesn't have drop_na attribute by default, so this tests default behavior
+    print("\n--- Running LTreversal with drop_na=False (default) ---")
+    ltr_default = LTreversal(lookback_period=48, skip=12)
 
     dua_default = DataUncertaintyAnalysis(
         data=data,
-        strategy=mom_default,
+        strategy=ltr_default,
         holding_periods=[1],
         num_portfolios=5,
         filters={'trim': [0.2]},
@@ -202,13 +202,13 @@ def test_data_uncertainty_fast_path():
     nan_default = ew_ea_default.isna().sum().sum()
     print(f"NaN in EW EA (default): {nan_default}")
 
-    # Test with drop_na=True
-    print("\n--- Running with drop_na=True ---")
-    mom_dropna = Momentum(lookback_period=3, skip=1, drop_na=True)
+    # Test with drop_na=True (RECOMMENDED FOR SPARSE DATA)
+    print("\n--- Running LTreversal with drop_na=True (recommended) ---")
+    ltr_dropna = LTreversal(lookback_period=48, skip=12, drop_na=True)
 
     dua_dropna = DataUncertaintyAnalysis(
         data=data,
-        strategy=mom_dropna,
+        strategy=ltr_dropna,
         holding_periods=[1],
         num_portfolios=5,
         filters={'trim': [0.2]},
