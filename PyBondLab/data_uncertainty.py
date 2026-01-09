@@ -2259,6 +2259,7 @@ class DataUncertaintyAnalysis:
             compute_ltreversal_signals_panel,
             compute_ltreversal_signals_panel_dropna,
             get_bond_boundaries,
+            expand_to_contiguous,
             compute_ranks_all_filters,
             build_rank_lookups_all_filters,
             compute_ls_returns_all_filters_hp1,
@@ -2271,6 +2272,7 @@ class DataUncertaintyAnalysis:
         skip = strategy.skip
         is_momentum = isinstance(strategy, Momentum)
         use_drop_na = getattr(strategy, 'drop_na', False)
+        use_enforce_contiguous = getattr(strategy, 'enforce_contiguous', False)
         strategy_name = 'momentum' if is_momentum else 'ltreversal'
 
         # Rating suffix for column names
@@ -2372,33 +2374,88 @@ class DataUncertaintyAnalysis:
         # Sort data by (ID, date) for bond-wise processing
         sort_idx = np.lexsort((date_idx, id_idx))
         id_sorted = id_idx[sort_idx]
+        date_sorted = date_idx[sort_idx]
         ret_sorted = ret[sort_idx]
         filtered_sorted = filtered_returns[sort_idx, :]
 
         # Get bond boundaries
         bond_starts = get_bond_boundaries(id_sorted)
 
-        # Compute baseline signal from ORIGINAL returns (used for most filters)
-        # Use drop_na kernel if strategy has drop_na=True
-        logret_baseline = np.log(ret_sorted + 1.0).reshape(-1, 1)
+        # =====================================================================
+        # Step 3a: Expand to contiguous if enforce_contiguous=True
+        # =====================================================================
+        if use_enforce_contiguous:
+            # Compute month indices from dates (integer months from min date)
+            # Convert dates to pandas Timestamps for .year/.month access
+            dates_ts = pd.to_datetime(dates)
+            min_month = dates_ts[0].year * 12 + dates_ts[0].month
+            month_idx_sorted = np.empty(len(ret_sorted), dtype=np.int64)
+            for i, d_idx in enumerate(date_sorted):
+                d = dates_ts[d_idx]
+                month_idx_sorted[i] = d.year * 12 + d.month - min_month
+
+            # Get VW for expansion (we also need to expand VW)
+            vw_sorted = vw[sort_idx]
+
+            # Expand to contiguous monthly grid
+            expanded_ret, expanded_vw, new_bond_starts = expand_to_contiguous(
+                month_idx_sorted, ret_sorted, vw_sorted, bond_starts
+            )
+
+            if self.verbose:
+                print(f"    Expanded data: {len(ret_sorted)} -> {len(expanded_ret)} rows "
+                      f"(+{100*(len(expanded_ret)/len(ret_sorted)-1):.1f}%)")
+
+            # Compute mapping from original sorted rows to expanded rows
+            # For each original row, find its position in the expanded array
+            n_bonds = len(bond_starts) - 1
+            orig_to_expanded = np.empty(len(ret_sorted), dtype=np.int64)
+            for b in range(n_bonds):
+                orig_start = bond_starts[b]
+                orig_end = bond_starts[b + 1]
+                exp_start = new_bond_starts[b]
+
+                if orig_end <= orig_start:
+                    continue
+
+                first_month = month_idx_sorted[orig_start]
+                for i in range(orig_start, orig_end):
+                    offset = month_idx_sorted[i] - first_month
+                    orig_to_expanded[i] = exp_start + offset
+
+            # Use expanded data for signal computation
+            logret_baseline = np.log(expanded_ret + 1.0).reshape(-1, 1)
+            signal_bond_starts = new_bond_starts
+        else:
+            # Standard path: use original data
+            logret_baseline = np.log(ret_sorted + 1.0).reshape(-1, 1)
+            signal_bond_starts = bond_starts
+
+        # Compute baseline signal from returns (expanded if enforce_contiguous)
         if is_momentum:
             if use_drop_na:
-                baseline_signal_sorted = compute_momentum_signals_panel_dropna(
-                    logret_baseline, bond_starts, lookback, skip
+                baseline_signal_computed = compute_momentum_signals_panel_dropna(
+                    logret_baseline, signal_bond_starts, lookback, skip
                 )[:, 0]
             else:
-                baseline_signal_sorted = compute_momentum_signals_panel(
-                    logret_baseline, bond_starts, lookback, skip
+                baseline_signal_computed = compute_momentum_signals_panel(
+                    logret_baseline, signal_bond_starts, lookback, skip
                 )[:, 0]
         else:
             if use_drop_na:
-                baseline_signal_sorted = compute_ltreversal_signals_panel_dropna(
-                    logret_baseline, bond_starts, lookback, skip
+                baseline_signal_computed = compute_ltreversal_signals_panel_dropna(
+                    logret_baseline, signal_bond_starts, lookback, skip
                 )[:, 0]
             else:
-                baseline_signal_sorted = compute_ltreversal_signals_panel(
-                    logret_baseline, bond_starts, lookback, skip
+                baseline_signal_computed = compute_ltreversal_signals_panel(
+                    logret_baseline, signal_bond_starts, lookback, skip
                 )[:, 0]
+
+        # Map signals back to original sorted rows if we expanded
+        if use_enforce_contiguous:
+            baseline_signal_sorted = baseline_signal_computed[orig_to_expanded]
+        else:
+            baseline_signal_sorted = baseline_signal_computed
 
         # Un-sort baseline signal
         unsort_idx = np.argsort(sort_idx)
@@ -2415,25 +2472,44 @@ class DataUncertaintyAnalysis:
                 # Wins: compute signal from EX-ANTE winsorized returns (historical thresholds)
                 wins_ea_ret = wins_ea_returns[f_idx]
                 wins_ea_ret_sorted = wins_ea_ret[sort_idx]
-                logret_wins = np.log(wins_ea_ret_sorted + 1.0).reshape(-1, 1)
+
+                # Expand wins returns if enforce_contiguous
+                if use_enforce_contiguous:
+                    # Expand wins returns to contiguous grid (reuse VW expansion)
+                    expanded_wins_ret, _, _ = expand_to_contiguous(
+                        month_idx_sorted, wins_ea_ret_sorted, vw_sorted, bond_starts
+                    )
+                    logret_wins = np.log(expanded_wins_ret + 1.0).reshape(-1, 1)
+                    wins_bond_starts = new_bond_starts
+                else:
+                    logret_wins = np.log(wins_ea_ret_sorted + 1.0).reshape(-1, 1)
+                    wins_bond_starts = bond_starts
+
                 if is_momentum:
                     if use_drop_na:
-                        wins_signal_sorted = compute_momentum_signals_panel_dropna(
-                            logret_wins, bond_starts, lookback, skip
+                        wins_signal_computed = compute_momentum_signals_panel_dropna(
+                            logret_wins, wins_bond_starts, lookback, skip
                         )[:, 0]
                     else:
-                        wins_signal_sorted = compute_momentum_signals_panel(
-                            logret_wins, bond_starts, lookback, skip
+                        wins_signal_computed = compute_momentum_signals_panel(
+                            logret_wins, wins_bond_starts, lookback, skip
                         )[:, 0]
                 else:
                     if use_drop_na:
-                        wins_signal_sorted = compute_ltreversal_signals_panel_dropna(
-                            logret_wins, bond_starts, lookback, skip
+                        wins_signal_computed = compute_ltreversal_signals_panel_dropna(
+                            logret_wins, wins_bond_starts, lookback, skip
                         )[:, 0]
                     else:
-                        wins_signal_sorted = compute_ltreversal_signals_panel(
-                            logret_wins, bond_starts, lookback, skip
+                        wins_signal_computed = compute_ltreversal_signals_panel(
+                            logret_wins, wins_bond_starts, lookback, skip
                         )[:, 0]
+
+                # Map back to original sorted rows if expanded
+                if use_enforce_contiguous:
+                    wins_signal_sorted = wins_signal_computed[orig_to_expanded]
+                else:
+                    wins_signal_sorted = wins_signal_computed
+
                 signals_all[:, f_idx] = wins_signal_sorted[unsort_idx]
             else:
                 # Baseline, trim, price, bounce: use baseline signal

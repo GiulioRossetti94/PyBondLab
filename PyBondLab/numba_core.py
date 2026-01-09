@@ -3032,6 +3032,109 @@ def compute_ls_returns_all_filters_staggered(
 
 
 # =============================================================================
+# Data Expansion for Contiguous Monthly Data
+# =============================================================================
+
+@njit(cache=True)
+def expand_to_contiguous(
+    month_idx: np.ndarray,
+    ret: np.ndarray,
+    vw: np.ndarray,
+    bond_starts: np.ndarray
+) -> tuple:
+    """
+    Expand non-contiguous panel data to contiguous monthly grid.
+
+    For each bond, fills in missing months with NaN values. This ensures
+    that the lookback window for signal computation covers actual calendar
+    months, not just consecutive rows.
+
+    Data must be sorted by (ID, date) before calling this function.
+
+    Parameters
+    ----------
+    month_idx : np.ndarray
+        Integer month index for each observation (0, 1, 2, ... from min date)
+        Shape: (n_obs,)
+    ret : np.ndarray
+        Returns for each observation. Shape: (n_obs,)
+    vw : np.ndarray
+        Value weights for each observation. Shape: (n_obs,)
+    bond_starts : np.ndarray
+        Array of indices where each bond starts, length (n_bonds + 1)
+        bond_starts[i] = start index of bond i
+        bond_starts[n_bonds] = n_obs (sentinel)
+
+    Returns
+    -------
+    out_ret : np.ndarray
+        Expanded returns with NaN for missing months. Shape: (n_expanded,)
+    out_vw : np.ndarray
+        Expanded value weights with NaN for missing months. Shape: (n_expanded,)
+    new_bond_starts : np.ndarray
+        New bond start indices for the expanded data. Shape: (n_bonds + 1,)
+
+    Notes
+    -----
+    Complexity: O(n_expanded) - single pass through data.
+
+    Example
+    -------
+    Original data for bond A (months 0, 1, 3 - missing month 2):
+        month_idx = [0, 1, 3]
+        ret = [0.01, 0.02, 0.03]
+
+    After expansion:
+        out_ret = [0.01, 0.02, NaN, 0.03]
+        (month 2 is filled with NaN)
+    """
+    n_bonds = len(bond_starts) - 1
+
+    # First pass: count total output rows needed
+    total_rows = 0
+    for b in range(n_bonds):
+        start = bond_starts[b]
+        end = bond_starts[b + 1]
+        if end > start:
+            first_month = month_idx[start]
+            last_month = month_idx[end - 1]
+            total_rows += last_month - first_month + 1
+
+    # Allocate output arrays (pre-filled with NaN)
+    out_ret = np.full(total_rows, np.nan, dtype=np.float64)
+    out_vw = np.full(total_rows, np.nan, dtype=np.float64)
+    new_bond_starts = np.zeros(n_bonds + 1, dtype=np.int64)
+
+    # Second pass: fill in data, leaving gaps as NaN
+    out_idx = 0
+    for b in range(n_bonds):
+        start = bond_starts[b]
+        end = bond_starts[b + 1]
+        new_bond_starts[b] = out_idx
+
+        if end <= start:
+            continue
+
+        first_month = month_idx[start]
+        last_month = month_idx[end - 1]
+
+        # Linear scan through months - O(output_rows) total
+        src_idx = start
+        for m in range(first_month, last_month + 1):
+            # Check if current source row matches this month
+            if src_idx < end and month_idx[src_idx] == m:
+                out_ret[out_idx] = ret[src_idx]
+                out_vw[out_idx] = vw[src_idx]
+                src_idx += 1
+            # else: gap -> stays NaN (already initialized)
+            out_idx += 1
+
+    new_bond_starts[n_bonds] = out_idx
+
+    return out_ret, out_vw, new_bond_starts
+
+
+# =============================================================================
 # Momentum/LTreversal Signal Computation (Panel-Based)
 # =============================================================================
 

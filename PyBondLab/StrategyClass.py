@@ -533,6 +533,7 @@ class Momentum(Strategy):
         no_gap: bool = False,
         fill_na: bool = False,
         drop_na: bool = False,
+        enforce_contiguous: bool = False,
         holding_period: Optional[int] = None,
         num_portfolios: Optional[int] = None,
         rebalance_frequency: Union[str, int] = 'monthly',
@@ -566,6 +567,12 @@ class Momentum(Strategy):
             lookback_period valid observations.
             If False, window is fixed at lookback_period rows.
             Note: drop_na=True and fill_na=True cannot both be True.
+        enforce_contiguous : bool, default False
+            If True, resample data to ensure contiguous monthly observations before
+            signal computation. Missing months are filled with NaN, which then
+            propagate to the signal (any NaN in window = NaN signal).
+            This ensures the lookback window covers actual calendar months.
+            Note: Cannot be used with drop_na=True.
         holding_period : int, optional
             Holding period for the strategy.
             Required when using with StrategyFormation.
@@ -600,6 +607,10 @@ class Momentum(Strategy):
         The no_gap parameter can be combined with any of the above:
         - no_gap=True: Also requires consecutive calendar months (no missing rows)
 
+        The enforce_contiguous parameter resamples data to monthly frequency:
+        - Missing months become NaN rows, ensuring lookback covers actual calendar months
+        - Cannot be combined with drop_na=True
+
         Examples
         --------
         # For DataUncertaintyAnalysis (hp and nport not needed):
@@ -607,6 +618,9 @@ class Momentum(Strategy):
 
         # For StrategyFormation (hp and nport required):
         >>> mom = Momentum(lookback_period=3, skip=1, holding_period=6, num_portfolios=5)
+
+        # With enforce_contiguous for sparse data:
+        >>> mom = Momentum(lookback_period=3, skip=1, enforce_contiguous=True)
         """
         # Handle backward compatibility: map old parameter names to new ones
         if K is not None:
@@ -623,6 +637,8 @@ class Momentum(Strategy):
         # Validate mutually exclusive options
         if fill_na and drop_na:
             raise ValueError("fill_na and drop_na cannot both be True. Choose one.")
+        if enforce_contiguous and drop_na:
+            raise ValueError("enforce_contiguous and drop_na cannot both be True. Choose one.")
 
         super().__init__(
             holding_period=holding_period,
@@ -640,6 +656,7 @@ class Momentum(Strategy):
         self.no_gap = no_gap
         self.fill_na = fill_na
         self.drop_na = drop_na
+        self.enforce_contiguous = enforce_contiguous
 
         if verbose:
             print(f"Formation period: {self.lookback_period} months")
@@ -650,6 +667,8 @@ class Momentum(Strategy):
                 print("Fill NA: Enabled (NaN returns treated as 0%)")
             if drop_na:
                 print("Drop NA: Enabled (skip NaN, use J valid returns)")
+            if enforce_contiguous:
+                print("Enforce Contiguous: Enabled (resample to monthly, fill gaps with NaN)")
             print("Sorting on: past returns")
     
     def compute_signal(self, data):
@@ -786,6 +805,7 @@ class LTreversal(Strategy):
         no_gap: bool = False,
         fill_na: bool = False,
         drop_na: bool = False,
+        enforce_contiguous: bool = False,
         holding_period: Optional[int] = None,
         num_portfolios: Optional[int] = None,
         rebalance_frequency: Union[str, int] = 'monthly',
@@ -818,6 +838,12 @@ class LTreversal(Strategy):
             lookback_period valid observations.
             If False, window is fixed at lookback_period rows.
             Note: drop_na=True and fill_na=True cannot both be True.
+        enforce_contiguous : bool, default False
+            If True, resample data to ensure contiguous monthly observations before
+            signal computation. Missing months are filled with NaN, which then
+            propagate to the signal (any NaN in window = NaN signal).
+            This ensures the lookback window covers actual calendar months.
+            Note: Cannot be used with drop_na=True.
         holding_period : int, optional
             Holding period for the strategy.
             Required when using with StrategyFormation.
@@ -846,6 +872,10 @@ class LTreversal(Strategy):
         The no_gap parameter can be combined with any of the above:
         - no_gap=True: Also requires consecutive calendar months (no missing rows)
 
+        The enforce_contiguous parameter resamples data to monthly frequency:
+        - Missing months become NaN rows, ensuring lookback covers actual calendar months
+        - Cannot be combined with drop_na=True
+
         Examples
         --------
         # For DataUncertaintyAnalysis (hp and nport not needed):
@@ -853,6 +883,9 @@ class LTreversal(Strategy):
 
         # For StrategyFormation (hp and nport required):
         >>> ltr = LTreversal(lookback_period=60, skip=12, holding_period=6, num_portfolios=5)
+
+        # With enforce_contiguous for sparse data:
+        >>> ltr = LTreversal(lookback_period=60, skip=12, enforce_contiguous=True)
         """
         if lookback_period is None or skip is None:
             raise ValueError("LT reversal strategy requires both lookback_period and skip periods")
@@ -860,6 +893,8 @@ class LTreversal(Strategy):
         # Validate mutually exclusive options
         if fill_na and drop_na:
             raise ValueError("fill_na and drop_na cannot both be True. Choose one.")
+        if enforce_contiguous and drop_na:
+            raise ValueError("enforce_contiguous and drop_na cannot both be True. Choose one.")
 
         super().__init__(
             holding_period=holding_period,
@@ -877,6 +912,7 @@ class LTreversal(Strategy):
         self.no_gap = no_gap
         self.fill_na = fill_na
         self.drop_na = drop_na
+        self.enforce_contiguous = enforce_contiguous
 
         if verbose:
             print(f"Formation period: {self.lookback_period} months")
@@ -887,6 +923,8 @@ class LTreversal(Strategy):
                 print("Fill NA: Enabled (NaN returns treated as 0%)")
             if drop_na:
                 print("Drop NA: Enabled (skip NaN, use J valid returns)")
+            if enforce_contiguous:
+                print("Enforce Contiguous: Enabled (resample to monthly, fill gaps with NaN)")
             print("Sorting on: past returns")
 
     def compute_signal(self, data):
