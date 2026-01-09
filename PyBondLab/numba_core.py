@@ -3109,6 +3109,87 @@ def compute_momentum_signals_panel(
 
 
 @njit(cache=True, parallel=True)
+def compute_momentum_signals_panel_dropna(
+    logret_all: np.ndarray,
+    bond_starts: np.ndarray,
+    lookback: int,
+    skip: int,
+    max_lookback_mult: int = 2
+) -> np.ndarray:
+    """
+    Compute Momentum signals with drop_na=True (skip NaN, use J valid returns).
+
+    Instead of fixed window [i-J+1, i], searches backwards to find exactly J
+    valid (non-NaN) returns. This handles sparse data with NaN returns.
+
+    Parameters
+    ----------
+    logret_all : np.ndarray
+        Log returns for all filters, shape (n_obs, n_filters)
+        Data must be sorted by (ID, date)
+    bond_starts : np.ndarray
+        Array of indices where each bond starts, length (n_bonds + 1)
+    lookback : int
+        Number of valid periods needed for momentum calculation (J)
+    skip : int
+        Number of periods to skip (most recent)
+    max_lookback_mult : int, default=2
+        Maximum lookback multiplier. Will search up to lookback * max_lookback_mult
+        positions back to find J valid returns.
+
+    Returns
+    -------
+    np.ndarray
+        Signal values, shape (n_obs, n_filters)
+        signal = exp(sum of J valid log returns) - 1, shifted by skip
+    """
+    n_obs, n_filters = logret_all.shape
+    signals = np.full((n_obs, n_filters), np.nan, dtype=np.float64)
+    n_bonds = len(bond_starts) - 1
+    max_search = lookback * max_lookback_mult
+
+    # Parallel over bonds
+    for bond_idx in prange(n_bonds):
+        start = bond_starts[bond_idx]
+        end = bond_starts[bond_idx + 1]
+        bond_len = end - start
+
+        if bond_len < lookback:
+            # Not enough observations even in best case
+            continue
+
+        # For each filter
+        for f in range(n_filters):
+            # Compute raw signals (before skip)
+            raw_signals = np.full(bond_len, np.nan, dtype=np.float64)
+
+            for i in range(bond_len):
+                # Search backwards to find exactly J valid returns
+                window_sum = 0.0
+                valid_count = 0
+                j = i
+                positions_searched = 0
+
+                while valid_count < lookback and j >= 0 and positions_searched < max_search:
+                    val = logret_all[start + j, f]
+                    if not np.isnan(val):
+                        window_sum += val
+                        valid_count += 1
+                    j -= 1
+                    positions_searched += 1
+
+                if valid_count == lookback:
+                    raw_signals[i] = window_sum
+
+            # Apply skip (shift within bond) and exp transform
+            for i in range(skip, bond_len):
+                if not np.isnan(raw_signals[i - skip]):
+                    signals[start + i, f] = np.exp(raw_signals[i - skip]) - 1.0
+
+    return signals
+
+
+@njit(cache=True, parallel=True)
 def compute_ltreversal_signals_panel(
     logret_all: np.ndarray,
     bond_starts: np.ndarray,
@@ -3189,6 +3270,109 @@ def compute_ltreversal_signals_panel(
                 idx = i - skip
                 if not np.isnan(long_sums[idx]) and not np.isnan(recent_sums[idx]):
                     log_signal = long_sums[idx] - recent_sums[idx]
+                    signals[start + i, f] = np.exp(log_signal) - 1.0
+
+    return signals
+
+
+@njit(cache=True, parallel=True)
+def compute_ltreversal_signals_panel_dropna(
+    logret_all: np.ndarray,
+    bond_starts: np.ndarray,
+    lookback: int,
+    skip: int,
+    max_lookback_mult: int = 2
+) -> np.ndarray:
+    """
+    Compute LT-Reversal signals with drop_na=True (skip NaN, use valid returns).
+
+    Instead of fixed windows, searches backwards to find exactly the required
+    number of valid (non-NaN) returns for both long-term and recent windows.
+
+    LT-Reversal signal = cumulative return over (lookback valid) minus cumulative
+    return over (skip valid), i.e., long-term return excluding recent return.
+
+    Parameters
+    ----------
+    logret_all : np.ndarray
+        Log returns for all filters, shape (n_obs, n_filters)
+        Data must be sorted by (ID, date)
+    bond_starts : np.ndarray
+        Array of indices where each bond starts, length (n_bonds + 1)
+    lookback : int
+        Number of valid periods for long-term calculation (J)
+    skip : int
+        Number of valid recent periods to exclude
+    max_lookback_mult : int, default=2
+        Maximum lookback multiplier for searching valid returns.
+
+    Returns
+    -------
+    np.ndarray
+        Signal values, shape (n_obs, n_filters)
+    """
+    n_obs, n_filters = logret_all.shape
+    signals = np.full((n_obs, n_filters), np.nan, dtype=np.float64)
+    n_bonds = len(bond_starts) - 1
+    max_search_long = lookback * max_lookback_mult
+    max_search_skip = skip * max_lookback_mult
+
+    # Parallel over bonds
+    for bond_idx in prange(n_bonds):
+        start = bond_starts[bond_idx]
+        end = bond_starts[bond_idx + 1]
+        bond_len = end - start
+
+        if bond_len < lookback:
+            continue
+
+        for f in range(n_filters):
+            # Compute rolling sums with drop_na
+            long_sums = np.full(bond_len, np.nan, dtype=np.float64)
+            recent_sums = np.full(bond_len, np.nan, dtype=np.float64)
+
+            # Long-term rolling sum (find lookback valid returns)
+            for i in range(bond_len):
+                window_sum = 0.0
+                valid_count = 0
+                j = i
+                positions_searched = 0
+
+                while valid_count < lookback and j >= 0 and positions_searched < max_search_long:
+                    val = logret_all[start + j, f]
+                    if not np.isnan(val):
+                        window_sum += val
+                        valid_count += 1
+                    j -= 1
+                    positions_searched += 1
+
+                if valid_count == lookback:
+                    long_sums[i] = window_sum
+
+            # Recent rolling sum (find skip valid returns)
+            for i in range(bond_len):
+                window_sum = 0.0
+                valid_count = 0
+                j = i
+                positions_searched = 0
+
+                while valid_count < skip and j >= 0 and positions_searched < max_search_skip:
+                    val = logret_all[start + j, f]
+                    if not np.isnan(val):
+                        window_sum += val
+                        valid_count += 1
+                    j -= 1
+                    positions_searched += 1
+
+                if valid_count == skip:
+                    recent_sums[i] = window_sum
+
+            # Signal = long - recent, then exp transform
+            # Note: For LT-reversal, we want the long-term sum EXCLUDING the recent period
+            # So we compute at position i using long_sums[i] and recent_sums[i]
+            for i in range(bond_len):
+                if not np.isnan(long_sums[i]) and not np.isnan(recent_sums[i]):
+                    log_signal = long_sums[i] - recent_sums[i]
                     signals[start + i, f] = np.exp(log_signal) - 1.0
 
     return signals

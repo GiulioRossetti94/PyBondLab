@@ -1646,7 +1646,8 @@ class DataUncertaintyAnalysis:
             return False
 
         # Check for non-default NaN handling options
-        # The numba kernels only implement default behavior
+        # no_gap and fill_na are not supported in fast path
+        # drop_na IS now supported via compute_*_signals_panel_dropna() kernels
         if getattr(self.strategy, 'no_gap', False):
             if self.verbose:
                 print("Fast strategy path disabled: no_gap=True not supported")
@@ -1655,10 +1656,8 @@ class DataUncertaintyAnalysis:
             if self.verbose:
                 print("Fast strategy path disabled: fill_na=True not supported")
             return False
-        if getattr(self.strategy, 'drop_na', False):
-            if self.verbose:
-                print("Fast strategy path disabled: drop_na=True not supported")
-            return False
+        # drop_na=True is now supported in fast path!
+        # (uses compute_momentum_signals_panel_dropna / compute_ltreversal_signals_panel_dropna)
 
         return True
 
@@ -2256,7 +2255,9 @@ class DataUncertaintyAnalysis:
         """
         from .numba_core import (
             compute_momentum_signals_panel,
+            compute_momentum_signals_panel_dropna,
             compute_ltreversal_signals_panel,
+            compute_ltreversal_signals_panel_dropna,
             get_bond_boundaries,
             compute_ranks_all_filters,
             build_rank_lookups_all_filters,
@@ -2269,6 +2270,7 @@ class DataUncertaintyAnalysis:
         lookback = strategy.lookback_period
         skip = strategy.skip
         is_momentum = isinstance(strategy, Momentum)
+        use_drop_na = getattr(strategy, 'drop_na', False)
         strategy_name = 'momentum' if is_momentum else 'ltreversal'
 
         # Rating suffix for column names
@@ -2377,15 +2379,26 @@ class DataUncertaintyAnalysis:
         bond_starts = get_bond_boundaries(id_sorted)
 
         # Compute baseline signal from ORIGINAL returns (used for most filters)
+        # Use drop_na kernel if strategy has drop_na=True
         logret_baseline = np.log(ret_sorted + 1.0).reshape(-1, 1)
         if is_momentum:
-            baseline_signal_sorted = compute_momentum_signals_panel(
-                logret_baseline, bond_starts, lookback, skip
-            )[:, 0]
+            if use_drop_na:
+                baseline_signal_sorted = compute_momentum_signals_panel_dropna(
+                    logret_baseline, bond_starts, lookback, skip
+                )[:, 0]
+            else:
+                baseline_signal_sorted = compute_momentum_signals_panel(
+                    logret_baseline, bond_starts, lookback, skip
+                )[:, 0]
         else:
-            baseline_signal_sorted = compute_ltreversal_signals_panel(
-                logret_baseline, bond_starts, lookback, skip
-            )[:, 0]
+            if use_drop_na:
+                baseline_signal_sorted = compute_ltreversal_signals_panel_dropna(
+                    logret_baseline, bond_starts, lookback, skip
+                )[:, 0]
+            else:
+                baseline_signal_sorted = compute_ltreversal_signals_panel(
+                    logret_baseline, bond_starts, lookback, skip
+                )[:, 0]
 
         # Un-sort baseline signal
         unsort_idx = np.argsort(sort_idx)
@@ -2404,13 +2417,23 @@ class DataUncertaintyAnalysis:
                 wins_ea_ret_sorted = wins_ea_ret[sort_idx]
                 logret_wins = np.log(wins_ea_ret_sorted + 1.0).reshape(-1, 1)
                 if is_momentum:
-                    wins_signal_sorted = compute_momentum_signals_panel(
-                        logret_wins, bond_starts, lookback, skip
-                    )[:, 0]
+                    if use_drop_na:
+                        wins_signal_sorted = compute_momentum_signals_panel_dropna(
+                            logret_wins, bond_starts, lookback, skip
+                        )[:, 0]
+                    else:
+                        wins_signal_sorted = compute_momentum_signals_panel(
+                            logret_wins, bond_starts, lookback, skip
+                        )[:, 0]
                 else:
-                    wins_signal_sorted = compute_ltreversal_signals_panel(
-                        logret_wins, bond_starts, lookback, skip
-                    )[:, 0]
+                    if use_drop_na:
+                        wins_signal_sorted = compute_ltreversal_signals_panel_dropna(
+                            logret_wins, bond_starts, lookback, skip
+                        )[:, 0]
+                    else:
+                        wins_signal_sorted = compute_ltreversal_signals_panel(
+                            logret_wins, bond_starts, lookback, skip
+                        )[:, 0]
                 signals_all[:, f_idx] = wins_signal_sorted[unsort_idx]
             else:
                 # Baseline, trim, price, bounce: use baseline signal
