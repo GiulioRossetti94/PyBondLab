@@ -29,6 +29,7 @@ try:
         build_vw_lookup,
         build_vw_lookup_and_dynamic_weights,
         compute_all_returns_ultrafast,
+        compute_staggered_returns_ultrafast,
     )
     from .spec_validator import (
         validate_specs,
@@ -44,6 +45,7 @@ except ImportError:
         build_vw_lookup,
         build_vw_lookup_and_dynamic_weights,
         compute_all_returns_ultrafast,
+        compute_staggered_returns_ultrafast,
     )
     from spec_validator import (
         validate_specs,
@@ -538,12 +540,23 @@ def assay_anomaly_fast(
                 date_idx_filt, id_idx_filt, vw_filt, TM, n_ids_filt
             )
 
-            # Compute returns
-            ew_ret, vw_ret = compute_all_returns_ultrafast(
-                date_idx_filt, id_idx_filt, returns_filt, vw_lookup,
-                date_idx_filt, id_idx_filt, ranks,
-                TM, n_ids_filt, n_ports
-            )
+            # Compute returns - use staggered for h > 1
+            if holding_period == 1:
+                # Simple case: no staggering needed
+                ew_ret, vw_ret = compute_all_returns_ultrafast(
+                    date_idx_filt, id_idx_filt, returns_filt, vw_lookup,
+                    date_idx_filt, id_idx_filt, ranks,
+                    TM, n_ids_filt, n_ports
+                )
+            else:
+                # Staggered portfolios: average across h cohorts
+                ew_ret, vw_ret = compute_staggered_returns_ultrafast(
+                    date_idx_filt, id_idx_filt, returns_filt, vw_lookup,
+                    date_idx_filt, id_idx_filt, ranks,
+                    TM, n_ids_filt, n_ports,
+                    holding_period,  # hor parameter
+                    dynamic_weights  # use_dynamic_weights parameter
+                )
 
             # Long-short returns
             ew_ls = ew_ret[:, -1] - ew_ret[:, 0]
