@@ -297,6 +297,14 @@ class SpecificationValidator:
             if empty_issue:
                 issues.append(empty_issue)
 
+        # Rule 4: Check bp_func required columns exist in data
+        if data is not None:
+            col_issue = self._check_bp_func_columns(
+                spec_id, bp_name, bp_func, data
+            )
+            if col_issue:
+                issues.append(col_issue)
+
         return issues
 
     def _check_bp_rating_compatibility(
@@ -490,6 +498,37 @@ class SpecificationValidator:
                     message=f"Sparse universe: average {avg_bonds_per_date:.1f} bonds per date",
                     details="May result in unstable portfolio sorts. Consider relaxing filters."
                 )
+
+        return None
+
+    def _check_bp_func_columns(
+        self,
+        spec_id: str,
+        bp_name: str,
+        bp_func: Optional[Callable],
+        data: Optional['pd.DataFrame'],
+    ) -> Optional[ValidationIssue]:
+        """
+        Check that bp_func required columns exist in data.
+
+        bp_func can declare required columns via:
+        - bp_func.required_columns = ['col1', 'col2']
+        """
+        if bp_func is None or data is None:
+            return None
+
+        if not hasattr(bp_func, 'required_columns'):
+            return None
+
+        missing = [col for col in bp_func.required_columns if col not in data.columns]
+
+        if missing:
+            return ValidationIssue(
+                severity=ValidationSeverity.ERROR,
+                spec_id=spec_id,
+                message=f"bp_func '{bp_name}' requires missing columns: {missing}",
+                details=f"Required: {list(bp_func.required_columns)}"
+            )
 
         return None
 

@@ -55,6 +55,40 @@ except ImportError:
     )
 
 
+# =============================================================================
+# Helper: Extract required columns from bp_func
+# =============================================================================
+
+def _get_bp_func_required_columns(bp_universes: Dict[str, Any]) -> set:
+    """
+    Extract required columns from all bp_func in bp_universes.
+
+    bp_func can declare required columns via:
+    - bp_func.required_columns = ['col1', 'col2']
+
+    Parameters
+    ----------
+    bp_universes : dict
+        Dictionary of {name: callable or None}
+
+    Returns
+    -------
+    set
+        Set of column names required by bp_func
+    """
+    required = set()
+    for bp_name, bp_func in bp_universes.items():
+        if bp_func is None:
+            continue
+        # Check for required_columns attribute
+        if hasattr(bp_func, 'required_columns'):
+            required.update(bp_func.required_columns)
+        # Check wrapped function (for decorators)
+        elif hasattr(bp_func, '__wrapped__') and hasattr(bp_func.__wrapped__, 'required_columns'):
+            required.update(bp_func.__wrapped__.required_columns)
+    return required
+
+
 def get_rating_bounds(rating: Union[str, Tuple[int, int]]) -> Tuple[int, int]:
     """Get (min, max) rating bounds from specification."""
     if isinstance(rating, tuple):
@@ -400,8 +434,26 @@ def assay_anomaly_fast(
     else:
         tmat_full = np.full(len(data), 50.0)  # Default mid-range maturity
 
+    # Extract columns required by bp_func
+    bp_universes = specs.get('bp_universes', {'all': None})
+    bp_required_cols = _get_bp_func_required_columns(bp_universes)
+
+    # Convert bp_func required columns to numpy arrays
+    bp_col_arrays = {}
+    for col in bp_required_cols:
+        if col in data.columns:
+            bp_col_arrays[col] = data[col].values.astype(np.float64)
+        elif col == vw_col:
+            bp_col_arrays[col] = vw_full  # Already have this
+        elif col == rating_col:
+            bp_col_arrays[col] = rating_full  # Already have this
+        else:
+            warnings.warn(f"bp_func requires column '{col}' but it's not in data")
+
     if verbose:
         print(f"  Data conversion: {(time.time()-t0)*1000:.0f}ms")
+        if bp_required_cols:
+            print(f"  bp_func required columns: {bp_required_cols}")
 
     # =========================================================================
     # OPTIMIZATION 2: Group specs and pre-compute filter masks
@@ -506,11 +558,19 @@ def assay_anomaly_fast(
 
             # Compute breakpoint mask (relative to filtered data)
             if bp_func is not None:
-                # Apply bp_func to filtered data
-                # Create minimal DataFrame for bp_func (only needed columns)
-                filtered_df = pd.DataFrame({
-                    rating_col: rating_full[filtered_indices]
-                })
+                # Build filtered_df with base columns plus any bp_func required columns
+                filtered_df_dict = {
+                    rating_col: rating_full[filtered_indices],
+                    vw_col: vw_full[filtered_indices],
+                }
+                # Add bp_func required columns if declared
+                if hasattr(bp_func, 'required_columns'):
+                    for col in bp_func.required_columns:
+                        if col in bp_col_arrays:
+                            filtered_df_dict[col] = bp_col_arrays[col][filtered_indices]
+                        # Skip if already included (rating_col or vw_col)
+
+                filtered_df = pd.DataFrame(filtered_df_dict)
                 bp_result = bp_func(filtered_df)
                 if isinstance(bp_result, pd.Series):
                     bp_mask = bp_result.values.astype(np.bool_)
