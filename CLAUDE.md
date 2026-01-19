@@ -3371,7 +3371,8 @@ class StrategyResults:
         ----------
         level : str, default='portfolio'
             'portfolio' - Return turnover per portfolio (DataFrame).
-            'factor' - Return factor turnover: (P_N + P_1) / 2 (Series).
+            'factor' - Return factor turnover as (L + S) / 2 (Series).
+                       This represents turnover as a fraction of total capital.
         naming : NamingConfig, optional
             If provided, rename output using naming conventions.
 
@@ -3384,10 +3385,11 @@ class StrategyResults:
         vw_turn = self.ea.turnover.vwturn_df.copy()
 
         if level == 'factor':
-            # Factor turnover = P_N + P_1 = sum of long and short legs (total trading)
+            # Factor turnover = (P_N + P_1) / 2 = average of long and short legs
+            # This represents turnover as a fraction of total portfolio capital
             nport = ew_turn.shape[1]
-            ew_factor = ew_turn.iloc[:, 0] + ew_turn.iloc[:, nport - 1]
-            vw_factor = vw_turn.iloc[:, 0] + vw_turn.iloc[:, nport - 1]
+            ew_factor = (ew_turn.iloc[:, 0] + ew_turn.iloc[:, nport - 1]) / 2
+            vw_factor = (vw_turn.iloc[:, 0] + vw_turn.iloc[:, nport - 1]) / 2
 
             if naming is not None:
                 ew_name = make_factor_name(

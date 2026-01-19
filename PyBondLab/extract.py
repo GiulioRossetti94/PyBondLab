@@ -54,7 +54,7 @@ def extract_panel(
     Notes
     -----
     - For sign-corrected factors, 'l' and 's' legs are swapped
-    - Turnover for 'ls' leg is factor turnover: L + S (sum of both legs)
+    - Turnover for 'ls' leg is factor turnover: (L + S) / 2 (average of both legs)
     - Count for 'ls' leg is total bonds: L + S (sum of both legs)
     - Chars for 'ls' leg is L - S spread
     - WithinFirmSort 'high' maps to 'l', 'low' maps to 's'
@@ -185,11 +185,11 @@ def extract_panel(
                 vw_long_turn = vw_turn_df.iloc[:, nport - 1]
                 vw_short_turn = vw_turn_df.iloc[:, 0]
 
-            # Factor turnover = sum of long and short (total trading activity)
-            # For a L-S portfolio with 100% long and -100% short positions,
-            # the total turnover is the sum of both legs, not the average
-            ew_factor_turn = ew_long_turn + ew_short_turn
-            vw_factor_turn = vw_long_turn + vw_short_turn
+            # Factor turnover = average of long and short legs
+            # This represents turnover as a fraction of total portfolio capital
+            # (since L-S has 100% long and 100% short = 200% total)
+            ew_factor_turn = (ew_long_turn + ew_short_turn) / 2
+            vw_factor_turn = (vw_long_turn + vw_short_turn) / 2
 
         # Get bond counts if available
         # Note: bond counts are the same for EW and VW (just count of bonds, not weighted)

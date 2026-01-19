@@ -590,7 +590,8 @@ class StrategyResults:
         ----------
         level : str, default='portfolio'
             'portfolio' - Return turnover per portfolio (DataFrame).
-            'factor' - Return factor turnover: (P_N + P_1) / 2 (Series).
+            'factor' - Return factor turnover as (L + S) / 2 (Series).
+                       This represents turnover as a fraction of total capital.
         naming : NamingConfig, optional
             If provided, rename output using naming conventions.
 
@@ -614,13 +615,13 @@ class StrategyResults:
         vw_turn = self.turnover.vw_turnover_df.copy()
 
         if level == 'factor':
-            # Factor turnover = sum of long and short leg turnovers (total trading)
-            # For a L-S portfolio with 100% long and -100% short positions,
-            # the total turnover is the sum of both legs, not the average
+            # Factor turnover = average of long and short leg turnovers
+            # This represents turnover as a fraction of total portfolio capital
+            # (since L-S has 100% long and 100% short = 200% total)
             nport = ew_turn.shape[1]
 
             if self.second_signal is not None and self.num_portfolios is not None:
-                # DoubleSort: average across conditioning groups, then sum legs
+                # DoubleSort: average across conditioning groups, then average legs
                 # Portfolio layout: (1,1), (1,2), ..., (1,n2), (2,1), ..., (n1,n2)
                 # where n1 = num_portfolios for main signal, n2 = nport // n1
                 n1 = self.num_portfolios  # portfolios for main signal
@@ -637,12 +638,13 @@ class StrategyResults:
                 vw_long_turn = vw_turn.iloc[:, long_cols].mean(axis=1)
                 vw_short_turn = vw_turn.iloc[:, short_cols].mean(axis=1)
 
-                ew_factor = ew_long_turn + ew_short_turn
-                vw_factor = vw_long_turn + vw_short_turn
+                # Factor turnover = average of long and short legs
+                ew_factor = (ew_long_turn + ew_short_turn) / 2
+                vw_factor = (vw_long_turn + vw_short_turn) / 2
             else:
-                # SingleSort: P_N + P_1 (sum of long and short)
-                ew_factor = ew_turn.iloc[:, 0] + ew_turn.iloc[:, nport - 1]
-                vw_factor = vw_turn.iloc[:, 0] + vw_turn.iloc[:, nport - 1]
+                # SingleSort: (P_N + P_1) / 2 (average of long and short)
+                ew_factor = (ew_turn.iloc[:, 0] + ew_turn.iloc[:, nport - 1]) / 2
+                vw_factor = (vw_turn.iloc[:, 0] + vw_turn.iloc[:, nport - 1]) / 2
 
             if naming is not None:
                 signal = self.signal_name or 'factor'
@@ -1013,7 +1015,8 @@ class FormationResults:
             Strategy type
         level : str, default='portfolio'
             'portfolio' - Return turnover per portfolio (DataFrame).
-            'factor' - Return factor turnover: (P_N + P_1) / 2 (Series).
+            'factor' - Return factor turnover as (L + S) / 2 (Series).
+                       This represents turnover as a fraction of total capital.
         naming : NamingConfig, optional
             If provided, rename output using naming conventions.
 
