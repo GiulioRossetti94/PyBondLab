@@ -486,7 +486,8 @@ class StrategyFormationConfig:
             filters = FilterConfig(
                 adj=filters_dict.get('adj'),
                 level=filters_dict.get('level'),
-                location=filters_dict.get('location'),
+                # Accept both 'location' and 'loc' for backwards compatibility
+                location=filters_dict.get('location') or filters_dict.get('loc'),
                 df_breakpoints=filters_dict.get('df_breakpoints'),
                 price_threshold=filters_dict.get('price_threshold', Defaults.PRICE_THRESHOLD),
             )
