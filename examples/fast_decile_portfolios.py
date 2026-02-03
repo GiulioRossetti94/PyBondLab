@@ -2,17 +2,24 @@
 """
 Fast Decile Portfolio Formation Script
 
-Forms decile portfolios for multiple signals without PyBondLab,
-using optimized numpy/numba operations for speed.
+Forms decile portfolios for multiple signals using optimized numpy/numba operations.
 
-Matches PyBondLab SingleSort with:
+Data structure expected:
+- date: formation date t
+- ID (cusip): bond identifier
+- signal: sorting variable at t
+- r_1: forward return from t to t+1 (already shifted, i.e., r_1 = ret.shift(-1))
+- mv: value weight at t (used for VW portfolios)
+
+This matches PyBondLab SingleSort with:
 - holding_period=1
-- num_portfolios=N (configurable, default 10 for deciles)
+- num_portfolios=N (configurable)
 - dynamic_weights=True
 
-Output:
-- ew_factors: DataFrame with date column + EW long-short factors (sign-corrected)
-- vw_factors: DataFrame with date column + VW long-short factors (sign-corrected)
+The key insight: with r_1 at date t, we need bonds that:
+1. Have valid signal at t (for ranking)
+2. Have valid r_1 at t (meaning they have a return for t+1)
+3. Existed at t-1 (for dynamic_weights VW lookup)
 
 Author: Claude
 Date: 2026-02-03
@@ -20,25 +27,17 @@ Date: 2026-02-03
 
 import numpy as np
 import pandas as pd
-from pandas.tseries.offsets import MonthEnd
-from numba import njit, prange
+from numba import njit
 import time
-import warnings
 
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
-RETURN_COL = 'r_1'        # Options: 'r_1', 'r_1_exc', 'r_1_dur'
-WEIGHT_COL = 'mv'         # Value weight column
-N_PORTFOLIOS = 10         # Number of portfolios (10 = deciles, 5 = quintiles)
-SIGN_CORRECT = True       # Flip negative factors so mean > 0
-
-# Data column names
 DATE_COL = 'date'
 ID_COL = 'cusip'
-
-# Signals to exclude (non-signal columns)
-EXCLUDE_COLS = ['date', 'cusip', 'permno', 'r_1', 'r_1_exc', 'r_1_dur', 'mv']
+RETURN_COL = 'r_1'        # Forward return at t (return from t to t+1)
+WEIGHT_COL = 'mv'         # Value weight at t
+N_PORTFOLIOS = 10         # Default: deciles
 
 
 # =============================================================================
@@ -46,43 +45,39 @@ EXCLUDE_COLS = ['date', 'cusip', 'permno', 'r_1', 'r_1_exc', 'r_1_dur', 'mv']
 # =============================================================================
 
 @njit(cache=True)
-def compute_percentile_breakpoints(values, n_portfolios):
+def compute_breakpoints(values, n_portfolios):
     """
-    Compute percentile breakpoints from unique sorted values.
+    Compute percentile breakpoints using numpy percentile formula.
 
-    Matches PyBondLab's percentile threshold computation.
+    Parameters
+    ----------
+    values : np.ndarray[float64]
+        Valid (non-NaN) signal values
+    n_portfolios : int
+        Number of portfolios
+
+    Returns
+    -------
+    np.ndarray[float64]
+        Breakpoint thresholds (length n_portfolios - 1)
     """
     n = len(values)
     if n < n_portfolios:
         return np.empty(0, dtype=np.float64)
 
-    # Get unique values
+    # Sort values
     sorted_vals = np.sort(values)
-    unique_vals = np.empty(n, dtype=np.float64)
-    n_unique = 0
-    prev = sorted_vals[0] - 1.0  # Ensure first value is included
 
-    for i in range(n):
-        if sorted_vals[i] != prev:
-            unique_vals[n_unique] = sorted_vals[i]
-            n_unique += 1
-            prev = sorted_vals[i]
-
-    unique_vals = unique_vals[:n_unique]
-
-    if n_unique < 2:
-        return np.empty(0, dtype=np.float64)
-
-    # Compute breakpoints using numpy percentile formula
+    # Compute breakpoints at percentiles: 100/n_port, 200/n_port, ..., (n_port-1)*100/n_port
     breakpoints = np.empty(n_portfolios - 1, dtype=np.float64)
     for p in range(n_portfolios - 1):
         pct = (p + 1) * 100.0 / n_portfolios
-        # Linear interpolation (numpy default)
-        idx = pct / 100.0 * (n_unique - 1)
+        # Linear interpolation (numpy percentile default)
+        idx = pct / 100.0 * (n - 1)
         idx_low = int(idx)
-        idx_high = min(idx_low + 1, n_unique - 1)
+        idx_high = min(idx_low + 1, n - 1)
         frac = idx - idx_low
-        breakpoints[p] = unique_vals[idx_low] * (1 - frac) + unique_vals[idx_high] * frac
+        breakpoints[p] = sorted_vals[idx_low] * (1 - frac) + sorted_vals[idx_high] * frac
 
     return breakpoints
 
@@ -92,7 +87,22 @@ def assign_ranks(signal, breakpoints, n_portfolios):
     """
     Assign portfolio ranks based on breakpoints.
 
-    Returns ranks 1 to n_portfolios (0 = invalid/NaN).
+    Rank 1 = lowest signal values, Rank N = highest signal values.
+    Rank 0 = invalid (NaN signal).
+
+    Parameters
+    ----------
+    signal : np.ndarray[float64]
+        Signal values (may contain NaN)
+    breakpoints : np.ndarray[float64]
+        Breakpoint thresholds
+    n_portfolios : int
+        Number of portfolios
+
+    Returns
+    -------
+    np.ndarray[int32]
+        Ranks (1 to n_portfolios), 0 for invalid
     """
     n = len(signal)
     ranks = np.zeros(n, dtype=np.int32)
@@ -106,18 +116,18 @@ def assign_ranks(signal, breakpoints, n_portfolios):
 
         val = signal[i]
         rank = 1
-        for p in range(len(breakpoints)):
-            if val > breakpoints[p]:
-                rank = p + 2
+        for bp in breakpoints:
+            if val > bp:
+                rank += 1
         ranks[i] = rank
 
     return ranks
 
 
 @njit(cache=True)
-def compute_portfolio_returns_single_date(ranks, returns, weights, n_portfolios):
+def compute_portfolio_returns(ranks, returns, weights, n_portfolios):
     """
-    Compute EW and VW returns for each portfolio at a single date.
+    Compute EW and VW portfolio returns.
 
     Parameters
     ----------
@@ -133,9 +143,9 @@ def compute_portfolio_returns_single_date(ranks, returns, weights, n_portfolios)
     Returns
     -------
     ew_ret : np.ndarray[float64]
-        Equal-weighted returns per portfolio (length n_portfolios)
+        Equal-weighted returns per portfolio
     vw_ret : np.ndarray[float64]
-        Value-weighted returns per portfolio (length n_portfolios)
+        Value-weighted returns per portfolio
     """
     ew_ret = np.full(n_portfolios, np.nan, dtype=np.float64)
     vw_ret = np.full(n_portfolios, np.nan, dtype=np.float64)
@@ -157,9 +167,11 @@ def compute_portfolio_returns_single_date(ranks, returns, weights, n_portfolios)
             r = returns[i]
             w = weights[i] if np.isfinite(weights[i]) and weights[i] > 0 else 0.0
 
+            # EW: all valid bonds contribute
             sum_ret += r
             count += 1
 
+            # VW: only bonds with valid weight contribute
             if w > 0:
                 sum_vw_ret += r * w
                 sum_w += w
@@ -172,111 +184,51 @@ def compute_portfolio_returns_single_date(ranks, returns, weights, n_portfolios)
     return ew_ret, vw_ret
 
 
-@njit(cache=True)
-def process_single_date(signal, returns, weights, n_portfolios):
-    """
-    Process a single date: rank bonds and compute portfolio returns.
-
-    Matches PyBondLab behavior:
-    1. Compute percentile breakpoints using ALL bonds with valid signal
-       (not just those with valid returns)
-    2. Assign ranks to all bonds
-    3. Compute returns using only bonds with valid (signal, return, weight)
-
-    Returns (ew_long, ew_short, vw_long, vw_short) or NaN if insufficient data.
-    """
-    n = len(signal)
-
-    # Step 1: Count bonds with valid SIGNAL (for ranking universe)
-    # This matches PyBondLab which ranks all bonds at formation date
-    n_valid_signal = 0
-    for i in range(n):
-        if np.isfinite(signal[i]):
-            n_valid_signal += 1
-
-    if n_valid_signal < n_portfolios:
-        return np.nan, np.nan, np.nan, np.nan
-
-    # Step 2: Extract signals for breakpoint computation (ALL valid signals)
-    valid_signal = np.empty(n_valid_signal, dtype=np.float64)
-    j = 0
-    for i in range(n):
-        if np.isfinite(signal[i]):
-            valid_signal[j] = signal[i]
-            j += 1
-
-    # Step 3: Compute breakpoints from ALL valid signals
-    breakpoints = compute_percentile_breakpoints(valid_signal, n_portfolios)
-
-    if len(breakpoints) == 0:
-        return np.nan, np.nan, np.nan, np.nan
-
-    # Step 4: Assign ranks to ALL observations with valid signal
-    ranks = assign_ranks(signal, breakpoints, n_portfolios)
-
-    # Step 5: Zero out ranks for bonds without valid (signal, return, weight)
-    # These bonds were ranked but won't contribute to returns
-    for i in range(n):
-        if not (np.isfinite(signal[i]) and np.isfinite(returns[i]) and np.isfinite(weights[i])):
-            ranks[i] = 0
-
-    # Step 6: Check we have enough bonds for returns
-    n_valid_for_returns = 0
-    for i in range(n):
-        if ranks[i] > 0:
-            n_valid_for_returns += 1
-
-    if n_valid_for_returns < n_portfolios:
-        return np.nan, np.nan, np.nan, np.nan
-
-    # Step 7: Compute portfolio returns
-    ew_ret, vw_ret = compute_portfolio_returns_single_date(ranks, returns, weights, n_portfolios)
-
-    # Long-short: top portfolio - bottom portfolio
-    ew_long = ew_ret[n_portfolios - 1]
-    ew_short = ew_ret[0]
-    vw_long = vw_ret[n_portfolios - 1]
-    vw_short = vw_ret[0]
-
-    return ew_long, ew_short, vw_long, vw_short
-
-
 # =============================================================================
-# MAIN FUNCTIONS
+# MAIN PORTFOLIO FORMATION
 # =============================================================================
 
-def form_portfolios_single_signal(data, signal_col, return_col, weight_col, n_portfolios):
+def form_portfolios(data, signal_col, return_col=RETURN_COL, weight_col=WEIGHT_COL,
+                    n_portfolios=N_PORTFOLIOS):
     """
     Form portfolios for a single signal across all dates.
+
+    Matches PyBondLab SingleSort(holding_period=1) behavior exactly:
+    1. Compute breakpoints from ALL bonds with valid signal at formation date t
+       (including bonds with NaN return - they contribute to ranking universe)
+    2. Assign ranks to ALL bonds based on these breakpoints
+    3. Filter to bonds that have valid signal AND valid return (r_1)
+    4. Compute portfolio returns using the pre-computed ranks
 
     Parameters
     ----------
     data : pd.DataFrame
-        Bond panel data with columns: date, signal, return, weight
+        Panel data with columns: date, cusip, signal, r_1 (forward return), mv (weight).
+        IMPORTANT: Include ALL bonds with valid signal, even those with NaN r_1.
+        Bonds with NaN r_1 contribute to breakpoint computation but are excluded
+        from return calculation.
     signal_col : str
         Signal column name
     return_col : str
-        Return column name
+        Forward return column name (r_1 = return from t to t+1)
     weight_col : str
-        Weight column name
+        Weight column name (for VW portfolios)
     n_portfolios : int
-        Number of portfolios
+        Number of portfolios (default: 10 for deciles)
 
     Returns
     -------
     ew_ls : pd.Series
-        Equal-weighted long-short returns indexed by date
+        Equal-weighted long-short returns indexed by return date (t+1)
     vw_ls : pd.Series
-        Value-weighted long-short returns indexed by date
+        Value-weighted long-short returns indexed by return date (t+1)
     """
-    # Group data by date for faster access
+    # Group by date
     date_groups = data.groupby(DATE_COL)
-
-    # Get dates from groupby keys (ensures type consistency)
     dates = sorted(date_groups.groups.keys())
     n_dates = len(dates)
 
-    # Pre-allocate results
+    # Results arrays
     ew_ls = np.full(n_dates, np.nan, dtype=np.float64)
     vw_ls = np.full(n_dates, np.nan, dtype=np.float64)
 
@@ -287,59 +239,113 @@ def form_portfolios_single_signal(data, signal_col, return_col, weight_col, n_po
         signal = group[signal_col].values.astype(np.float64)
         returns = group[return_col].values.astype(np.float64)
         weights = group[weight_col].values.astype(np.float64)
+        bond_ids = group[ID_COL].values
 
-        # Process this date
-        ew_long, ew_short, vw_long, vw_short = process_single_date(
-            signal, returns, weights, n_portfolios
+        # -----------------------------------------------------------------
+        # STEP 1: Compute breakpoints from ALL bonds with valid signal
+        # This matches PyBondLab's ranking universe (all formation bonds)
+        # -----------------------------------------------------------------
+        valid_signal_mask = np.isfinite(signal)
+        n_valid_signal = valid_signal_mask.sum()
+
+        if n_valid_signal < n_portfolios:
+            continue
+
+        valid_signals = signal[valid_signal_mask]
+        breakpoints = compute_breakpoints(valid_signals, n_portfolios)
+
+        if len(breakpoints) == 0:
+            continue
+
+        # -----------------------------------------------------------------
+        # STEP 2: Assign ranks to ALL bonds
+        # -----------------------------------------------------------------
+        ranks = assign_ranks(signal, breakpoints, n_portfolios)
+
+        # -----------------------------------------------------------------
+        # STEP 3: Apply filters
+        # Filter to bonds that:
+        # - Have valid signal (rank > 0)
+        # - Have valid return (r_1 valid means bond exists at t AND t+1)
+        #
+        # NOTE: For HP=1, dynamic_weights does NOT require bonds at t-1.
+        # The intersection is: bonds at t (formation) AND bonds at t+1 (return).
+        # Having valid r_1 already ensures both conditions are met.
+        # -----------------------------------------------------------------
+        valid_mask = np.ones(len(group), dtype=np.bool_)
+
+        # Must have valid signal
+        valid_mask &= (ranks > 0)
+
+        # Must have valid return (r_1 valid = exists at t AND t+1)
+        valid_mask &= np.isfinite(returns)
+
+        # Apply mask
+        filtered_ranks = ranks[valid_mask]
+        filtered_returns = returns[valid_mask]
+        filtered_weights = weights[valid_mask]
+
+        # Check we have enough bonds
+        if len(filtered_ranks) < n_portfolios:
+            continue
+
+        # -----------------------------------------------------------------
+        # STEP 4: Compute portfolio returns
+        # -----------------------------------------------------------------
+        ew_ret, vw_ret = compute_portfolio_returns(
+            filtered_ranks, filtered_returns, filtered_weights, n_portfolios
         )
 
-        # Compute long-short
+        # Long-short: top minus bottom
+        ew_long = ew_ret[n_portfolios - 1]
+        ew_short = ew_ret[0]
+        vw_long = vw_ret[n_portfolios - 1]
+        vw_short = vw_ret[0]
+
         if np.isfinite(ew_long) and np.isfinite(ew_short):
             ew_ls[i] = ew_long - ew_short
         if np.isfinite(vw_long) and np.isfinite(vw_short):
             vw_ls[i] = vw_long - vw_short
 
-    # Create series with date index (shift forward by 1 month to return date)
-    # Formation at t, return earned over t:t+1, labeled as t+1
+    # Create series indexed by RETURN date (t+1)
+    # Formation at t, return earned t:t+1, labeled as t+1
+    from pandas.tseries.offsets import MonthEnd
     return_dates = pd.DatetimeIndex(dates) + MonthEnd(1)
-    ew_series = pd.Series(ew_ls, index=return_dates, name=signal_col)
-    vw_series = pd.Series(vw_ls, index=return_dates, name=signal_col)
 
-    # Drop NaN dates
-    ew_series = ew_series.dropna()
-    vw_series = vw_series.dropna()
+    ew_series = pd.Series(ew_ls, index=return_dates, name=signal_col).dropna()
+    vw_series = pd.Series(vw_ls, index=return_dates, name=signal_col).dropna()
 
     return ew_series, vw_series
 
 
 def form_all_portfolios(data, signal_cols, return_col=RETURN_COL, weight_col=WEIGHT_COL,
-                        n_portfolios=N_PORTFOLIOS, sign_correct=SIGN_CORRECT, verbose=True):
+                        n_portfolios=N_PORTFOLIOS, sign_correct=True, verbose=True):
     """
-    Form portfolios for all signals.
+    Form portfolios for multiple signals.
 
     Parameters
     ----------
     data : pd.DataFrame
-        Bond panel data
-    signal_cols : list
-        List of signal column names
+        Panel data with columns: date, cusip, signal(s), r_1, mv
+    signal_cols : list of str
+        Signal column names
     return_col : str
-        Return column name
+        Forward return column (r_1)
     weight_col : str
-        Weight column name
+        Weight column (mv)
     n_portfolios : int
         Number of portfolios
     sign_correct : bool
-        If True, flip factors with negative mean
+        Flip factors with negative mean
     verbose : bool
         Print progress
 
     Returns
     -------
     ew_df : pd.DataFrame
-        Equal-weighted long-short factors with date column
+        EW long-short factors
     vw_df : pd.DataFrame
-        Value-weighted long-short factors with date column
+        VW long-short factors
     """
     if verbose:
         print(f"Forming {n_portfolios}-tile portfolios for {len(signal_cols)} signals...")
@@ -347,30 +353,24 @@ def form_all_portfolios(data, signal_cols, return_col=RETURN_COL, weight_col=WEI
 
     ew_results = {}
     vw_results = {}
-    sign_flipped = {'ew': [], 'vw': []}
-
     t_start = time.time()
 
     for i, signal in enumerate(signal_cols):
         if verbose and (i + 1) % 10 == 0:
             elapsed = time.time() - t_start
-            rate = (i + 1) / elapsed
-            eta = (len(signal_cols) - i - 1) / rate
-            print(f"  [{i + 1}/{len(signal_cols)}] {signal} ({elapsed:.1f}s elapsed, ~{eta:.1f}s remaining)")
+            print(f"  [{i + 1}/{len(signal_cols)}] {elapsed:.1f}s elapsed")
 
         try:
-            ew_ls, vw_ls = form_portfolios_single_signal(
+            ew_ls, vw_ls = form_portfolios(
                 data, signal, return_col, weight_col, n_portfolios
             )
 
-            # Sign correction (independent for EW and VW)
+            # Sign correction
             if sign_correct:
                 if len(ew_ls) > 0 and ew_ls.mean() < 0:
                     ew_ls = -ew_ls
-                    sign_flipped['ew'].append(signal)
                 if len(vw_ls) > 0 and vw_ls.mean() < 0:
                     vw_ls = -vw_ls
-                    sign_flipped['vw'].append(signal)
 
             ew_results[signal] = ew_ls
             vw_results[signal] = vw_ls
@@ -378,293 +378,345 @@ def form_all_portfolios(data, signal_cols, return_col=RETURN_COL, weight_col=WEI
         except Exception as e:
             if verbose:
                 print(f"  WARNING: {signal} failed - {e}")
-            continue
 
-    total_time = time.time() - t_start
     if verbose:
-        print(f"  Completed in {total_time:.2f}s ({len(signal_cols) / total_time:.1f} signals/sec)")
-        if sign_correct:
-            print(f"  Sign-flipped: EW={len(sign_flipped['ew'])}, VW={len(sign_flipped['vw'])}")
+        print(f"  Completed in {time.time() - t_start:.2f}s")
 
-    # Combine into DataFrames
     ew_df = pd.DataFrame(ew_results)
     vw_df = pd.DataFrame(vw_results)
 
-    # Reset index to add date column
     ew_df = ew_df.reset_index().rename(columns={'index': 'date'})
     vw_df = vw_df.reset_index().rename(columns={'index': 'date'})
 
     return ew_df, vw_df
 
 
-def get_signal_columns(data, exclude_cols=None):
-    """
-    Auto-detect signal columns from data.
-
-    Returns columns from 'age' to 'ytm' (or all numeric columns not in exclude list).
-    """
-    if exclude_cols is None:
-        exclude_cols = EXCLUDE_COLS
-
-    # Get all columns
-    all_cols = list(data.columns)
-
-    # Find 'age' and 'ytm' indices
-    try:
-        age_idx = all_cols.index('age')
-        ytm_idx = all_cols.index('ytm')
-        signal_cols = all_cols[age_idx:ytm_idx + 1]
-    except ValueError:
-        # Fallback: use all numeric columns not in exclude list
-        signal_cols = [c for c in all_cols if c not in exclude_cols and data[c].dtype in ['float64', 'float32', 'int64', 'int32']]
-
-    # Remove any exclude columns that snuck in
-    signal_cols = [c for c in signal_cols if c not in exclude_cols]
-
-    return signal_cols
-
-
 # =============================================================================
 # VALIDATION AGAINST PYBONDLAB
 # =============================================================================
 
-def validate_against_pybondlab(data, signal_cols, return_col=RETURN_COL, weight_col=WEIGHT_COL,
-                               n_portfolios=N_PORTFOLIOS, n_signals=5, verbose=True):
+def validate_against_pybondlab(n_portfolios=5, n_dates=24, n_bonds=100, seed=42):
     """
-    Validate results against PyBondLab SingleSort.
+    Validate fast code against PyBondLab using synthetic data.
 
-    Parameters
-    ----------
-    data : pd.DataFrame
-        Bond panel data
-    signal_cols : list
-        Signal columns to validate (will use first n_signals)
-    return_col : str
-        Return column
-    weight_col : str
-        Weight column
-    n_portfolios : int
-        Number of portfolios
-    n_signals : int
-        Number of signals to validate
-    verbose : bool
-        Print details
+    Creates matching datasets:
+    - PyBondLab format: ret at each date t
+    - Fast format: r_1 = ret.shift(-1) at each date t
 
-    Returns
-    -------
-    bool
-        True if all validations pass
+    Returns True if all tests pass.
     """
     try:
-        import PyBondLab as pbl
         from PyBondLab import StrategyFormation, SingleSort
         from PyBondLab.config import StrategyFormationConfig, FormationConfig, DataConfig
     except ImportError:
-        print("PyBondLab not available - skipping validation")
-        return True
+        print("PyBondLab not available")
+        return False
 
-    # Prepare data for PyBondLab
-    pbl_data = data.copy()
+    np.random.seed(seed)
 
-    # Rename columns if needed
-    col_mapping = {}
-    if 'cusip' in pbl_data.columns and 'ID' not in pbl_data.columns:
-        col_mapping['cusip'] = 'ID'
-    if weight_col != 'VW' and weight_col in pbl_data.columns:
-        col_mapping[weight_col] = 'VW'
-    if return_col != 'ret' and return_col in pbl_data.columns:
-        col_mapping[return_col] = 'ret'
+    print(f"\n{'='*60}")
+    print("VALIDATION: Fast Code vs PyBondLab")
+    print(f"{'='*60}")
+    print(f"Config: {n_portfolios} portfolios, {n_dates} dates, {n_bonds} bonds")
 
-    if col_mapping:
-        pbl_data = pbl_data.rename(columns=col_mapping)
+    # -------------------------------------------------------------------------
+    # Generate synthetic data
+    # -------------------------------------------------------------------------
+    dates = pd.date_range('2020-01-31', periods=n_dates, freq='ME')
+    bond_ids = [f'BOND{i:03d}' for i in range(n_bonds)]
 
-    # Ensure required columns
-    if 'RATING_NUM' not in pbl_data.columns:
-        pbl_data['RATING_NUM'] = 5  # Dummy rating
+    # Create balanced panel
+    rows = []
+    for d in dates:
+        for b in bond_ids:
+            rows.append({'date': d, 'cusip': b})
 
-    test_signals = signal_cols[:n_signals]
-    all_passed = True
+    data = pd.DataFrame(rows)
 
-    if verbose:
-        print(f"\nValidating {len(test_signals)} signals against PyBondLab...")
+    # Add signal and returns
+    n_obs = len(data)
+    data['signal'] = np.random.randn(n_obs) * 10
+    data['ret'] = np.random.randn(n_obs) * 0.05  # 5% std
+    data['mv'] = np.abs(np.random.randn(n_obs)) * 1000 + 100
+    data['RATING_NUM'] = 5
 
-    for signal in test_signals:
-        if verbose:
-            print(f"\n  Testing: {signal}")
+    # Create r_1 = ret.shift(-1) within each bond
+    data = data.sort_values(['cusip', 'date'])
+    data['r_1'] = data.groupby('cusip')['ret'].shift(-1)
+    data = data.sort_values(['date', 'cusip']).reset_index(drop=True)
 
-        # Fast method
-        ew_fast, vw_fast = form_portfolios_single_signal(
-            data, signal, return_col, weight_col, n_portfolios
-        )
+    # -------------------------------------------------------------------------
+    # Run PyBondLab (uses ret at t+1)
+    # -------------------------------------------------------------------------
+    print("\nRunning PyBondLab...")
 
-        # PyBondLab
-        try:
-            strategy = SingleSort(
-                holding_period=1,
-                sort_var=signal,
-                num_portfolios=n_portfolios
-            )
+    pbl_data = data[['date', 'cusip', 'ret', 'mv', 'signal', 'RATING_NUM']].copy()
+    pbl_data = pbl_data.rename(columns={'cusip': 'ID', 'mv': 'VW'})
 
-            config = StrategyFormationConfig(
-                data=DataConfig(),
-                formation=FormationConfig(
-                    dynamic_weights=True,
-                    compute_turnover=False,
-                    verbose=False
-                )
-            )
+    strategy = SingleSort(holding_period=1, sort_var='signal', num_portfolios=n_portfolios)
+    config = StrategyFormationConfig(
+        data=DataConfig(),
+        formation=FormationConfig(dynamic_weights=True, compute_turnover=False, verbose=False)
+    )
 
-            sf = StrategyFormation(data=pbl_data, strategy=strategy, config=config)
-            result = sf.fit()
+    sf = StrategyFormation(data=pbl_data, strategy=strategy, config=config)
+    result = sf.fit()
+    ew_pbl, vw_pbl = result.get_long_short()
 
-            ew_pbl, vw_pbl = result.get_long_short()
+    print(f"  PyBondLab dates: {len(ew_pbl)}")
+    print(f"  PyBondLab EW mean: {ew_pbl.mean()*100:.4f}%")
+    print(f"  PyBondLab VW mean: {vw_pbl.mean()*100:.4f}%")
 
-            # Align dates
-            common_dates = ew_fast.index.intersection(ew_pbl.index)
+    # -------------------------------------------------------------------------
+    # Run Fast Code (uses r_1 at t)
+    # -------------------------------------------------------------------------
+    print("\nRunning Fast Code...")
 
-            if len(common_dates) == 0:
-                if verbose:
-                    print(f"    WARNING: No overlapping dates")
-                continue
+    # Use data with r_1 - do NOT drop NaN rows here!
+    # Bonds with NaN r_1 still contribute to breakpoint computation.
+    # form_portfolios will filter internally for return computation.
+    fast_data = data[['date', 'cusip', 'r_1', 'mv', 'signal']].copy()
 
-            ew_fast_aligned = ew_fast.loc[common_dates]
-            vw_fast_aligned = vw_fast.loc[common_dates]
-            ew_pbl_aligned = ew_pbl.loc[common_dates]
-            vw_pbl_aligned = vw_pbl.loc[common_dates]
+    ew_fast, vw_fast = form_portfolios(
+        fast_data, 'signal', return_col='r_1', weight_col='mv',
+        n_portfolios=n_portfolios
+    )
 
-            # Compare
-            ew_diff = (ew_fast_aligned - ew_pbl_aligned).abs().max()
-            vw_diff = (vw_fast_aligned - vw_pbl_aligned).abs().max()
+    print(f"  Fast dates: {len(ew_fast)}")
+    print(f"  Fast EW mean: {ew_fast.mean()*100:.4f}%")
+    print(f"  Fast VW mean: {vw_fast.mean()*100:.4f}%")
 
-            ew_mean_fast = ew_fast_aligned.mean() * 100
-            ew_mean_pbl = ew_pbl_aligned.mean() * 100
-            vw_mean_fast = vw_fast_aligned.mean() * 100
-            vw_mean_pbl = vw_pbl_aligned.mean() * 100
+    # -------------------------------------------------------------------------
+    # Compare
+    # -------------------------------------------------------------------------
+    print("\nComparing results...")
 
-            tol = 1e-10
-            ew_pass = ew_diff < tol
-            vw_pass = vw_diff < tol
+    common_dates = ew_pbl.index.intersection(ew_fast.index)
+    print(f"  Common dates: {len(common_dates)}")
 
-            if verbose:
-                status_ew = "PASS" if ew_pass else "FAIL"
-                status_vw = "PASS" if vw_pass else "FAIL"
-                print(f"    EW: {status_ew} (diff={ew_diff:.2e}, mean: fast={ew_mean_fast:.4f}%, pbl={ew_mean_pbl:.4f}%)")
-                print(f"    VW: {status_vw} (diff={vw_diff:.2e}, mean: fast={vw_mean_fast:.4f}%, pbl={vw_mean_pbl:.4f}%)")
+    if len(common_dates) == 0:
+        print("  ERROR: No overlapping dates!")
+        print(f"  PyBondLab dates: {ew_pbl.index[:5].tolist()}...")
+        print(f"  Fast dates: {ew_fast.index[:5].tolist()}...")
+        return False
 
-            if not (ew_pass and vw_pass):
-                all_passed = False
+    ew_pbl_aligned = ew_pbl.loc[common_dates]
+    vw_pbl_aligned = vw_pbl.loc[common_dates]
+    ew_fast_aligned = ew_fast.loc[common_dates]
+    vw_fast_aligned = vw_fast.loc[common_dates]
 
-        except Exception as e:
-            if verbose:
-                print(f"    ERROR: {e}")
-            all_passed = False
+    ew_diff = (ew_fast_aligned - ew_pbl_aligned).abs()
+    vw_diff = (vw_fast_aligned - vw_pbl_aligned).abs()
 
-    if verbose:
-        print(f"\nValidation: {'PASSED' if all_passed else 'FAILED'}")
+    ew_max_diff = ew_diff.max()
+    vw_max_diff = vw_diff.max()
 
-    return all_passed
+    tol = 1e-10
+    ew_pass = ew_max_diff < tol
+    vw_pass = vw_max_diff < tol
+
+    print(f"\n  EW max diff: {ew_max_diff:.2e} {'PASS' if ew_pass else 'FAIL'}")
+    print(f"  VW max diff: {vw_max_diff:.2e} {'PASS' if vw_pass else 'FAIL'}")
+
+    if not (ew_pass and vw_pass):
+        # Show details of first mismatch
+        print("\n  Detailed comparison (first 5 dates):")
+        for d in common_dates[:5]:
+            print(f"    {d.date()}: EW fast={ew_fast_aligned[d]:.6f}, pbl={ew_pbl_aligned[d]:.6f}, diff={ew_diff[d]:.2e}")
+            print(f"              VW fast={vw_fast_aligned[d]:.6f}, pbl={vw_pbl_aligned[d]:.6f}, diff={vw_diff[d]:.2e}")
+
+    all_pass = ew_pass and vw_pass
+    print(f"\n{'='*60}")
+    print(f"VALIDATION: {'PASSED' if all_pass else 'FAILED'}")
+    print(f"{'='*60}")
+
+    return all_pass
+
+
+def validate_unbalanced_panel(n_portfolios=5, seed=42):
+    """
+    Validate with unbalanced panel (bonds entering/exiting).
+    """
+    try:
+        from PyBondLab import StrategyFormation, SingleSort
+        from PyBondLab.config import StrategyFormationConfig, FormationConfig, DataConfig
+    except ImportError:
+        print("PyBondLab not available")
+        return False
+
+    np.random.seed(seed)
+
+    print(f"\n{'='*60}")
+    print("VALIDATION: Unbalanced Panel")
+    print(f"{'='*60}")
+
+    # Create unbalanced panel: some bonds only exist for part of the sample
+    dates = pd.date_range('2020-01-31', periods=6, freq='ME')
+
+    # Group A: exists all dates
+    # Group B: enters at date 2 (Feb)
+    # Group C: exits after date 3 (Mar)
+
+    rows = []
+    for i, d in enumerate(dates):
+        # Group A: always present
+        for b in range(10):
+            rows.append({'date': d, 'cusip': f'A{b:02d}'})
+
+        # Group B: enters at date index 1 (Feb)
+        if i >= 1:
+            for b in range(5):
+                rows.append({'date': d, 'cusip': f'B{b:02d}'})
+
+        # Group C: exits after date index 2 (Mar)
+        if i <= 2:
+            for b in range(5):
+                rows.append({'date': d, 'cusip': f'C{b:02d}'})
+
+    data = pd.DataFrame(rows)
+    n_obs = len(data)
+
+    # Add signal and returns
+    data['signal'] = np.random.randn(n_obs) * 10
+    data['ret'] = np.random.randn(n_obs) * 0.05
+    data['mv'] = np.abs(np.random.randn(n_obs)) * 1000 + 100
+    data['RATING_NUM'] = 5
+
+    # Create r_1 = ret.shift(-1) within each bond
+    data = data.sort_values(['cusip', 'date'])
+    data['r_1'] = data.groupby('cusip')['ret'].shift(-1)
+    data = data.sort_values(['date', 'cusip']).reset_index(drop=True)
+
+    print(f"Data shape: {data.shape}")
+    print(f"Dates: {dates.tolist()}")
+
+    # Show bond counts per date
+    for d in dates:
+        subset = data[data['date'] == d]
+        n_a = subset['cusip'].str.startswith('A').sum()
+        n_b = subset['cusip'].str.startswith('B').sum()
+        n_c = subset['cusip'].str.startswith('C').sum()
+        print(f"  {d.date()}: A={n_a}, B={n_b}, C={n_c}, total={len(subset)}")
+
+    # -------------------------------------------------------------------------
+    # Run PyBondLab
+    # -------------------------------------------------------------------------
+    print("\nRunning PyBondLab...")
+
+    pbl_data = data[['date', 'cusip', 'ret', 'mv', 'signal', 'RATING_NUM']].copy()
+    pbl_data = pbl_data.rename(columns={'cusip': 'ID', 'mv': 'VW'})
+
+    strategy = SingleSort(holding_period=1, sort_var='signal', num_portfolios=n_portfolios)
+    config = StrategyFormationConfig(
+        data=DataConfig(),
+        formation=FormationConfig(dynamic_weights=True, compute_turnover=False, verbose=False)
+    )
+
+    sf = StrategyFormation(data=pbl_data, strategy=strategy, config=config)
+    result = sf.fit()
+    ew_pbl, vw_pbl = result.get_long_short()
+
+    # -------------------------------------------------------------------------
+    # Run Fast Code
+    # -------------------------------------------------------------------------
+    print("Running Fast Code...")
+
+    # Do NOT drop NaN r_1 rows - they contribute to breakpoint computation
+    fast_data = data[['date', 'cusip', 'r_1', 'mv', 'signal']].copy()
+
+    ew_fast, vw_fast = form_portfolios(
+        fast_data, 'signal', return_col='r_1', weight_col='mv',
+        n_portfolios=n_portfolios
+    )
+
+    # -------------------------------------------------------------------------
+    # Compare date by date
+    # -------------------------------------------------------------------------
+    print("\nDate-by-date comparison:")
+
+    common_dates = ew_pbl.index.intersection(ew_fast.index)
+    all_pass = True
+
+    for d in sorted(common_dates):
+        ew_diff = abs(ew_fast[d] - ew_pbl[d])
+        vw_diff = abs(vw_fast[d] - vw_pbl[d])
+
+        tol = 1e-10
+        passed = (ew_diff < tol) and (vw_diff < tol)
+
+        status = "PASS" if passed else "FAIL"
+        print(f"  {d.date()}: {status} (EW diff={ew_diff:.2e}, VW diff={vw_diff:.2e})")
+
+        if not passed:
+            all_pass = False
+            print(f"    Fast: EW={ew_fast[d]:.6f}, VW={vw_fast[d]:.6f}")
+            print(f"    PBL:  EW={ew_pbl[d]:.6f}, VW={vw_pbl[d]:.6f}")
+
+    print(f"\n{'='*60}")
+    print(f"VALIDATION: {'PASSED' if all_pass else 'FAILED'}")
+    print(f"{'='*60}")
+
+    return all_pass
 
 
 # =============================================================================
 # MAIN
 # =============================================================================
 
-def main(data_path=None, data=None, validate=True):
-    """
-    Main function to run portfolio formation.
-
-    Parameters
-    ----------
-    data_path : str, optional
-        Path to data file (CSV or Parquet)
-    data : pd.DataFrame, optional
-        Pre-loaded data (alternative to data_path)
-    validate : bool
-        Run validation against PyBondLab
-
-    Returns
-    -------
-    ew_df, vw_df : tuple of DataFrames
-        Long-short factor returns
-    """
-    # Load data
-    if data is None:
-        if data_path is None:
-            raise ValueError("Must provide either data_path or data")
-
-        print(f"Loading data from {data_path}...")
-        if data_path.endswith('.parquet'):
-            data = pd.read_parquet(data_path)
-        else:
-            data = pd.read_csv(data_path, parse_dates=['date'])
-
-    print(f"Data shape: {data.shape}")
-    print(f"Date range: {data['date'].min()} to {data['date'].max()}")
-
-    # Get signal columns
-    signal_cols = get_signal_columns(data)
-    print(f"Found {len(signal_cols)} signal columns: {signal_cols[0]} ... {signal_cols[-1]}")
-
-    # Validate first (optional)
-    if validate:
-        validate_against_pybondlab(
-            data, signal_cols,
-            return_col=RETURN_COL,
-            weight_col=WEIGHT_COL,
-            n_portfolios=N_PORTFOLIOS,
-            n_signals=5
-        )
-
-    # Form portfolios
-    print("\n" + "="*60)
-    print("FORMING PORTFOLIOS")
-    print("="*60)
-
-    ew_df, vw_df = form_all_portfolios(
-        data, signal_cols,
-        return_col=RETURN_COL,
-        weight_col=WEIGHT_COL,
-        n_portfolios=N_PORTFOLIOS,
-        sign_correct=SIGN_CORRECT,
-        verbose=True
-    )
-
-    print(f"\nOutput shapes:")
-    print(f"  EW factors: {ew_df.shape}")
-    print(f"  VW factors: {vw_df.shape}")
-
-    # Summary stats
-    print(f"\nFactor means (% monthly):")
-    ew_means = ew_df.drop(columns=['date']).mean() * 100
-    vw_means = vw_df.drop(columns=['date']).mean() * 100
-
-    print(f"  EW: min={ew_means.min():.3f}%, max={ew_means.max():.3f}%, median={ew_means.median():.3f}%")
-    print(f"  VW: min={vw_means.min():.3f}%, max={vw_means.max():.3f}%, median={vw_means.median():.3f}%")
-
-    return ew_df, vw_df
-
-
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Fast decile portfolio formation")
+    parser = argparse.ArgumentParser(description="Fast portfolio formation with validation")
+    parser.add_argument("--validate", action="store_true", help="Run validation tests")
+    parser.add_argument("--n-portfolios", type=int, default=5, help="Number of portfolios")
     parser.add_argument("data_path", nargs="?", help="Path to data file")
-    parser.add_argument("--return-col", default=RETURN_COL, help="Return column name")
-    parser.add_argument("--weight-col", default=WEIGHT_COL, help="Weight column name")
-    parser.add_argument("--n-portfolios", type=int, default=N_PORTFOLIOS, help="Number of portfolios")
-    parser.add_argument("--no-validate", action="store_true", help="Skip validation")
-    parser.add_argument("--no-sign-correct", action="store_true", help="Skip sign correction")
 
     args = parser.parse_args()
 
-    # Update config
-    RETURN_COL = args.return_col
-    WEIGHT_COL = args.weight_col
-    N_PORTFOLIOS = args.n_portfolios
-    SIGN_CORRECT = not args.no_sign_correct
+    if args.validate or args.data_path is None:
+        # Run validation
+        print("Running validation tests...\n")
 
-    if args.data_path:
-        ew_df, vw_df = main(data_path=args.data_path, validate=not args.no_validate)
+        # Test 1: Balanced panel
+        pass1 = validate_against_pybondlab(n_portfolios=args.n_portfolios)
+
+        # Test 2: Unbalanced panel
+        pass2 = validate_unbalanced_panel(n_portfolios=args.n_portfolios)
+
+        print(f"\n{'='*60}")
+        print("SUMMARY")
+        print(f"{'='*60}")
+        print(f"  Balanced panel:   {'PASS' if pass1 else 'FAIL'}")
+        print(f"  Unbalanced panel: {'PASS' if pass2 else 'FAIL'}")
+        print(f"  Overall:          {'PASS' if (pass1 and pass2) else 'FAIL'}")
+
     else:
-        print("Usage: python fast_decile_portfolios.py <data_path>")
-        print("       python fast_decile_portfolios.py data.parquet --n-portfolios 5")
+        # Run on provided data
+        print(f"Loading data from {args.data_path}...")
+        if args.data_path.endswith('.parquet'):
+            data = pd.read_parquet(args.data_path)
+        else:
+            data = pd.read_csv(args.data_path, parse_dates=['date'])
+
+        print(f"Data shape: {data.shape}")
+
+        # Auto-detect signal columns (between 'age' and 'ytm')
+        cols = list(data.columns)
+        try:
+            start = cols.index('age')
+            end = cols.index('ytm')
+            signal_cols = cols[start:end+1]
+        except ValueError:
+            # Fallback: all numeric columns except known non-signals
+            exclude = {'date', 'cusip', 'permno', 'r_1', 'r_1_exc', 'r_1_dur', 'mv'}
+            signal_cols = [c for c in cols if c not in exclude and data[c].dtype in ['float64', 'float32']]
+
+        print(f"Found {len(signal_cols)} signals")
+
+        ew_df, vw_df = form_all_portfolios(
+            data, signal_cols,
+            n_portfolios=args.n_portfolios,
+            verbose=True
+        )
+
+        print(f"\nOutput: EW {ew_df.shape}, VW {vw_df.shape}")
