@@ -6,20 +6,16 @@ Forms decile portfolios for multiple signals using optimized numpy/numba operati
 
 Data structure expected:
 - date: formation date t
-- ID (cusip): bond identifier
+- cusip: bond identifier
 - signal: sorting variable at t
 - r_1: forward return from t to t+1 (already shifted, i.e., r_1 = ret.shift(-1))
 - mv: value weight at t (used for VW portfolios)
 
-This matches PyBondLab SingleSort with:
-- holding_period=1
-- num_portfolios=N (configurable)
-- dynamic_weights=True
+This matches PyBondLab SingleSort with holding_period=1.
 
-The key insight: with r_1 at date t, we need bonds that:
-1. Have valid signal at t (for ranking)
-2. Have valid r_1 at t (meaning they have a return for t+1)
-3. Existed at t-1 (for dynamic_weights VW lookup)
+Key behavior:
+- Breakpoints computed from ALL bonds with valid signal at t
+- Returns computed only for bonds with valid signal AND valid r_1
 
 Author: Claude
 Date: 2026-02-03
@@ -239,11 +235,9 @@ def form_portfolios(data, signal_col, return_col=RETURN_COL, weight_col=WEIGHT_C
         signal = group[signal_col].values.astype(np.float64)
         returns = group[return_col].values.astype(np.float64)
         weights = group[weight_col].values.astype(np.float64)
-        bond_ids = group[ID_COL].values
 
         # -----------------------------------------------------------------
         # STEP 1: Compute breakpoints from ALL bonds with valid signal
-        # This matches PyBondLab's ranking universe (all formation bonds)
         # -----------------------------------------------------------------
         valid_signal_mask = np.isfinite(signal)
         n_valid_signal = valid_signal_mask.sum()
@@ -263,22 +257,9 @@ def form_portfolios(data, signal_col, return_col=RETURN_COL, weight_col=WEIGHT_C
         ranks = assign_ranks(signal, breakpoints, n_portfolios)
 
         # -----------------------------------------------------------------
-        # STEP 3: Apply filters
-        # Filter to bonds that:
-        # - Have valid signal (rank > 0)
-        # - Have valid return (r_1 valid means bond exists at t AND t+1)
-        #
-        # NOTE: For HP=1, dynamic_weights does NOT require bonds at t-1.
-        # The intersection is: bonds at t (formation) AND bonds at t+1 (return).
-        # Having valid r_1 already ensures both conditions are met.
+        # STEP 3: Filter to bonds with valid signal AND valid return
         # -----------------------------------------------------------------
-        valid_mask = np.ones(len(group), dtype=np.bool_)
-
-        # Must have valid signal
-        valid_mask &= (ranks > 0)
-
-        # Must have valid return (r_1 valid = exists at t AND t+1)
-        valid_mask &= np.isfinite(returns)
+        valid_mask = (ranks > 0) & np.isfinite(returns)
 
         # Apply mask
         filtered_ranks = ranks[valid_mask]
