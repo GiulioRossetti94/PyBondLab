@@ -177,44 +177,59 @@ def process_single_date(signal, returns, weights, n_portfolios):
     """
     Process a single date: rank bonds and compute portfolio returns.
 
+    Matches PyBondLab behavior:
+    1. Compute percentile breakpoints using ALL bonds with valid signal
+       (not just those with valid returns)
+    2. Assign ranks to all bonds
+    3. Compute returns using only bonds with valid (signal, return, weight)
+
     Returns (ew_long, ew_short, vw_long, vw_short) or NaN if insufficient data.
     """
-    # Filter to valid observations (valid signal, return, and weight)
     n = len(signal)
-    valid_mask = np.zeros(n, dtype=np.bool_)
-    n_valid = 0
 
+    # Step 1: Count bonds with valid SIGNAL (for ranking universe)
+    # This matches PyBondLab which ranks all bonds at formation date
+    n_valid_signal = 0
     for i in range(n):
-        if np.isfinite(signal[i]) and np.isfinite(returns[i]) and np.isfinite(weights[i]):
-            valid_mask[i] = True
-            n_valid += 1
+        if np.isfinite(signal[i]):
+            n_valid_signal += 1
 
-    if n_valid < n_portfolios:
+    if n_valid_signal < n_portfolios:
         return np.nan, np.nan, np.nan, np.nan
 
-    # Extract valid values for ranking
-    valid_signal = np.empty(n_valid, dtype=np.float64)
+    # Step 2: Extract signals for breakpoint computation (ALL valid signals)
+    valid_signal = np.empty(n_valid_signal, dtype=np.float64)
     j = 0
     for i in range(n):
-        if valid_mask[i]:
+        if np.isfinite(signal[i]):
             valid_signal[j] = signal[i]
             j += 1
 
-    # Compute breakpoints from valid signals
+    # Step 3: Compute breakpoints from ALL valid signals
     breakpoints = compute_percentile_breakpoints(valid_signal, n_portfolios)
 
     if len(breakpoints) == 0:
         return np.nan, np.nan, np.nan, np.nan
 
-    # Assign ranks to ALL observations (but only valid ones get non-zero rank)
+    # Step 4: Assign ranks to ALL observations with valid signal
     ranks = assign_ranks(signal, breakpoints, n_portfolios)
 
-    # Zero out ranks for invalid observations
+    # Step 5: Zero out ranks for bonds without valid (signal, return, weight)
+    # These bonds were ranked but won't contribute to returns
     for i in range(n):
-        if not valid_mask[i]:
+        if not (np.isfinite(signal[i]) and np.isfinite(returns[i]) and np.isfinite(weights[i])):
             ranks[i] = 0
 
-    # Compute portfolio returns
+    # Step 6: Check we have enough bonds for returns
+    n_valid_for_returns = 0
+    for i in range(n):
+        if ranks[i] > 0:
+            n_valid_for_returns += 1
+
+    if n_valid_for_returns < n_portfolios:
+        return np.nan, np.nan, np.nan, np.nan
+
+    # Step 7: Compute portfolio returns
     ew_ret, vw_ret = compute_portfolio_returns_single_date(ranks, returns, weights, n_portfolios)
 
     # Long-short: top portfolio - bottom portfolio
