@@ -20,6 +20,7 @@ Date: 2026-02-03
 
 import numpy as np
 import pandas as pd
+from pandas.tseries.offsets import MonthEnd
 from numba import njit, prange
 import time
 import warnings
@@ -283,9 +284,11 @@ def form_portfolios_single_signal(data, signal_col, return_col, weight_col, n_po
         if np.isfinite(vw_long) and np.isfinite(vw_short):
             vw_ls[i] = vw_long - vw_short
 
-    # Create series with date index
-    ew_series = pd.Series(ew_ls, index=dates, name=signal_col)
-    vw_series = pd.Series(vw_ls, index=dates, name=signal_col)
+    # Create series with date index (shift forward by 1 month to return date)
+    # Formation at t, return earned over t:t+1, labeled as t+1
+    return_dates = pd.DatetimeIndex(dates) + MonthEnd(1)
+    ew_series = pd.Series(ew_ls, index=return_dates, name=signal_col)
+    vw_series = pd.Series(vw_ls, index=return_dates, name=signal_col)
 
     # Drop NaN dates
     ew_series = ew_series.dropna()
