@@ -253,23 +253,19 @@ def form_portfolios_single_signal(data, signal_col, return_col, weight_col, n_po
     vw_ls : pd.Series
         Value-weighted long-short returns indexed by date
     """
-    # Get unique dates
-    dates = data[DATE_COL].unique()
-    dates = np.sort(dates)
+    # Group data by date for faster access
+    date_groups = data.groupby(DATE_COL)
+
+    # Get dates from groupby keys (ensures type consistency)
+    dates = sorted(date_groups.groups.keys())
     n_dates = len(dates)
 
     # Pre-allocate results
     ew_ls = np.full(n_dates, np.nan, dtype=np.float64)
     vw_ls = np.full(n_dates, np.nan, dtype=np.float64)
 
-    # Group data by date for faster access
-    date_groups = data.groupby(DATE_COL)
-
     for i, date in enumerate(dates):
-        if date not in date_groups.groups:
-            continue
-
-        group = data.loc[date_groups.groups[date]]
+        group = date_groups.get_group(date)
 
         # Extract arrays
         signal = group[signal_col].values.astype(np.float64)
