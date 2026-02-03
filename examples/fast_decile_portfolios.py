@@ -346,15 +346,19 @@ def form_all_portfolios(data, signal_cols, return_col=RETURN_COL, weight_col=WEI
                 data, signal, return_col, weight_col, n_portfolios
             )
 
-            # Sign correction
+            # Sign correction (EW and VW independent)
+            ew_name = signal
+            vw_name = signal
             if sign_correct:
                 if len(ew_ls) > 0 and ew_ls.mean() < 0:
                     ew_ls = -ew_ls
+                    ew_name = f"{signal}*"
                 if len(vw_ls) > 0 and vw_ls.mean() < 0:
                     vw_ls = -vw_ls
+                    vw_name = f"{signal}*"
 
-            ew_results[signal] = ew_ls
-            vw_results[signal] = vw_ls
+            ew_results[ew_name] = ew_ls
+            vw_results[vw_name] = vw_ls
 
         except Exception as e:
             if verbose:
