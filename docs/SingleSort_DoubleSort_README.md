@@ -1,25 +1,3 @@
----
-title: SingleSort and DoubleSort Strategy Guide
-description: |
-  Complete guide for SingleSort and DoubleSort strategies. Covers sorting bonds
-  into portfolios, custom breakpoints, rebalancing options, and execution paths.
-functionality: StrategyFormation
-entrypoint: PyBondLab.PyBondLab:StrategyFormation
-strategies:
-  - SingleSort
-  - DoubleSort
-version: 1.0
-last_updated: 2026-01-29
-outputs:
-  - returns
-  - long_short
-  - turnover
-  - characteristics
-index_keys:
-  - date
-  - portfolio
----
-
 # SingleSort and DoubleSort Strategy Guide
 
 `SingleSort` and `DoubleSort` are strategy classes that define how bonds are sorted into portfolios based on one or two characteristics. These strategies are then executed using `StrategyFormation` to compute portfolio returns.
