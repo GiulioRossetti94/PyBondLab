@@ -1,27 +1,3 @@
----
-title: BatchStrategyFormation User Guide
-description: |
-  High-performance batch processing for multiple signals with automatic parallelization.
-  Uses ultra-fast numba path when applicable, falls back to multiprocessing.
-functionality: BatchStrategyFormation
-entrypoint: PyBondLab.batch:BatchStrategyFormation
-version: 1.0
-last_updated: 2026-01-29
-outputs:
-  - returns
-  - long_short
-  - turnover
-  - characteristics
-index_keys:
-  - date
-  - signal
-  - portfolio
-parameters:
-  n_jobs: [1, -1]
-  signals_per_worker: [1, 2, 4]
-  chunk_size: [null, 20, 50]
----
-
 # BatchStrategyFormation User Guide
 
 `BatchStrategyFormation` is a high-performance tool for running portfolio sorts across **multiple signals** efficiently. Instead of running `StrategyFormation` one signal at a time, `BatchStrategyFormation` processes all your signals in a single call with automatic parallelization.
