@@ -1,3 +1,27 @@
+---
+title: BatchStrategyFormation User Guide
+description: |
+  High-performance batch processing for multiple signals with automatic parallelization.
+  Uses ultra-fast numba path when applicable, falls back to multiprocessing.
+functionality: BatchStrategyFormation
+entrypoint: PyBondLab.batch:BatchStrategyFormation
+version: 1.0
+last_updated: 2026-01-29
+outputs:
+  - returns
+  - long_short
+  - turnover
+  - characteristics
+index_keys:
+  - date
+  - signal
+  - portfolio
+parameters:
+  n_jobs: [1, -1]
+  signals_per_worker: [1, 2, 4]
+  chunk_size: [null, 20, 50]
+---
+
 # BatchStrategyFormation User Guide
 
 `BatchStrategyFormation` is a high-performance tool for running portfolio sorts across **multiple signals** efficiently. Instead of running `StrategyFormation` one signal at a time, `BatchStrategyFormation` processes all your signals in a single call with automatic parallelization.
@@ -602,6 +626,33 @@ batch = BatchStrategyFormation(
     rating='IG',
     n_jobs=4,
 )
+```
+
+### Portfolio Indices and Bond Counts (`save_idx`)
+
+The `save_idx=True` parameter saves portfolio assignments for each date. This enables:
+- Bond count statistics via `get_nbonds()`
+- Portfolio composition analysis
+
+**IMPORTANT**: `save_idx=True` only works with the slow path. To save portfolio indices, you must set `turnover=True`:
+
+```python
+# This works - slow path saves indices
+batch = BatchStrategyFormation(
+    data=data,
+    signals=['momentum'],
+    turnover=True,   # Required for save_idx to work
+)
+results = batch.fit()
+nbonds = results['momentum'].get_nbonds()  # Returns DataFrame with nbonds_s, nbonds_l, nbonds_ls
+
+# This does NOT work - fast path ignores save_idx
+batch = BatchStrategyFormation(
+    data=data,
+    signals=['momentum'],
+    turnover=False,  # Fast path - save_idx has no effect
+)
+# get_nbonds() will raise an error
 ```
 
 ---

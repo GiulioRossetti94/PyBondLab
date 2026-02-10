@@ -1,3 +1,25 @@
+---
+title: SingleSort and DoubleSort Strategy Guide
+description: |
+  Complete guide for SingleSort and DoubleSort strategies. Covers sorting bonds
+  into portfolios, custom breakpoints, rebalancing options, and execution paths.
+functionality: StrategyFormation
+entrypoint: PyBondLab.PyBondLab:StrategyFormation
+strategies:
+  - SingleSort
+  - DoubleSort
+version: 1.0
+last_updated: 2026-01-29
+outputs:
+  - returns
+  - long_short
+  - turnover
+  - characteristics
+index_keys:
+  - date
+  - portfolio
+---
+
 # SingleSort and DoubleSort Strategy Guide
 
 `SingleSort` and `DoubleSort` are strategy classes that define how bonds are sorted into portfolios based on one or two characteristics. These strategies are then executed using `StrategyFormation` to compute portfolio returns.
@@ -1008,6 +1030,27 @@ results = batch.fit()
 2. **Pre-compute signals** before running DataUncertaintyAnalysis for 75x speedup
 
 3. **Use `verbose=True`** to confirm which path is being used
+
+### Portfolio Indices and Bond Counts
+
+To save portfolio assignments and compute bond counts, you must use the slow path:
+
+```python
+# Slow path - saves portfolio indices
+sf = pbl.StrategyFormation(
+    data=data,
+    strategy=strategy,
+    turnover=True,   # Required to save portfolio indices
+    save_idx=True,   # Enable saving (default when turnover=True)
+)
+result = sf.fit()
+
+# Get bond counts per date
+nbonds = result.get_nbonds()
+# Returns DataFrame with columns: nbonds_s (short), nbonds_l (long), nbonds_ls (total)
+```
+
+**Note**: The fast path (when `turnover=False`) computes returns only and does not save portfolio indices, even if `save_idx=True` is set.
 
 ---
 
