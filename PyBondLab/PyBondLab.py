@@ -1670,12 +1670,12 @@ class StrategyFormation:
             bins=rating_bins,
             labels=[1, 2, 3],
             include_lowest=True
-        ).astype('Int64').fillna(0).values.astype(np.int64)
+        ).astype(float).fillna(0).values.astype(np.int64)
 
         # Convert to numpy arrays
         date_idx = data[ColumnNames.DATE].map(date_to_idx).values.astype(np.int64)
         id_idx = data[ColumnNames.ID].map(id_to_idx).values.astype(np.int64)
-        firm_idx = data[firm_id_col].map(firm_to_idx).fillna(-1).values.astype(np.int64)
+        firm_idx = data[firm_id_col].astype(object).map(firm_to_idx).fillna(-1).values.astype(np.int64)
         signal = data[sort_var].values.astype(np.float64)
         ret = data[ColumnNames.RETURN].values.astype(np.float64)
         vw = data[ColumnNames.VALUE_WEIGHT].values.astype(np.float64)
@@ -2841,7 +2841,7 @@ class StrategyFormation:
                     bins=rating_bins,
                     labels=[1, 2, 3],
                     include_lowest=True
-                ).astype('Int64').fillna(0).values
+                ).astype(float).fillna(0).values
 
                 # Get char values from raw data at FORMATION date (t-1, not return date)
                 # port_idx is indexed by return date (t+1), so we need chars from t = t+1 - 1
@@ -2867,7 +2867,7 @@ class StrategyFormation:
                 # Convert to numpy arrays
                 date_idx = combined_df[ColumnNames.DATE].map(date_to_idx).values.astype(np.int64)
                 id_idx = np.zeros(len(combined_df), dtype=np.int64)  # Not used in aggregation
-                firm_idx = combined_df[firm_id_col].map(firm_to_idx).fillna(-1).values.astype(np.int64)
+                firm_idx = combined_df[firm_id_col].astype(object).map(firm_to_idx).fillna(-1).values.astype(np.int64)
                 rating_terc = combined_df['rating_terc'].values.astype(np.float64)
                 ptf_rank = combined_df['ptf_rank'].values.astype(np.float64)
                 vw = combined_df[ColumnNames.VALUE_WEIGHT].values.astype(np.float64)

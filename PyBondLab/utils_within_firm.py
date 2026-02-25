@@ -303,7 +303,7 @@ def compute_within_firm_returns_aggregation_fast(
 
     # Convert to numpy arrays
     date_idx = combined_df[ColumnNames.DATE].map(date_to_idx).values.astype(np.int64)
-    firm_idx = combined_df[firm_id_col].map(firm_to_idx).fillna(-1).values.astype(np.int64)
+    firm_idx = combined_df[firm_id_col].astype(object).map(firm_to_idx).fillna(-1).values.astype(np.int64)
     rating_terc = combined_df['rating_terc'].values.astype(np.float64)
     ptf_rank = combined_df['ptf_rank'].values.astype(np.float64)
     ret = combined_df['ret'].values.astype(np.float64)
