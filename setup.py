@@ -28,7 +28,7 @@ setup(name = 'PyBondLab',
           'statsmodels>=0.14',
           'matplotlib>=3.5',
           'scipy>=1.10',
-          'pyarrow',
+          'pyarrow>=10.0',
       ],
       extras_require={
           'wrds': ['wrds'],  # For WRDS data download

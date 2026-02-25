@@ -133,7 +133,6 @@ __all__ = [
     'Momentum',
     'LTreversal',
     'WithinFirmSort',
-    'CreateDailyEnhancedTRACE',
     'AssayAnomaly',
     'RollingBeta',
     'PreAnalysisStats',

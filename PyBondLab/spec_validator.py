@@ -7,7 +7,7 @@ Validates specification combinations before running to catch:
 3. Specifications likely to produce empty or degenerate portfolios
 4. Breakpoint scheme inconsistencies
 
-@author: Claude Code
+@author: Giulio Rossetti, Alex Dickerson
 """
 
 from typing import Dict, List, Tuple, Optional, Union, Callable, Any

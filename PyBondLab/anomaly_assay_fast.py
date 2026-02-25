@@ -10,7 +10,7 @@ Key optimizations:
 3. Pre-compute filter masks and batch rank computation
 4. Group specs by filter configuration to minimize redundant work
 
-@author: Claude Code
+@author: Giulio Rossetti, Alex Dickerson
 """
 
 import numpy as np

@@ -35,3 +35,15 @@ turnover_analysis/
 comparison/
 comparison_after_fix/
 comparison_strategies/
+
+# Ignore build artifacts
+*.egg-info/
+dist/
+build/
+*.so
+
+# Ignore Claude Code / development files
+.claude/
+CLAUDE.md
+PACKAGE_SUMMARY.md
+STRUCTURE.md

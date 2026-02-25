@@ -22,6 +22,18 @@ For numba-accelerated performance (recommended):
 pip install PyBondLab[performance]
 ```
 
+For WRDS data download support:
+
+```bash
+pip install PyBondLab[wrds]
+```
+
+For all optional dependencies:
+
+```bash
+pip install PyBondLab[all]
+```
+
 <details>
 <summary>Install from source</summary>
 
@@ -218,10 +230,9 @@ See [docs/DataUncertaintyAnalysis_README.md](docs/DataUncertaintyAnalysis_README
 Test factor significance across specification choices (weighting, number of portfolios, rating subsets, breakpoint universes) following Novy-Marx and Velikov (2023).
 
 ```python
-from PyBondLab import AnomalyAssayer
+from PyBondLab import AssayAnomaly
 
-assayer = AnomalyAssayer(data=data, signal='cs', holding_period=1)
-report = assayer.fit()
+report = AssayAnomaly(data=data, signal='cs', holding_period=1)
 report.summary()
 ```
 
