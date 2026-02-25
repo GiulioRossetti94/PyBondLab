@@ -132,6 +132,8 @@ result = stats.compute(
 
 Exclude or adjust observations based on return characteristics. When a filter is applied, bonds with filtered-out returns are excluded from the analysis.
 
+> **Note:** Filters here are applied contemporaneously (ex-post) — a bond is excluded based on its return or price in the *same* month. This is appropriate for descriptive statistics, where the goal is to characterize the cross-section after removing outliers. The ex-ante vs ex-post distinction only matters for portfolio formation (see `StrategyFormation`, which provides both `get_long_short()` for ex-ante and `get_long_short_ex_post()` for ex-post factor returns).
+
 | Filter | Description | Example `filter_value` |
 |--------|-------------|----------------------|
 | `trim` | Exclude extreme returns | `0.5` (exclude \|ret\| > 50%) or `[-0.5, 0.5]` |
