@@ -8,8 +8,9 @@ DOCUMENTATION/
 # Ignore test cache
 .pytest_cache/
 
-# Real-data tests (require private parquet files)
+# Real-data tests and specs (require private parquet files)
 tests/real_data/
+pybondlab_specs/
 
 # Ignore OS files
 .DS_Store
