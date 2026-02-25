@@ -991,7 +991,9 @@ class RollingBeta:
                     output[f'adj_R2_{ret_col}'] = np.nan
             return output
 
-        output = original_data.copy()
+        # _orig_idx values are 0..N-1 (from RangeIndex after factor merge),
+        # so we must reset original_data's index to match.
+        output = original_data.copy().reset_index(drop=True)
 
         for ret_col in ret_cols:
             ret_results = results[results['_ret_col'] == ret_col].copy()
