@@ -270,12 +270,12 @@ ew_ep, vw_ep = results.get_long_short_ex_post()   # Ex-post returns
 
 ## Additional Tools
 
-| Tool | Description |
-|------|-------------|
-| `pbl.Momentum(lookback_period, skip)` | Momentum strategy from past returns |
-| `pbl.LTreversal(lookback_period, skip)` | Long-term reversal strategy |
-| `pbl.RollingBeta(factors, window)` | Rolling beta estimation |
-| `pbl.PreAnalysisStats(data, variables)` | Summary statistics before sorting |
+| Tool | Description | Docs |
+|------|-------------|------|
+| `pbl.Momentum(lookback_period, skip)` | Momentum strategy from past returns | |
+| `pbl.LTreversal(lookback_period, skip)` | Long-term reversal strategy | |
+| `pbl.RollingBeta(factors, window)` | Rolling beta estimation (~30x with numba) | [docs](docs/RollingBeta_README.md) |
+| `pbl.PreAnalysisStats(data, variables)` | Summary statistics before sorting | [docs](docs/PreAnalysisStats_README.md) |
 
 ---
 
