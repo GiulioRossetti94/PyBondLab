@@ -18,6 +18,7 @@ Created: 2024
 import gc
 import platform
 import time
+import warnings
 import multiprocessing as mp
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Tuple, Any, Union
@@ -370,9 +371,9 @@ def _print_memory_config(config: Dict[str, Any], n_signals: int, verbose: bool =
         status = "[OK]" if mem['is_safe'] else "[!] HIGH"
         print(f"  Est. peak memory: {mem['peak_mb']/1024:.1f} GB {status}")
 
-    # Always print warnings
+    # Always emit warnings
     for warning in config['warnings']:
-        print(f"  [!] {warning}")
+        warnings.warn(warning, UserWarning, stacklevel=2)
 
 
 # =============================================================================

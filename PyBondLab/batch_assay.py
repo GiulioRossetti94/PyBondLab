@@ -562,8 +562,11 @@ class BatchAssayAnomaly:
 
         if n_workers > 1 and not can_pickle:
             if self.verbose:
-                print(f"Note: Falling back to sequential processing because {pickle_reason}")
-                print("      (Lambda functions cannot be sent to worker processes)")
+                warnings.warn(
+                    f"Falling back to sequential processing because {pickle_reason} "
+                    f"(lambda functions cannot be sent to worker processes)",
+                    UserWarning, stacklevel=2,
+                )
             n_workers = 1
 
         if self.verbose:

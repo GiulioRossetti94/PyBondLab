@@ -438,13 +438,13 @@ class RollingBeta:
             if needs_numpy:
                 if self.verbose:
                     reason = "controls" if self.controls is not None else "no_gap"
-                    print(f"Using numpy engine (required for {reason})")
+                    warnings.warn(f"Using numpy engine (required for {reason})", UserWarning, stacklevel=2)
                 return 'numpy'
             if NUMBA_AVAILABLE:
                 return 'numba'
             else:
                 if self.verbose:
-                    print("Numba not available, using numpy engine")
+                    warnings.warn("Numba not available, using numpy engine", UserWarning, stacklevel=2)
                 return 'numpy'
 
         elif engine == 'numba':

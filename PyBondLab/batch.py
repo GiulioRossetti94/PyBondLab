@@ -621,7 +621,7 @@ class BatchStrategyFormation:
                 # Print warnings if memory is tight
                 for warning in parallel_config['warnings']:
                     if verbose:
-                        print(f"  [!] {warning}")
+                        warnings.warn(warning, UserWarning, stacklevel=2)
         else:
             # Sequential or small batch - no auto-tuning needed
             self.n_jobs = n_jobs

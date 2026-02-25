@@ -1445,11 +1445,11 @@ class DataUncertaintyAnalysis:
                 if self.verbose:
                     if result['success']:
                         if result.get('warning'):
-                            print(f"OK (WARNING: {result['warning']})")
+                            warnings.warn(f"Config warning: {result['warning']}", UserWarning, stacklevel=2)
                         else:
                             print("OK")
                     else:
-                        print(f"FAILED: {result['error']}")
+                        warnings.warn(f"Config failed: {result['error']}", RuntimeWarning, stacklevel=2)
 
                 results_list.append(result)
 

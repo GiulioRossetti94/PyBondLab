@@ -732,7 +732,7 @@ class BatchWithinFirmSortFormation(BaseBatchFormation):
             except Exception as e:
                 results.errors[signal_name] = str(e)
                 if self.verbose and not TQDM_AVAILABLE:
-                    print(f"  Error processing {signal_name}: {e}")
+                    warnings.warn(f"Error processing {signal_name}: {e}", RuntimeWarning, stacklevel=2)
 
         if self.verbose:
             print(f"  Signal processing: {time.time() - t_signals:.2f}s")

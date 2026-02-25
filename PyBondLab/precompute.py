@@ -297,7 +297,7 @@ class PrecomputeBuilder:
             VW indexed by ID
         """
         if sub.index.has_duplicates:
-            print("Warning: Duplicate IDs found when extracting VW. Taking last occurrence.")
+            warnings.warn("Duplicate IDs found when extracting VW. Taking last occurrence.", UserWarning, stacklevel=2)
             return sub.groupby('ID', as_index=True)['VW'].last()
         else:
             return sub.set_index('ID')['VW']

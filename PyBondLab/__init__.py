@@ -1,8 +1,10 @@
+import warnings
+
 # Core strategy formation
 try:
     from .PyBondLab import StrategyFormation, load_breakpoints_WRDS
 except ImportError as e:
-    print(f"Warning: Could not import StrategyFormation: {e}")
+    warnings.warn(f"Could not import StrategyFormation: {e}", ImportWarning, stacklevel=2)
     StrategyFormation = None
     load_breakpoints_WRDS = None
 
@@ -10,21 +12,21 @@ except ImportError as e:
 try:
     from .batch import BatchStrategyFormation, BatchResults, batch_single_sort
 except ImportError as e:
-    print(f"Warning: Could not import batch processing: {e}")
+    warnings.warn(f"Could not import batch processing: {e}", ImportWarning, stacklevel=2)
     BatchStrategyFormation = BatchResults = batch_single_sort = None
 
 # Batch WithinFirmSort processing
 try:
     from .batch_withinfirm import BatchWithinFirmSortFormation
 except ImportError as e:
-    print(f"Warning: Could not import BatchWithinFirmSortFormation: {e}")
+    warnings.warn(f"Could not import BatchWithinFirmSortFormation: {e}", ImportWarning, stacklevel=2)
     BatchWithinFirmSortFormation = None
 
 # Strategy classes
 try:
     from .StrategyClass import SingleSort, DoubleSort, Momentum, LTreversal, WithinFirmSort
 except ImportError as e:
-    print(f"Warning: Could not import Strategy classes: {e}")
+    warnings.warn(f"Could not import Strategy classes: {e}", ImportWarning, stacklevel=2)
     SingleSort = DoubleSort = Momentum = LTreversal = WithinFirmSort = None
 
 
@@ -55,7 +57,7 @@ except ImportError:
 try:
     from .rolling_beta import RollingBeta
 except ImportError as e:
-    print(f"Warning: Could not import RollingBeta: {e}")
+    warnings.warn(f"Could not import RollingBeta: {e}", ImportWarning, stacklevel=2)
     RollingBeta = None
 
 # Describe module (summary statistics)
@@ -74,21 +76,21 @@ except ImportError:
 try:
     from .data_uncertainty import DataUncertaintyAnalysis, DataUncertaintyResults
 except ImportError as e:
-    print(f"Warning: Could not import DataUncertaintyAnalysis: {e}")
+    warnings.warn(f"Could not import DataUncertaintyAnalysis: {e}", ImportWarning, stacklevel=2)
     DataUncertaintyAnalysis = DataUncertaintyResults = None
 
 # Naming configuration
 try:
     from .naming import NamingConfig
 except ImportError as e:
-    print(f"Warning: Could not import NamingConfig: {e}")
+    warnings.warn(f"Could not import NamingConfig: {e}", ImportWarning, stacklevel=2)
     NamingConfig = None
 
 # Panel extraction
 try:
     from .extract import extract_panel
 except ImportError as e:
-    print(f"Warning: Could not import extract_panel: {e}")
+    warnings.warn(f"Could not import extract_panel: {e}", ImportWarning, stacklevel=2)
     extract_panel = None
 
 # Specification validator
@@ -102,7 +104,7 @@ try:
         filter_spec_list,
     )
 except ImportError as e:
-    print(f"Warning: Could not import spec_validator: {e}")
+    warnings.warn(f"Could not import spec_validator: {e}", ImportWarning, stacklevel=2)
     validate_specs = SpecificationValidator = ValidationResult = None
     generate_spec_list = get_valid_spec_list = filter_spec_list = None
 
@@ -110,14 +112,14 @@ except ImportError as e:
 try:
     from .anomaly_assay_fast import assay_anomaly_fast, AnomalyAssayResult
 except ImportError as e:
-    print(f"Warning: Could not import anomaly_assay_fast: {e}")
+    warnings.warn(f"Could not import anomaly_assay_fast: {e}", ImportWarning, stacklevel=2)
     assay_anomaly_fast = AnomalyAssayResult = None
 
 # Batch anomaly assayer
 try:
     from .batch_assay import BatchAssayAnomaly, BatchAssayResults, batch_assay_anomaly
 except ImportError as e:
-    print(f"Warning: Could not import batch_assay: {e}")
+    warnings.warn(f"Could not import batch_assay: {e}", ImportWarning, stacklevel=2)
     BatchAssayAnomaly = BatchAssayResults = batch_assay_anomaly = None
 
 __version__ = '0.2.0'

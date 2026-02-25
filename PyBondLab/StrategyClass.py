@@ -1193,7 +1193,7 @@ class WithinFirmSort(Strategy):
         except ImportError:
             self._numba_available = False
             if verbose:
-                print("Warning: numba not available. Within-firm sorting will be slower.")
+                warnings.warn("numba not available. Within-firm sorting will be slower.", UserWarning, stacklevel=2)
 
         if verbose:
             self._print_within_firm_details()
