@@ -8,6 +8,9 @@ DOCUMENTATION/
 # Ignore test cache
 .pytest_cache/
 
+# Real-data tests (require private parquet files)
+tests/real_data/
+
 # Ignore OS files
 .DS_Store
 

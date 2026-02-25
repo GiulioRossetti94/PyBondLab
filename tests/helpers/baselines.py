@@ -9,24 +9,22 @@ Per AGENT_PLAN.md:
 from __future__ import annotations
 
 import json
-import pickle
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
 # Base paths
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
-_PYBONDLAB_DIR = _PROJECT_ROOT / "PyBondLab"
-_EXAMPLES_DIR = _PROJECT_ROOT / "examples"
+_BASELINE_DIR = _PROJECT_ROOT / "PyBondLab" / "baseline_results"
 
-# Baseline file locations
+# Baseline file locations (all baselines live in PyBondLab/baseline_results/)
 BASELINE_PATHS = {
-    "main": _PYBONDLAB_DIR / "baseline_results" / "baseline_results.json",
-    "main_pkl": _PYBONDLAB_DIR / "baseline_results" / "baseline_results.pkl",
-    "data_uncertainty": _EXAMPLES_DIR / "data_uncertainty_results" / "data_uncertainty_baseline.json",
-    "singlesort": _EXAMPLES_DIR / "data_uncertainty_results" / "singlesort_baseline.json",
+    "main": _BASELINE_DIR / "baseline_results.json",
+    "main_pkl": _BASELINE_DIR / "baseline_results.pkl",
+    "data_uncertainty": _BASELINE_DIR / "data_uncertainty_baseline.json",
+    "singlesort": _BASELINE_DIR / "singlesort_baseline.json",
 }
 
 
