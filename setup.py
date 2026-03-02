@@ -21,7 +21,7 @@ setup(name = 'PyBondLab',
           'Topic :: Office/Business :: Financial',
           'Topic :: Scientific/Engineering',
       ],
-      keywords='corporate bonds, portfolio sorting, data cleaning',
+      keywords='corporate bonds, portfolio sorting, asset pricing',
       packages=find_packages(include=['PyBondLab', 'PyBondLab.*']),
       include_package_data=True,
       package_data={
