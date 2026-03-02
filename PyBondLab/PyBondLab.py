@@ -1455,13 +1455,12 @@ class StrategyFormation:
         banding = self.banding_threshold if self.banding_threshold is not None else -1.0
 
         # Call the full-featured numba kernel
-        # Note: For non-staggered rebalancing, always use dynamic_weights=False
-        # (VW from formation date, not d-1) per PyBondLab specification
+        # dynamic_weights: True = buy-and-hold VW (d-1), False = constant-weight VW (formation)
         ew_ret_arr, vw_ret_arr, ew_turn_arr, vw_turn_arr, ew_chars_arr, vw_chars_arr = \
             compute_nonstaggered_full_fast(
                 date_idx, id_idx, signal, ret, vw, char_values,
                 rebal_dates_idx, self.hor, TM, n_ids, tot_nport, n_chars,
-                self.turnover, n_chars > 0, banding, False, vw_lookup  # dynamic_weights=False
+                self.turnover, n_chars > 0, banding, self.dynamic_weights, vw_lookup
             )
 
         # Compute long-short returns
@@ -2328,10 +2327,13 @@ class StrategyFormation:
 
             date_t1 = self.datelist[t1_idx]
 
-            # For non-staggered rebalancing, always use VW from formation date (not d-1)
-            # This is the correct behavior per PyBondLab specification
-            # date_t1_minus1 = None means use VW from formation date (date_t)
-            date_t1_minus1 = None  # Always None for non-staggered
+            # Get date for dynamic weights (VW from d-1 if enabled)
+            # When dynamic_weights=True, use VW from previous month (buy-and-hold)
+            # When dynamic_weights=False, use VW from formation date (constant-weight)
+            if self.dynamic_weights and t1_idx > 0:
+                date_t1_minus1 = self.datelist[t1_idx - 1]
+            else:
+                date_t1_minus1 = None
 
             # Get data
             It0 = precomp.It0.get(date_t, pd.DataFrame())
@@ -2344,8 +2346,8 @@ class StrategyFormation:
                 # EA: Always use unfiltered returns from It1
                 It1 = precomp.It1.get(date_t1, pd.DataFrame())
 
-            # For non-staggered, always use VW from formation date (date_t)
-            It1m = precomp.It1m.get(date_t, pd.DataFrame())
+            # Use VW from d-1 if dynamic weights enabled, otherwise from formation date
+            It1m = precomp.It1m.get(date_t1_minus1 if date_t1_minus1 else date_t, pd.DataFrame())
 
             # Form portfolio
             result = self._form_single_period(
