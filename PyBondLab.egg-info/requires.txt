@@ -2,5 +2,15 @@ numpy<2
 pandas>=1.5
 statsmodels>=0.14
 matplotlib>=3.5
-pyarrow
+scipy>=1.10
+pyarrow>=10.0
+
+[all]
+wrds
+numba>=0.57
+
+[performance]
+numba>=0.57
+
+[wrds]
 wrds
