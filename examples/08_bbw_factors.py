@@ -168,30 +168,3 @@ for f in ['MKTB', 'DRF', 'CRF', 'LRF']:
     m1 = merged[f].mean() * 100
     m2 = merged[f'{f}_ref'].mean() * 100
     print(f"  {f:<8} {r:>8.4f} {diff:>12.6f} {m1:>12.3f} {m2:>12.3f}")
-
-# =============================================================================
-# 6. Compare with Byungmin / JFE factors (if available)
-# =============================================================================
-
-byungmin_path = "/Users/u1972481/Dropbox/bbw_2024/Byungmin_BBW/dmr_factors.csv"
-if os.path.exists(byungmin_path):
-    print("\n-- Comparison with JFE factors (Byungmin) --")
-
-    dmr = pd.read_csv(byungmin_path)
-    dmr['date'] = pd.to_datetime(dmr['date'])
-    dmr = dmr.set_index('date')
-
-    merged_jfe = bbw.join(dmr).dropna()
-    print(f"  Overlapping months: {len(merged_jfe)}")
-
-    jfe_map = {'MKTB': 'MKTBjfe', 'DRF': 'DRFjfe', 'CRF': 'CRFjfe', 'LRF': 'LRFjfe'}
-    print(f"\n  {'Factor':<8} {'Corr':>8} {'Repl Mean%':>12} {'JFE Mean%':>12}")
-    print("  " + "-" * 42)
-    for f, jfe in jfe_map.items():
-        if jfe in merged_jfe.columns:
-            r = merged_jfe[f].corr(merged_jfe[jfe])
-            m1 = merged_jfe[f].mean() * 100
-            m2 = merged_jfe[jfe].mean() * 100
-            print(f"  {f:<8} {r:>8.4f} {m1:>12.3f} {m2:>12.3f}")
-
-print("\n[Done] Script 08 complete.")
