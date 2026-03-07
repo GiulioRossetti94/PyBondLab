@@ -27,8 +27,15 @@ examples/filtering
 examples/turnover
 examples/turnover_tracking_examples
 
+# Ignore non-release example folders
+examples/replication_DRR/
+examples/replication_LNS/
+examples/real_data_examples/
+examples/OLD/
+examples/data/
+
 # Ignore data files
-examples/real_data_examples/fama_french_factors/data/
+examples/FF3/data/
 
 test/
 

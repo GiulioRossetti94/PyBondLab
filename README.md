@@ -192,7 +192,7 @@ strategy = pbl.DoubleSort(
 )
 ```
 
-See [examples/real_data_examples/fama_french_factors/](examples/real_data_examples/fama_french_factors/) for a complete Fama-French replication.
+See [examples/FF3/](examples/FF3/) for a complete Fama-French replication.
 
 ---
 
