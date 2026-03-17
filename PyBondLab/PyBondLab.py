@@ -175,11 +175,6 @@ class StrategyFormation:
         if config is None:
             # Backward compatibility: create config from kwargs
             config = StrategyFormationConfig.from_legacy_params(**kwargs)
-
-        # Handle configuration
-        if config is None:
-            # Backward compatibility: create config from kwargs
-            config = StrategyFormationConfig.from_legacy_params(**kwargs)
         self.config = config
 
         # Extract configuration components for easier access
