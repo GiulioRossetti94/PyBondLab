@@ -7,7 +7,7 @@ Some PyBondLab parameters are conditionally active, silently ignored, or behave 
 | Object | Parameter | Condition | Behavior |
 |--------|-----------|-----------|----------|
 | `StrategyFormation` / `BatchStrategyFormation` | `dynamic_weights` | `holding_period == 1` | No effect — VW results are identical for `True` and `False`. Only matters for `holding_period > 1`. |
-| `SingleSort` | `holding_period` | `rebalance_frequency != 'monthly'` | Must be `1`. The actual holding period is determined by `rebalance_frequency`. |
+| `SingleSort` / `DoubleSort` | `holding_period` | `rebalance_frequency != 'monthly'` | Omit it — defaults to `1`. The actual calendar holding period is determined by `rebalance_frequency` (e.g., quarterly = 3 months). Passing any value other than `1` raises `ValueError`. |
 | `SingleSort` / `DoubleSort` | `rebalance_month` | `rebalance_frequency = 'monthly'` | Silently ignored. Only controls rebalancing months for quarterly, semi-annual, and annual frequencies. |
 | `BatchStrategyFormation` | `banding` (int) | Always | Accepts an integer (e.g., `banding=1`) and converts internally to `banding_threshold = banding / num_portfolios`. |
 | `StrategyFormation` | `banding_threshold` (float) | Always | Accepts a float directly (e.g., `banding_threshold=0.2`). Do not confuse with `BatchStrategyFormation.banding`. |

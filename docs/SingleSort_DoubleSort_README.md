@@ -184,7 +184,6 @@ strategy = pbl.SingleSort(
 
 # Quarterly rebalancing (every 3 months)
 strategy = pbl.SingleSort(
-    holding_period=3,
     sort_var='value',
     num_portfolios=5,
     rebalance_frequency='quarterly',
@@ -192,7 +191,6 @@ strategy = pbl.SingleSort(
 
 # Annual rebalancing in June
 strategy = pbl.SingleSort(
-    holding_period=12,
     sort_var='size',
     num_portfolios=5,
     rebalance_frequency='annual',
@@ -201,7 +199,6 @@ strategy = pbl.SingleSort(
 
 # Semi-annual rebalancing in June and December
 strategy = pbl.SingleSort(
-    holding_period=6,
     sort_var='momentum',
     num_portfolios=5,
     rebalance_frequency='semi-annual',
@@ -210,7 +207,6 @@ strategy = pbl.SingleSort(
 
 # Custom frequency (every 4 months)
 strategy = pbl.SingleSort(
-    holding_period=4,
     sort_var='momentum',
     num_portfolios=5,
     rebalance_frequency=4,  # Integer = months between rebalancing
@@ -554,13 +550,14 @@ Filter the bond universe based on any characteristic column. This is useful for:
 #### Basic Usage
 
 ```python
-from PyBondLab.config import StrategyFormationConfig, DataConfig
+from PyBondLab.config import StrategyFormationConfig, DataConfig, FormationConfig
 
 # Filter to bonds with maturity 1-5 years
 config = StrategyFormationConfig(
     data=DataConfig(
         subset_filter={'MATURITY': (1, 5)},
     ),
+    formation=FormationConfig(),
 )
 
 sf = pbl.StrategyFormation(
@@ -893,7 +890,6 @@ sf = pbl.StrategyFormation(
 sf = pbl.StrategyFormation(
     data=data,
     strategy=pbl.SingleSort(
-        holding_period=12,
         sort_var='value',
         num_portfolios=5,
         rebalance_frequency='annual',  # ❌ Not monthly
@@ -1085,9 +1081,8 @@ result = sf.fit()
 ### SingleSort with Different Rebalancing
 
 ```python
-# Quarterly momentum with 3-month holding
+# Quarterly momentum
 strategy = pbl.SingleSort(
-    holding_period=3,
     sort_var='momentum_3m',
     num_portfolios=5,
     rebalance_frequency='quarterly',
@@ -1095,7 +1090,6 @@ strategy = pbl.SingleSort(
 
 # Annual value strategy rebalancing in June
 strategy = pbl.SingleSort(
-    holding_period=12,
     sort_var='book_to_market',
     num_portfolios=5,
     rebalance_frequency='annual',
@@ -1104,7 +1098,6 @@ strategy = pbl.SingleSort(
 
 # Semi-annual in June and December
 strategy = pbl.SingleSort(
-    holding_period=6,
     sort_var='quality',
     num_portfolios=5,
     rebalance_frequency='semi-annual',

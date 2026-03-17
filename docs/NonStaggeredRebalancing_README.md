@@ -30,12 +30,13 @@ import PyBondLab as pbl
 
 # Quarterly rebalancing with returns collected EVERY month
 strategy = pbl.SingleSort(
-    holding_period=1,                 # Must be 1 for non-staggered
     sort_var='signal',
     num_portfolios=5,
-    rebalance_frequency='quarterly',  # Rebalance every 3 months
+    rebalance_frequency='quarterly',  # Rebalance every 3 months (holding period = 3 months)
     rebalance_month=1,                # First rebalance in January
 )
+# Note: omit holding_period for non-staggered — it defaults to 1.
+# The actual holding period is determined by rebalance_frequency.
 
 sf = pbl.StrategyFormation(
     data=data,
@@ -975,9 +976,10 @@ data = generate_synthetic_data(n_dates=12, n_bonds=100, seed=42)
 
 sf = pbl.StrategyFormation(
     data=data,
-    strategy=pbl.SingleSort(holding_period=1, sort_var='signal1', num_portfolios=5),
-    rebalance_frequency='quarterly',
-    rebalance_month=1,
+    strategy=pbl.SingleSort(
+        sort_var='signal1', num_portfolios=5,
+        rebalance_frequency='quarterly', rebalance_month=1,
+    ),
     verbose=False,
 )
 result = sf.fit()
@@ -1003,11 +1005,16 @@ assert n_dates == 11, f"Expected 11, got {n_dates}"
 ### API Reference
 
 ```python
-pbl.StrategyFormation(
-    data=data,
-    strategy=strategy,
+strategy = pbl.SingleSort(
+    sort_var='signal',
+    num_portfolios=5,
     rebalance_frequency='quarterly',  # 'quarterly', 'semi-annual', 'annual', or int
     rebalance_month=1,                # Which month(s) to rebalance (1-12)
+)
+
+sf = pbl.StrategyFormation(
+    data=data,
+    strategy=strategy,
     turnover=True,                    # Compute turnover at EVERY date
 )
 ```
