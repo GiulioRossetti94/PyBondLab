@@ -30,16 +30,16 @@ import PyBondLab as pbl
 
 # Quarterly rebalancing with returns collected EVERY month
 strategy = pbl.SingleSort(
-    holding_period=1,           # Ignored for non-staggered
+    holding_period=1,                 # Must be 1 for non-staggered
     sort_var='signal',
     num_portfolios=5,
+    rebalance_frequency='quarterly',  # Rebalance every 3 months
+    rebalance_month=1,                # First rebalance in January
 )
 
 sf = pbl.StrategyFormation(
     data=data,
     strategy=strategy,
-    rebalance_frequency='quarterly',  # Rebalance every 3 months
-    rebalance_month=1,                # First rebalance in January
     turnover=True,
 )
 result = sf.fit()

@@ -1,3 +1,6 @@
+> **DEPRECATED:** This file is a legacy artifact and may not reflect the current API.
+> For up-to-date documentation, see [README.md](README.md) and the files in [docs/](docs/).
+
 # PyBondLab_v2 Package Summary
 
 ## Package Structure

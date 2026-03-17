@@ -232,8 +232,9 @@ Test factor significance across specification choices (weighting, number of port
 ```python
 from PyBondLab import AssayAnomaly
 
-report = AssayAnomaly(data=data, signal='cs', holding_period=1)
-report.summary()
+report = AssayAnomaly(data=data, sort_var='cs', holding_periods=[1])
+_, recap = report.summary_results()
+print(recap)
 ```
 
 See [docs/AnomalyAssay_README.md](docs/AnomalyAssay_README.md) and [docs/BatchAssayAnomaly_README.md](docs/BatchAssayAnomaly_README.md).
@@ -262,15 +263,15 @@ Four look-ahead bias free filtering procedures for corporate bond research:
 
 | Filter | Description | Example |
 |--------|-------------|---------|
-| **Trim** | Exclude extreme returns | `{'adj': 'trim', 'w': 0.2}` |
-| **Price** | Exclude extreme prices | `{'adj': 'price', 'w': [20, 150]}` |
-| **Bounce** | Exclude return reversals | `{'adj': 'bounce', 'w': 0.01}` |
-| **Winsorize** | Cap tails at percentiles | `{'adj': 'wins', 'w': 98, 'loc': 'both'}` |
+| **Trim** | Exclude extreme returns | `{'adj': 'trim', 'level': 0.2}` |
+| **Price** | Exclude extreme prices | `{'adj': 'price', 'level': [20, 150]}` |
+| **Bounce** | Exclude return reversals | `{'adj': 'bounce', 'level': 0.01}` |
+| **Winsorize** | Cap tails at percentiles | `{'adj': 'wins', 'level': 98, 'location': 'both'}` |
 
 ```python
 results = pbl.StrategyFormation(
     data, strategy=strategy,
-    filters={'adj': 'trim', 'w': 0.2}
+    filters={'adj': 'trim', 'level': 0.2}
 ).fit()
 
 ew_ea, vw_ea = results.get_long_short()           # Ex-ante returns

@@ -51,7 +51,7 @@ results = DataUncertaintyAnalysis(
 print(results.summary())
 
 # Access factor returns
-ew_ea = results.ew_ea  # DataFrame: dates × configurations
+ew_ea = results.ew_ex_ante  # DataFrame: dates × configurations
 ```
 
 ---
@@ -547,16 +547,16 @@ momentum_only = results.filter(signal='momentum')
 right_tail = results.filter(location='right')
 
 # Get factor returns for filtered results
-ew_ea = hp1_trim.ew_ea  # DataFrame with filtered columns only
+ew_ea = hp1_trim.ew_ex_ante  # DataFrame with filtered columns only
 
 # Export to Excel (multiple sheets)
 results.to_excel('data_uncertainty_results.xlsx')
 
 # Excel file contains:
-# - ew_ea: EW Ex-Ante factor returns
-# - vw_ea: VW Ex-Ante factor returns
-# - ew_ep: EW Ex-Post factor returns
-# - vw_ep: VW Ex-Post factor returns
+# - EW_EA: EW Ex-Ante factor returns
+# - VW_EA: VW Ex-Ante factor returns
+# - EW_EP: EW Ex-Post factor returns
+# - VW_EP: VW Ex-Post factor returns
 # - summary: Summary statistics
 # - configs: Configuration metadata
 ```
@@ -569,10 +569,10 @@ results.to_excel('data_uncertainty_results.xlsx')
 
 ```python
 # Four factor panels available
-ew_ea = results.ew_ea  # Equal-weighted, Ex-Ante
-vw_ea = results.vw_ea  # Value-weighted, Ex-Ante
-ew_ep = results.ew_ep  # Equal-weighted, Ex-Post
-vw_ep = results.vw_ep  # Value-weighted, Ex-Post
+ew_ea = results.ew_ex_ante  # Equal-weighted, Ex-Ante
+vw_ea = results.vw_ex_ante  # Value-weighted, Ex-Ante
+ew_ep = results.ew_ex_post  # Equal-weighted, Ex-Post
+vw_ep = results.vw_ex_post  # Value-weighted, Ex-Post
 
 # Each is a DataFrame: dates × configurations
 print(ew_ea.head())
@@ -897,7 +897,7 @@ results_fast = DataUncertaintyAnalysis(
 ).fit()
 
 # Should be identical
-diff = (results_slow.ew_ea - results_fast.ew_ea).abs().max().max()
+diff = (results_slow.ew_ex_ante - results_fast.ew_ex_ante).abs().max().max()
 print(f"Max difference: {diff:.2e}")  # Should be < 1e-10
 ```
 
@@ -961,7 +961,7 @@ results.to_excel('data_uncertainty_results.xlsx')
 print("\nResults exported to data_uncertainty_results.xlsx")
 
 # Access factor returns for custom analysis
-ew_ea = results.ew_ea
+ew_ea = results.ew_ex_ante
 print(f"\nFactor returns shape: {ew_ea.shape}")
 print(f"Columns: {list(ew_ea.columns)[:5]}...")
 ```

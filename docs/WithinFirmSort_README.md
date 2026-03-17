@@ -521,53 +521,15 @@ print(f"VW Sharpe: {vw_ls.mean() / vw_ls.std() * 12**0.5:.2f}")
 
 ## Fast Path vs Slow Path
 
-WithinFirmSort automatically uses a fast numba-optimized path when conditions are met.
+> **Note:** The WithinFirmSort fast path is currently **disabled** due to ranking discrepancies
+> between the fast and slow paths. All WithinFirmSort computations use the slow (pandas) path,
+> which always produces correct results. The fast path code is retained for future re-enablement
+> once the discrepancies are resolved.
 
-### When Fast Path is Used
+### Current Behavior
 
-The **fast path** (33x speedup) is automatically used when ALL of these conditions are met:
-
-| Condition | Required Value |
-|-----------|---------------|
-| `holding_period` | `1` |
-| `turnover` | `False` |
-| `chars` | `None` |
-| `rebalance_frequency` | `'monthly'` |
-
-### When Slow Path is Used
-
-The **slow path** is used when ANY of these conditions apply:
-
-- `holding_period > 1` (currently disabled, raises error)
-- `turnover=True`
-- `chars` is specified
-- Non-monthly rebalancing
-
-### How to Check Which Path is Used
-
-```python
-sf = pbl.StrategyFormation(
-    data=data,
-    strategy=strategy,
-    turnover=False,      # Fast path eligible
-    chars=None,          # Fast path eligible
-    verbose=True         # Will print which path is used
-)
-result = sf.fit()
-
-# With verbose=True, you'll see:
-# "Using ULTRA-FAST WithinFirmSort returns-only path..." (fast path)
-# OR
-# "Starting portfolio formation..." (slow path)
-```
-
-### Performance Comparison
-
-| Configuration | Fast Path | Slow Path | Speedup |
-|---------------|-----------|-----------|---------|
-| HP=1, no turnover, no chars | **0.03s** | 1.0s | **33x** |
-| HP=1, with turnover | N/A | 0.94s | (slow only) |
-| HP=1, with chars | N/A | ~1.0s | (slow only) |
+WithinFirmSort always uses the slow path regardless of configuration. The slow path uses
+optimized numba kernels for turnover and characteristics aggregation where applicable.
 
 ---
 
@@ -577,7 +539,7 @@ result = sf.fit()
 |---------|-----------|-----------|-------|
 | **Turnover** | ✅ YES | Slow | Uses optimized Phase 4 numba kernels |
 | **Characteristics** | ✅ YES | Slow | Hierarchical aggregation (same as returns) |
-| **HP=1** | ✅ YES | Fast or Slow | Full support |
+| **HP=1** | ✅ YES | Slow | Full support |
 | **HP>1 (Staggered)** | ❌ DISABLED | N/A | Raises ValueError (known bugs) |
 | **Banding** | ❌ NO | N/A | Not applicable (see below) |
 | **Rating filter** | ✅ YES | Both | Via subset_filter or rating parameter |
@@ -603,19 +565,19 @@ currently disabled. Attempting to use `holding_period > 1` will raise a `ValueEr
 
 | Configuration | Time | Notes |
 |---------------|------|-------|
-| HP=1, turnover=False, chars=None | **0.03s** | Fast path (33x speedup) |
-| HP=1, turnover=True | 0.94s | Slow path with optimized turnover |
+| HP=1, turnover=False, chars=None | ~1.0s | Slow path (fast path currently disabled) |
+| HP=1, turnover=True | ~1.0s | Slow path with optimized turnover |
 | HP=1, chars=['char1', 'char2'] | ~1.0s | Slow path with chars aggregation |
 
 *Test data: 11,940 rows, 199 bonds, 50 firms, 60 dates*
 
 ### Large Data Performance
 
-| Dataset Size | Fast Path | Slow Path |
-|--------------|-----------|-----------|
-| 100K rows | ~0.1s | ~3s |
-| 1M rows | ~0.5s | ~15s |
-| 2.4M rows | ~1s | ~35s |
+| Dataset Size | Time (Slow Path) |
+|--------------|------------------|
+| 100K rows | ~3s |
+| 1M rows | ~15s |
+| 2.4M rows | ~35s |
 
 ---
 
@@ -634,7 +596,7 @@ strategy = pbl.WithinFirmSort(
     min_bonds_per_firm=2,
 )
 
-# Run formation (fast path)
+# Run formation
 result = pbl.StrategyFormation(
     data=data,
     strategy=strategy,
@@ -762,8 +724,7 @@ PyBondLab/
    - Assigns bonds to HIGH/LOW portfolios
 
 4. **`_fit_withinfirm_fast()`** (PyBondLab.py)
-   - Ultra-fast path bypassing pandas
-   - Direct numpy/numba computation
+   - Numba-based fast path (currently disabled due to ranking discrepancies)
 
 5. **`_aggregate_within_firm_results()`** (PyBondLab.py)
    - Hierarchical return aggregation
@@ -788,35 +749,34 @@ python examples/validate_withinfirmsort.py
 ```
 
 This validates:
-1. Basic execution (fast and slow paths)
+1. Basic execution
 2. Turnover computation
 3. Characteristics aggregation
-4. Fast path vs slow path consistency
-5. Difference from SingleSort (confirming within-firm logic)
+4. Difference from SingleSort (confirming within-firm logic)
 
 ### Manual Validation
 
 ```python
 import PyBondLab as pbl
 
-# Run both paths and compare
+# Run with and without turnover and compare
 strategy = pbl.WithinFirmSort(holding_period=1, sort_var='signal')
 
-# Fast path
-result_fast = pbl.StrategyFormation(
+# Without turnover
+result_no_to = pbl.StrategyFormation(
     data, strategy, turnover=False, verbose=True
 ).fit()
 
-# Force slow path by enabling turnover
-result_slow = pbl.StrategyFormation(
+# With turnover
+result_to = pbl.StrategyFormation(
     data, strategy, turnover=True, verbose=True
 ).fit()
 
 # Compare returns (should match exactly)
-ew_fast, vw_fast = result_fast.get_long_short()
-ew_slow, vw_slow = result_slow.get_long_short()
+ew_no_to, vw_no_to = result_no_to.get_long_short()
+ew_to, vw_to = result_to.get_long_short()
 
-diff = (vw_fast - vw_slow).abs().max()
+diff = (vw_no_to - vw_to).abs().max()
 print(f"Max difference: {diff:.2e}")  # Should be ~0
 ```
 
@@ -840,9 +800,7 @@ issuer-specific shocks unrelated to the bond characteristic of interest**.
 3. **Return date indexing**: All outputs (returns, turnover, characteristics) are indexed
    by return date (t+1), consistent with standard asset pricing conventions
 
-4. **Fast path** (33x speedup) for returns-only computation
-
-5. **Full feature support** for turnover and characteristics
+4. **Full feature support** for turnover and characteristics
 
 ### When to Use
 

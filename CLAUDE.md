@@ -21,7 +21,7 @@ Package for portfolio formation in corporate bond markets with numba-optimized p
 | `PyBondLab/naming.py` | `NamingConfig` dataclass for factor naming |
 | `PyBondLab/extract.py` | `extract_panel()` unified panel extraction |
 | `PyBondLab/StrategyClass.py` | Strategy definitions (SingleSort, DoubleSort, WithinFirmSort) |
-| `PyBondLab/StrategyResultsClass.py` | Result container classes |
+| `PyBondLab/results.py` | Result container classes |
 | `PyBondLab/config.py` | Configuration dataclasses |
 | `PyBondLab/FilterClass.py` | Data filters (do NOT modify behavior) |
 | `PyBondLab/AnomalyAssayer.py` | AnomalyAssayer with `save_idx` parameter |
@@ -75,7 +75,8 @@ Returns computed EVERY month (not just at rebalancing dates). Weights renormaliz
 | Parameter | Default | Notes |
 |-----------|---------|-------|
 | `dynamic_weights` | `False` (config) / `True` (tests/batch) | VW from d-1 (True) or formation date (False) |
-| `banding` | `None` | Integer (1 or 2). Threshold = banding/nport |
+| `banding` | `None` | `BatchStrategyFormation` only. Integer (1 or 2). Converted internally to `banding_threshold = banding/nport` |
+| `banding_threshold` | `None` | `StrategyFormation` only. Float (e.g., `1/5`). Passed directly |
 | `holding_period` | 1 | HP>1 = staggered cohorts |
 | `rebalance_frequency` | `'monthly'` | Also: `'quarterly'`, `'semi-annual'`, `'annual'` |
 
