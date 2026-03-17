@@ -1073,6 +1073,11 @@ class DataUncertaintyAnalysis:
         # Handle rating vs ratings parameter
         # If both specified, ratings takes precedence
         # If neither, default to [None] (all bonds)
+        if rating is not None and ratings is not None:
+            warnings.warn(
+                "Both 'rating' and 'ratings' provided; 'ratings' takes precedence.",
+                UserWarning, stacklevel=2
+            )
         if ratings is not None:
             self.ratings = ratings
         elif rating is not None:
@@ -1617,8 +1622,10 @@ class DataUncertaintyAnalysis:
         # Non-staggered rebalancing not yet supported in fast path
         # (TODO: Phase 15b - Add fast non-staggered path for DataUncertaintyAnalysis)
         if self._is_nonstaggered:
-            if self.verbose:
-                print("Fast path disabled: non-staggered rebalancing (using slow path)")
+            warnings.warn(
+                "DUA fast path not supported for non-staggered rebalancing; using slow path.",
+                UserWarning, stacklevel=2
+            )
             return False
         if self.strategy is not None:
             # Check if strategy can use fast path
@@ -1649,12 +1656,16 @@ class DataUncertaintyAnalysis:
         # no_gap and fill_na are not supported in fast path
         # drop_na IS now supported via compute_*_signals_panel_dropna() kernels
         if getattr(self.strategy, 'no_gap', False):
-            if self.verbose:
-                print("Fast strategy path disabled: no_gap=True not supported")
+            warnings.warn(
+                "DUA fast path not supported with no_gap=True; using slow path.",
+                UserWarning, stacklevel=2
+            )
             return False
         if getattr(self.strategy, 'fill_na', False):
-            if self.verbose:
-                print("Fast strategy path disabled: fill_na=True not supported")
+            warnings.warn(
+                "DUA fast path not supported with fill_na=True; using slow path.",
+                UserWarning, stacklevel=2
+            )
             return False
         # drop_na=True is now supported in fast path!
         # (uses compute_momentum_signals_panel_dropna / compute_ltreversal_signals_panel_dropna)
