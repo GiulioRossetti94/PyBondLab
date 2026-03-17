@@ -39,7 +39,8 @@ print(f"Panel: {len(data):,} obs, {data['ID'].nunique():,} bonds, "
 strategy = SingleSort(sort_var='cs', holding_period=1, num_portfolios=5)
 result = StrategyFormation(
     data=data, strategy=strategy,
-    turnover=True, chars=['tmat', 'cs', 'sze'], dynamic_weights=True,
+    turnover=True, chars=['tmat', 'cs', 'sze'],
+    dynamic_weights=True,  # no effect at HP=1 (VW identical either way); matters for HP>1
 ).fit()
 
 ew_ls, vw_ls = result.get_long_short()
@@ -105,7 +106,9 @@ ami_strategy = SingleSort(sort_var='ami', holding_period=1, num_portfolios=5)
 
 result_band = StrategyFormation(
     data=data, strategy=ami_strategy,
-    turnover=True, banding_threshold=1/5, dynamic_weights=True,
+    turnover=True,
+    banding_threshold=1/5,  # StrategyFormation uses float; BatchStrategyFormation uses banding=1 (int)
+    dynamic_weights=True,
 ).fit()
 ew_band, _ = result_band.get_long_short()
 ew_to_band, _ = result_band.get_turnover()
@@ -126,6 +129,7 @@ print(f"Banding  - turnover: {ew_to_band.mean().mean()*100:.1f}%  mean L-S: {ew_
 # =============================================================================
 config = StrategyFormationConfig(
     data=DataConfig(rating='IG', chars=['tmat', 'cs']),
+    # Note: compute_turnover in FormationConfig corresponds to turnover= in kwargs
     formation=FormationConfig(dynamic_weights=True, compute_turnover=True, verbose=False),
 )
 result_cfg = StrategyFormation(
@@ -182,8 +186,9 @@ print(f"EW L-S:  mean={ew_short.mean()*100:.2f}%/mo  t={ew_short.mean()/ew_short
 # =============================================================================
 result_q = StrategyFormation(
     data=data,
-    strategy=SingleSort(sort_var='cs', holding_period=1, num_portfolios=5,
-                        rebalance_frequency='quarterly', rebalance_month=[3, 6, 9, 12]),
+    strategy=SingleSort(sort_var='cs', num_portfolios=5,
+                        rebalance_frequency='quarterly',  # actual holding = 3 months
+                        rebalance_month=[3, 6, 9, 12]),   # overrides default schedule
     dynamic_weights=True,
 ).fit()
 ew_q, _ = result_q.get_long_short()

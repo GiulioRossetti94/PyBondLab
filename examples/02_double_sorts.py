@@ -34,7 +34,7 @@ result_cond = StrategyFormation(
     data=data,
     strategy=DoubleSort(holding_period=1, sort_var='mom6_1', sort_var2='cs',
                         num_portfolios=5, num_portfolios2=3, how='conditional'),
-    dynamic_weights=True,
+    dynamic_weights=True,  # no effect at HP=1 (VW identical either way); matters for HP>1
 ).fit()
 
 ew_cond, vw_cond = result_cond.get_long_short()

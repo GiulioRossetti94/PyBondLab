@@ -74,6 +74,8 @@ for signal, label, sign in SORT_SIGNALS:
         how='unconditional',
     )
 
+    # dynamic_weights defaults to False here (formation-date VW = lagged market cap),
+    # which matches the BBW methodology
     result = pbl.StrategyFormation(
         data=sub,
         strategy=strategy,

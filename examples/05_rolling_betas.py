@@ -59,7 +59,7 @@ panel_valid = panel.dropna(subset=[beta_col]).copy()
 result_beta = StrategyFormation(
     data=panel_valid,
     strategy=SingleSort(sort_var=beta_col, holding_period=1, num_portfolios=5),
-    dynamic_weights=True,
+    dynamic_weights=True,  # no effect at HP=1 (VW identical either way); matters for HP>1
 ).fit()
 
 ew_beta, vw_beta = result_beta.get_long_short()

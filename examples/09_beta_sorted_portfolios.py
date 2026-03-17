@@ -179,7 +179,7 @@ result = pbl.StrategyFormation(
     data=sub,
     strategy=strategy,
     rating=None,
-    dynamic_weights=True,
+    dynamic_weights=True,  # no effect at HP=1 (VW identical either way); matters for HP>1
     chars=char_cols,
 ).fit()
 

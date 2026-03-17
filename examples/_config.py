@@ -28,6 +28,7 @@ RENAME_MAP = {
 
 # Column kwargs for classes that accept explicit column mapping
 # (AssayAnomaly, AssayAnomalyRunner use Wvar; BatchAssayAnomaly uses VWvar)
+# AssayAnomaly/AssayAnomalyRunner use 'Wvar' for the weight column
 ASSAY_COLUMNS = {
     'IDvar': 'ID',
     'DATEvar': 'date',
@@ -35,6 +36,7 @@ ASSAY_COLUMNS = {
     'Wvar': 'VW',
     'RATINGvar': 'RATING_NUM',
 }
+# BatchAssayAnomaly and DUA use 'VWvar' instead (different kwarg name)
 BATCH_ASSAY_COLUMNS = {
     'IDvar': 'ID',
     'DATEvar': 'date',

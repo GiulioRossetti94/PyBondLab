@@ -28,9 +28,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from _config import load_panel, load_mktb, SIGNALS, ASSAY_COLUMNS, BATCH_ASSAY_COLUMNS
 
-from PyBondLab import AssayAnomaly, assay_anomaly_fast, BatchAssayAnomaly
-from PyBondLab.AnomalyAssayer import AssayAnomalyRunner
-from PyBondLab.StrategyClass import SingleSort
+from PyBondLab import AssayAnomaly, assay_anomaly_fast, BatchAssayAnomaly, SingleSort
+from PyBondLab.AnomalyAssayer import AssayAnomalyRunner  # internal; not in public __all__
 from PyBondLab.spec_validator import (
     validate_specs, SpecificationValidator, generate_spec_list, get_valid_spec_list,
 )

@@ -37,7 +37,7 @@ result_wf = StrategyFormation(
     data=data,
     strategy=WithinFirmSort(sort_var='cs', holding_period=1, firm_id_col='ticker',
                             min_bonds_per_firm=2, num_portfolios=2),
-    dynamic_weights=True,
+    dynamic_weights=True,  # no effect at HP=1 (VW identical either way); matters for HP>1
 ).fit()
 ew_wf, vw_wf = result_wf.get_long_short()
 
