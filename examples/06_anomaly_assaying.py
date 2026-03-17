@@ -59,7 +59,7 @@ TIER2_SPECS = {
         (5, 'Q', None),
         (10, 'D', None),
     ],
-    'rating_filters': {'all': None, 'ig': 'IG', 'hy': 'HY'},
+    'rating_filters': {'all': None, 'ig': 'IG', 'nig': 'NIG'},
     'bp_universes': {
         'all': None,
         'ig_bp': bp_filter_ig_only,

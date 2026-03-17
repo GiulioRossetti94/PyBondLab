@@ -13,7 +13,7 @@ Aligned with BatchStrategyFormation for consistent user experience:
 - Memory optimization
 - Summary output with timing statistics
 
-Author: PyBondLab Team
+Author: Giulio Rossetti & Alex Dickerson
 Date: 2024
 """
 

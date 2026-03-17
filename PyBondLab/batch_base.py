@@ -11,7 +11,7 @@ BatchWithinFirmSortFormation, including:
 - Progress bars (tqdm)
 - Summary output with timing statistics
 
-Authors: PyBondLab Team
+Authors: Giulio Rossetti & Alex Dickerson
 Created: 2024
 """
 

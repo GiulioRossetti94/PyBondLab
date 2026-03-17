@@ -32,7 +32,7 @@ Example Usage
 >>> # Summary across all signals
 >>> results.summary_df
 
-Authors: PyBondLab Team
+Authors: Giulio Rossetti & Alex Dickerson
 Created: 2024
 """
 

@@ -156,5 +156,6 @@ __all__ = [
     'BatchAssayAnomaly',
     'BatchAssayResults',
     'batch_assay_anomaly',
+    'StrategyFormationConfig',
 ]
 name = 'PyBondLab'

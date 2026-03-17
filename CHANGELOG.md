@@ -2,38 +2,87 @@
 
 ## 0.2.0
 
-### New Features
-- **Batch Processing**: `BatchStrategyFormation` for multi-signal portfolio formation in a single call
-- **Within-Firm Sorting**: `WithinFirmSort` strategy + `BatchWithinFirmSortFormation` for within-issuer sorts
-- **Rolling Beta Estimation**: `RollingBeta` with numba (~30x speedup) and numpy engines
-- **Pre-Analysis Statistics**: `PreAnalysisStats` for cross-sectional summary statistics before sorting
-- **Data Uncertainty Analysis**: `DataUncertaintyAnalysis` for robustness across filters/ratings/holding periods
-- **Anomaly Assaying**: `AssayAnomaly` (standard) + `assay_anomaly_fast` (numba-optimized) + `BatchAssayAnomaly`
-- **Specification Validation**: `validate_specs`, `SpecificationValidator` for validating strategy configurations
-- **Factor Naming**: `NamingConfig` for consistent factor/portfolio naming conventions
-- **Panel Extraction**: `extract_panel()` for unified panel construction from batch results
-- **Non-Staggered Rebalancing**: Quarterly, semi-annual, annual rebalancing with monthly returns
+Major release: numba-optimized batch processing, within-firm sorts, non-staggered rebalancing,
+data uncertainty analysis, anomaly assaying, and 11 new example scripts.
+
+### New Classes and Functions
+
+- **`BatchStrategyFormation`** — Multi-signal portfolio formation in a single call.
+  Auto-selects a numba fast path (returns-only) or slow path (turnover/chars/banding).
+  Supports `rating`, `subset_filter`, and parallel processing via `n_jobs`.
+- **`WithinFirmSort`** — Within-issuer sorting strategy (2 portfolios: High/Low).
+  Hierarchical aggregation: within-firm VW, cap-weighted across firms, averaged across rating terciles.
+- **`BatchWithinFirmSortFormation`** — Batch within-firm sorts across multiple signals.
+- **`DataUncertaintyAnalysis`** — Robustness analysis across filters, ratings, and holding periods.
+  Produces ex-ante and ex-post factor returns under multiple data-cleaning configurations.
+- **`AssayAnomaly`** — Factor significance testing across specification choices
+  (weighting, portfolios, rating subsets, breakpoint universes).
+- **`assay_anomaly_fast`** — Numba-optimized anomaly assaying with spec grids.
+- **`BatchAssayAnomaly`** — Parallel anomaly assaying across multiple signals.
+- **`RollingBeta`** — Rolling window beta estimation with numba (~30x) and numpy engines.
+- **`PreAnalysisStats`** — Cross-sectional summary statistics with rating/issuer/filter support.
+- **`NamingConfig`** — Consistent factor naming with sign correction, rating suffixes, and leg labels.
+- **`extract_panel()`** — Unified long-format panel extraction from batch results.
+- **`validate_panel()`**, **`check_duplicates()`** — Panel validation utilities.
+- **`validate_specs()`**, **`SpecificationValidator`** — Strategy specification validation.
+
+### Non-Staggered Rebalancing
+
+- Quarterly, semi-annual, annual, and custom-frequency rebalancing via `rebalance_frequency`
+  on `SingleSort` / `DoubleSort`.
+- Returns computed every month (not just at rebalancing dates).
+- Weights renormalized on bond dropout between rebalancing dates.
+- For non-staggered, omit `holding_period` (defaults to 1); the actual holding period
+  is determined by `rebalance_frequency`.
+
+### Performance
+
+- Numba-optimized fast paths for `StrategyFormation` (SingleSort HP=1, returns-only),
+  `BatchStrategyFormation` (multi-signal), and non-staggered rebalancing (~21-103x speedup).
+- Fast path auto-detection: silently falls back to slow (pandas) path when conditions
+  aren't met (turnover, chars, banding, filters, DoubleSort, WithinFirmSort).
+  Both paths produce identical results.
+- `dynamic_weights` support for HP>1 staggered portfolios (VW from d-1 vs formation date).
+  No effect at HP=1.
+
+### Configuration
+
+- **`StrategyFormationConfig`** — Config-object API path for `StrategyFormation`
+  (alternative to kwargs). Contains `DataConfig`, `FormationConfig`, `FilterConfig`.
+- **Default differences** between classes:
+  - `StrategyFormation`: `turnover=False`, `dynamic_weights=False`
+  - `BatchStrategyFormation`: `turnover=True`, `dynamic_weights=True`
+- **Banding**: `StrategyFormation` uses `banding_threshold` (float, e.g., `1/5`);
+  `BatchStrategyFormation` uses `banding` (integer, e.g., `1`).
 
 ### New Dependencies
+
 - `scipy>=1.10` (required)
 - `pyarrow>=10.0` (required, for parquet support)
 - `numba>=0.57` (optional, `pip install PyBondLab[performance]`)
 - `wrds` (optional, `pip install PyBondLab[wrds]`)
 
-### API Changes
-- `__all__` expanded from 6 to 30+ exports
-- New strategy class: `WithinFirmSort`
-- Panel validation utilities: `validate_panel`, `check_duplicates`
-
 ### Bug Fixes
+
 - Fixed numpy engine crash with non-contiguous index in `RollingBeta`
+- Fixed categorical data handling in panel preparation
+- Fixed `fastmath` bug in multi-signal rank computation
 
 ### Documentation
-- 12 new documentation files in `docs/` covering all major classes
-- Comprehensive README with feature examples and API reference
+
+- 12 documentation files in `docs/` covering all major classes
+- 11 example scripts in `examples/` with progressive tutorial structure
+- API semantic notes in `docs/0_API_semantic_README.md` documenting conditional parameters
+- Comprehensive README with Quick Start, API reference, and filter examples
+
+---
 
 ## 0.1.5
 
-- Initial public release
+Initial public release.
+
 - Core portfolio sorting: `StrategyFormation`, `SingleSort`, `DoubleSort`, `Momentum`, `LTreversal`
+- Look-ahead bias free data filtering procedures (trim, price, bounce, winsorize)
+- Staggered holding period portfolios (overlapping cohorts)
+- EW and VW portfolio returns
 - WRDS breakpoint loading: `load_breakpoints_WRDS`
