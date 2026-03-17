@@ -151,7 +151,6 @@ def nyse_filter(df):
 # %% 6. Define DoubleSort strategy
 
 strategy = pbl.DoubleSort(
-    holding_period=11,                     # holding period
     sort_var='ME',                         # Primary sort: Size
     sort_var2='BtM',                       # Secondary sort: Book-to-Market
     num_portfolios=2,                      # 2 size portfolios (Small/Big)
