@@ -156,13 +156,13 @@ Monthly (default), quarterly, semi-annual, or annual. Non-monthly rebalancing co
 ```python
 # Quarterly rebalancing
 strategy = pbl.SingleSort(
-    holding_period=3, sort_var='cs', num_portfolios=5,
+    sort_var='cs', num_portfolios=5,
     rebalance_frequency='quarterly',
 )
 
 # Annual rebalancing in June (Fama-French style)
 strategy = pbl.SingleSort(
-    holding_period=12, sort_var='BtM', num_portfolios=5,
+    sort_var='BtM', num_portfolios=5,
     rebalance_frequency='annual',
     rebalance_month=7,  # Formation in July, returns start August
 )
@@ -181,7 +181,7 @@ def nyse_filter(df):
     return (df['EXCHCD'] == 1) & (df['SHRCD'].isin([10, 11]))
 
 strategy = pbl.DoubleSort(
-    holding_period=12,
+    holding_period=1,
     sort_var='ME', sort_var2='BtM',
     num_portfolios=2, num_portfolios2=3,
     breakpoints=[50], breakpoints2=[30, 70],
