@@ -62,7 +62,9 @@ ew_ls, vw_ls = results.get_long_short()
 ew_turn, vw_turn = results.get_turnover()
 ```
 
-Your data needs columns: `date`, `ID` (bond identifier), `ret` (returns), `VW` (value weight). Use column mapping if your names differ:
+Your data needs columns: `date`, `ID` (bond identifier), `ret` (returns), `VW` (value weight).
+Optional: `RATING_NUM` (numeric credit rating, 1-10 = IG, 11-22 = NIG) for rating filters, `PRICE` for price filters.
+Use column mapping if your names differ:
 
 ```python
 results = pbl.StrategyFormation(data, strategy=strategy).fit(
@@ -314,6 +316,22 @@ Data: [openbondassetpricing.com](https://openbondassetpricing.com/)
 
 - Giulio Rossetti -- giulio.rossetti.1@wbs.ac.uk
 - Alex Dickerson -- alexander.dickerson1@unsw.edu.au
+
+## Glossary
+
+| Abbreviation | Meaning |
+|-------------|---------|
+| EW | Equal-weighted |
+| VW | Value-weighted |
+| LS (L-S) | Long-short (long top portfolio, short bottom portfolio) |
+| HP | Holding period (number of overlapping monthly cohorts) |
+| IG | Investment grade (rating 1-10) |
+| NIG | Non-investment grade / high yield (rating 11-22) |
+| EA | Ex-ante (before applying data filters) |
+| EP | Ex-post (after applying data filters) |
+| NW | Newey-West (heteroskedasticity and autocorrelation consistent standard errors) |
+| TRACE | Trade Reporting and Compliance Engine (FINRA corporate bond transaction data) |
+| DUA | Data Uncertainty Analysis |
 
 ## License
 
