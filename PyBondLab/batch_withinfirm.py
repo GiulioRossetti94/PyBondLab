@@ -428,6 +428,8 @@ class BatchWithinFirmSortFormation(BaseBatchFormation):
             'n_jobs': effective_n_jobs,
             'signals_per_worker': effective_signals_per_worker,
             'chunk_size': effective_chunk_size,
+            'is_within_firm': True,
+            'holding_period': 1,
         }
 
     def _get_n_workers_from_param(self, n_jobs: int) -> int:

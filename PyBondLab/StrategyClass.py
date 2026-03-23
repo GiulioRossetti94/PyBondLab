@@ -97,7 +97,7 @@ class Strategy(ABC):
         elif isinstance(self.rebalance_frequency, int):
             if self.rebalance_frequency < 1:
                 raise ValueError("Custom rebalance_frequency must be >= 1 month")
-            if self.rebalance_frequency > self.holding_period:
+            if self.holding_period is not None and self.rebalance_frequency > self.holding_period:
                 warnings.warn(
                     f"rebalance_frequency ({self.rebalance_frequency}) > holding_period ({self.holding_period}). "
                     "Portfolios will have gaps between rebalances."
@@ -444,6 +444,7 @@ class DoubleSort(Strategy):
         # Set double sort attributes
         self.__strategy_name__ = "Double Sorting"
         self.DoubleSort = 1
+        self.double_sort = 1
         self.sort_var = sort_var
         self.sort_var2 = sort_var2
         self.num_portfolios2 = num_portfolios2
