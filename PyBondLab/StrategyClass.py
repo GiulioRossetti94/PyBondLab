@@ -333,9 +333,9 @@ class DoubleSort(Strategy):
 
     def __init__(
         self,
-        holding_period: int,
         sort_var: str,
         sort_var2: str,
+        holding_period: Optional[int] = None,
         num_portfolios: Optional[int] = None,
         num_portfolios2: Optional[int] = None,
         breakpoints: Optional[List[float]] = None,
@@ -355,12 +355,14 @@ class DoubleSort(Strategy):
 
         Parameters
         ----------
-        holding_period : int
-            Holding period for the strategy
         sort_var : str
             Primary sorting variable
         sort_var2 : str
             Secondary sorting variable
+        holding_period : int, optional
+            Holding period for the strategy. For non-staggered rebalancing (quarterly,
+            semi-annual, annual), this defaults to 1 as staggered portfolios are not used.
+            For monthly rebalancing, this is required.
         num_portfolios : int, optional
             Number of primary portfolios
         num_portfolios2 : int, optional
@@ -396,14 +398,14 @@ class DoubleSort(Strategy):
             raise TypeError(
                 f"sort_var must be a string (column name), got {type(sort_var).__name__}: {sort_var!r}. "
                 f"Did you pass arguments in the wrong order? Use keyword arguments: "
-                f"DoubleSort(holding_period=..., sort_var='col1', sort_var2='col2', "
+                f"DoubleSort(sort_var='col1', sort_var2='col2', holding_period=..., "
                 f"num_portfolios=5, num_portfolios2=5, how='unconditional')"
             )
         if not isinstance(sort_var2, str):
             raise TypeError(
                 f"sort_var2 must be a string (column name), got {type(sort_var2).__name__}: {sort_var2!r}. "
                 f"Did you pass arguments in the wrong order? Use keyword arguments: "
-                f"DoubleSort(holding_period=..., sort_var='col1', sort_var2='col2', "
+                f"DoubleSort(sort_var='col1', sort_var2='col2', holding_period=..., "
                 f"num_portfolios=5, num_portfolios2=5, how='unconditional')"
             )
 
@@ -429,6 +431,23 @@ class DoubleSort(Strategy):
 
         # if num_portfolios is None or num_portfolios2 is None:
         #     raise ValueError("You must provide num_portfolios/num_portfolios2 or breakpoints/breakpoints2")
+
+        # Handle holding_period defaults for non-staggered rebalancing
+        is_nonstaggered = rebalance_frequency != 'monthly'
+        if holding_period is None:
+            if is_nonstaggered:
+                holding_period = 1
+            else:
+                raise ValueError(
+                    "holding_period is required for monthly (staggered) rebalancing. "
+                    "Example: DoubleSort(sort_var='x', sort_var2='y', holding_period=3, num_portfolios=5)"
+                )
+        elif is_nonstaggered and holding_period != 1:
+            raise ValueError(
+                f"For non-staggered rebalancing (rebalance_frequency='{rebalance_frequency}'), "
+                f"holding_period must be 1 (got {holding_period}). "
+                f"The actual holding period is determined by rebalance_frequency."
+            )
 
         # call parent constructor
         super().__init__(
