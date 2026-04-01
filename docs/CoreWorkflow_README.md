@@ -24,8 +24,6 @@ At its core, the package does four things:
 3. Exposes optional diagnostics such as turnover, bond counts, and portfolio characteristics.
 4. Extends the core workflow to batch processing, rolling beta estimation, data-cleaning robustness, and specification-curve style anomaly assaying.
 
-The source of truth for actual behavior is the code. The detailed docs describe the intended public usage of that code. This guide sits between those two layers: it explains the package in terms of workflow and interface consistency.
-
 ---
 
 ## 2. The Main Public APIs
@@ -183,11 +181,6 @@ Typical inputs:
 
 Use when two characteristics define the portfolio assignment.
 
-Important distinction:
-
-- `how='unconditional'` and `how='conditional'` are different sorting procedures
-- this should be treated as a real methodological choice, not a cosmetic option
-
 ### `Momentum` and `LTreversal`
 
 Use when the signal itself is constructed from the return history rather than being pre-computed in the panel.
@@ -197,8 +190,7 @@ These strategies still run through `StrategyFormation`, but the signal is comput
 ### `WithinFirmSort`
 
 Use when the sort is defined within issuer rather than across the full cross-section.
-
-This is a specialized workflow with different aggregation logic. It is not simply a relabeling of `SingleSort`.
+(See Dick-Nielsen et al. (2025))
 
 ---
 
