@@ -349,6 +349,7 @@ class _FastBatchResult:
         self.ew_ls = ew_ls
         self.vw_ls = vw_ls
         self.signal = signal
+        self.is_fast_batch_result = True
 
         # Create a mock 'ea' attribute for compatibility with summary_df
         self._ea = _FastBatchEA(ew_ls, vw_ls)

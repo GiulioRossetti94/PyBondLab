@@ -56,7 +56,7 @@ NamingConfig(
     sign_correct: bool = False,       # Flip negative factors, add '*' suffix
     use_signal_name: bool = True,     # Use signal column name as base
     weighting_prefix: bool = False,   # Add 'ew_' or 'vw_' prefix
-    include_rating_suffix: bool = True,  # Add '_ig' or '_hy' for rated strategies
+    include_rating_suffix: bool = True,  # Add '_ig' or '_nig' for rated strategies
     include_wf_suffix: bool = True,   # Add '_wf' for WithinFirmSort
     doublesort_sep: str = '_',        # Separator for DoubleSort names
 )
@@ -70,7 +70,7 @@ NamingConfig(
 | `sign_correct` | bool | `False` | Flip negative factors to positive, add `*` suffix. Applied independently for EW and VW. |
 | `use_signal_name` | bool | `True` | Use the signal column name as base (`cs` vs generic `factor`) |
 | `weighting_prefix` | bool | `False` | Add `ew_` or `vw_` prefix to distinguish weightings |
-| `include_rating_suffix` | bool | `True` | Add `_ig` or `_hy` for rating-filtered strategies |
+| `include_rating_suffix` | bool | `True` | Add `_ig` or `_nig` for rating-filtered strategies |
 | `include_wf_suffix` | bool | `True` | Add `_wf` for WithinFirmSort strategies |
 | `doublesort_sep` | str | `_` | Separator for DoubleSort factor names |
 
@@ -133,10 +133,10 @@ cfg = NamingConfig()
 ew_ls, vw_ls = result.get_long_short(naming=cfg)
 print(f"Factor: {ew_ls.name}")  # Output: signal1_ig
 
-# High yield
+# Non-investment grade
 result = StrategyFormation(data, strategy, rating='NIG').fit()
 ew_ls, vw_ls = result.get_long_short(naming=cfg)
-print(f"Factor: {ew_ls.name}")  # Output: signal1_hy
+print(f"Factor: {ew_ls.name}")  # Output: signal1_nig
 
 # Tuple rating (custom range)
 result = StrategyFormation(data, strategy, rating=(1, 10)).fit()
@@ -372,7 +372,7 @@ print(f"Data identical: {(ew_legacy - ew_named).abs().max() < 1e-10}")
 | Feature | Description | Example |
 |---------|-------------|---------|
 | Lowercase | `CS` → `cs` | `NamingConfig(lowercase=True)` |
-| Rating suffix | Investment grade/high yield | `_ig`, `_hy` |
+| Rating suffix | Investment grade / non-investment grade | `_ig`, `_nig` |
 | Sign correction | Flip negative, add `*` | `cs*` (if flipped) |
 | Weighting prefix | Distinguish EW/VW | `ew_cs`, `vw_cs` |
 | DoubleSort | Two signals | `cs_duration` |

@@ -240,7 +240,7 @@ class FormationConfig:
     
     Attributes
     ----------
-    dynamic_weights : bool, default False
+    dynamic_weights : bool, default True
         Use dynamic weighting (weights at t+h-1 instead of t)
     compute_turnover : bool, default False
         Whether to compute turnover statistics
@@ -274,7 +274,7 @@ class FormationConfig:
     ... )
     """
     
-    dynamic_weights: bool = False
+    dynamic_weights: bool = True
     compute_turnover: bool = False
     save_idx: bool = False
     banding_threshold: Optional[float] = None
@@ -473,7 +473,7 @@ class StrategyFormationConfig:
         
         # Formation config
         formation = FormationConfig(
-            dynamic_weights=kwargs.get('dynamic_weights', False),
+            dynamic_weights=kwargs.get('dynamic_weights', True),
             compute_turnover=kwargs.get('turnover', False),
             save_idx=kwargs.get('save_idx', False),
             banding_threshold=kwargs.get('banding_threshold'),

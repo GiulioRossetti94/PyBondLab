@@ -83,7 +83,7 @@ BatchWithinFirmSortFormation(
 
 ### Returns
 
-`Dict[str, StrategyResults]` - Dictionary mapping signal names to results objects.
+`BatchWithinFirmResults` - Container with per-signal results plus batch-level timings and errors. It supports dictionary-like access, so `results['signal_name']` still returns the corresponding signal result.
 
 ---
 

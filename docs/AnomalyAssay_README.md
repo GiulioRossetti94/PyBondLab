@@ -99,7 +99,7 @@ A specification grid defines all combinations of:
 |-----------|-------------|----------------|
 | **Weighting** | Portfolio weighting scheme | `'EW'` (equal), `'VW'` (value) |
 | **Portfolio Structure** | Number of portfolios and breakpoints | `(5, 'quintiles', None)`, `(3, 'extreme', [10, 90])` |
-| **Rating Filter** | Which bonds to include | `None` (all), `(1, 10)` (IG), `(11, 22)` (HY/NIG) |
+| **Rating Filter** | Which bonds to include | `None` (all), `(1, 10)` (IG), `(11, 22)` (NIG) |
 | **BP Universe** | Which bonds define breakpoints | `None` (all), `lambda df: df['RATING_NUM'] <= 10` |
 | **Maturity Filter** | Maturity range filter | `None` (all), `(0, 5)` (short), `(10, 100)` (long) |
 
@@ -120,7 +120,7 @@ This is useful for testing whether results change when breakpoints are computed 
 
 ### Invalid Specifications
 
-Some combinations are invalid (e.g., `ig_only` breakpoints with `hy` rating filter creates disjoint populations). By default, these are automatically skipped with `skip_invalid=True`.
+Some combinations are invalid (e.g., `ig_only` breakpoints with `NIG` rating filter creates disjoint populations). By default, these are automatically skipped with `skip_invalid=True`.
 
 ---
 
@@ -294,7 +294,7 @@ specs = {
     'rating_filters': {
         'all': None,           # All bonds
         'ig': (1, 10),         # Investment Grade (AAA to BBB-)
-        'hy': (11, 22),        # High Yield / NIG
+        'nig': (11, 22),       # Non-investment grade
         'bbb': (7, 10),        # BBB only
     },
     'bp_universes': {
@@ -313,7 +313,7 @@ result = assay_anomaly_fast(
     data=data,
     signal='credit_spread',
     specs=specs,
-    skip_invalid=True,  # Skip invalid combinations (e.g., ig_only BP + hy filter)
+    skip_invalid=True,  # Skip invalid combinations (e.g., ig_only BP + NIG filter)
     verbose=True,
     IDvar='cusip',
     DATEvar='date',
@@ -406,7 +406,7 @@ Spec IDs follow this pattern:
 Examples:
 - `EW_5p_quintiles_all_all_all` - EW, quintiles, all BP universe, all ratings, all maturities
 - `VW_3p_extreme_10_90_ig_only_ig_short` - VW, 3 portfolios with 10/90 cutoffs, IG-only BP, IG filter, short maturity
-- `EW_10p_deciles_all_hy_long` - EW, deciles, all BP, HY filter, long maturity
+- `EW_10p_deciles_all_nig_long` - EW, deciles, all BP, NIG filter, long maturity
 
 ---
 
@@ -495,7 +495,7 @@ TIER2_SPECS = {
     'rating_filters': {
         'all': None,
         'ig': (1, 10),
-        'hy': (11, 22),
+        'nig': (11, 22),
     },
     'bp_universes': {
         'all': None,

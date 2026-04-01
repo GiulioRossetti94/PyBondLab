@@ -1017,7 +1017,7 @@ sf = pbl.StrategyFormation(
     data=data,
     strategy=strategy,
     turnover=True,   # Required to save portfolio indices
-    save_idx=True,   # Enable saving (default when turnover=True)
+    save_idx=True,   # Explicitly enable saving
 )
 result = sf.fit()
 
@@ -2803,17 +2803,17 @@ Since w_vw[i] depends on VW_date:
 ```python
 # These produce DIFFERENT results for HP>1:
 
-# Method 1: Direct StrategyFormation (default = False)
-sf1 = StrategyFormation(data, strategy, turnover=True)  # dynamic_weights=False
+# Method 1: Direct StrategyFormation (default = True)
+sf1 = StrategyFormation(data, strategy, turnover=True)  # dynamic_weights=True
 
-# Method 2: BatchStrategyFormation (hardcoded True)
+# Method 2: BatchStrategyFormation (default = True)
 batch = BatchStrategyFormation(data, signals=[...])     # dynamic_weights=True
 
 # Method 3: DataUncertaintyAnalysis (default True, can change)
 dua = DataUncertaintyAnalysis(data, signals=[...])      # dynamic_weights=True
 ```
 
-**To ensure consistency, explicitly set `dynamic_weights`:**
+`StrategyFormation`, `BatchStrategyFormation`, and `DataUncertaintyAnalysis` now default to `dynamic_weights=True`. Explicitly set it whenever cross-method reproducibility matters:
 
 ```python
 from PyBondLab.config import StrategyFormationConfig, FormationConfig, DataConfig

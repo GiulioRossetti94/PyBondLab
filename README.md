@@ -16,11 +16,7 @@ A high-performance Python toolkit for portfolio sorting and empirical asset pric
 pip install PyBondLab
 ```
 
-For numba-accelerated performance (recommended):
-
-```bash
-pip install PyBondLab[performance]
-```
+`numba>=0.57` is part of the base install because the maintained package surface depends on it.
 
 For WRDS data download support:
 
@@ -68,7 +64,7 @@ Use column mapping if your names differ:
 
 ```python
 results = pbl.StrategyFormation(data, strategy=strategy).fit(
-    IDvar='cusip', RETvar='ret_vw', VWvar='mcap_e'
+    IDvar='cusip', RETvar='ret_vw', VWvar='mcap_e', RATINGvar='spc_rat'
 )
 ```
 

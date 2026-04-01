@@ -41,10 +41,11 @@ setup(name = 'PyBondLab',
           'matplotlib>=3.5',
           'scipy>=1.10',
           'pyarrow>=10.0',
+          'numba>=0.57',
       ],
       extras_require={
           'wrds': ['wrds'],  # For WRDS data download
-          'performance': ['numba>=0.57'],  # For performance optimization
-          'all': ['wrds', 'numba>=0.57'],
+          'performance': [],  # Backward-compatible alias; numba is required
+          'all': ['wrds'],
       },
 )

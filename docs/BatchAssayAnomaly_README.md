@@ -116,7 +116,7 @@ BatchAssayAnomaly(
 | `specs` | Dict | **required** | Specification grid dictionary (see below) |
 | `holding_period` | int | 1 | Number of months to hold portfolios |
 | `dynamic_weights` | bool | True | Use VW from d-1 (True) or formation date (False) |
-| `skip_invalid` | bool | True | Skip invalid spec combinations (e.g., ig_only bp + hy filter) |
+| `skip_invalid` | bool | True | Skip invalid spec combinations (e.g., ig_only bp + NIG filter) |
 | `IDvar` | str | 'ID' | Column name for bond identifier |
 | `DATEvar` | str | 'date' | Column name for date |
 | `RETvar` | str | 'ret' | Column name for returns |
@@ -173,7 +173,7 @@ specs = {
     'rating_filters': {
         'all': None,
         'ig': (1, 10),
-        'hy': (11, 22),
+        'nig': (11, 22),
     },
     'bp_universes': {
         'all': None,
@@ -350,7 +350,7 @@ batch = BatchAssayAnomaly(
 def ig_only_filter(df):
     return df['RATING_NUM'] <= 10
 
-def hy_only_filter(df):
+def nig_only_filter(df):
     return df['RATING_NUM'] > 10
 
 # Now parallel processing works!
@@ -361,7 +361,7 @@ specs_picklable = {
     'bp_universes': {
         'all': None,
         'ig_only': ig_only_filter,  # Module-level function - can be pickled!
-        'hy_only': hy_only_filter,
+        'nig_only': nig_only_filter,
     },
     'maturity_filters': {'all': None},
 }
@@ -584,7 +584,7 @@ TIER2_SPECS = {
     'rating_filters': {
         'all': None,
         'ig': (1, 10),
-        'hy': (11, 22),
+        'nig': (11, 22),
     },
     'bp_universes': {
         'all': None,

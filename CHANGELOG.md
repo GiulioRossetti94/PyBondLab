@@ -50,7 +50,7 @@ data uncertainty analysis, anomaly assaying, and 11 new example scripts.
 - **`StrategyFormationConfig`** — Config-object API path for `StrategyFormation`
   (alternative to kwargs). Contains `DataConfig`, `FormationConfig`, `FilterConfig`.
 - **Default differences** between classes:
-  - `StrategyFormation`: `turnover=False`, `dynamic_weights=False`
+  - `StrategyFormation`: `turnover=False`, `dynamic_weights=True`
   - `BatchStrategyFormation`: `turnover=True`, `dynamic_weights=True`
 - **Banding**: `StrategyFormation` uses `banding_threshold` (float, e.g., `1/5`);
   `BatchStrategyFormation` uses `banding` (integer, e.g., `1`).
@@ -59,8 +59,17 @@ data uncertainty analysis, anomaly assaying, and 11 new example scripts.
 
 - `scipy>=1.10` (required)
 - `pyarrow>=10.0` (required, for parquet support)
-- `numba>=0.57` (optional, `pip install PyBondLab[performance]`)
+- `numba>=0.57` (required)
 - `wrds` (optional, `pip install PyBondLab[wrds]`)
+
+### Recent RELEASE Fixes
+
+- Added a package-level workflow guide and linked the main docs back to a single canonical workflow.
+- Fixed `DataUncertaintyAnalysis` so `ratings=` is a true analysis dimension on both slow and fast paths.
+- Unified anomaly/spec-validator terminology and bounds around `NIG` (11-22).
+- Clarified fast-vs-full result tiers, including `save_idx`, `extract_panel()`, and bond-count availability.
+- Reorganized anomaly documentation around the public APIs instead of the internal runner.
+- Added regression tests for rating bounds, non-monthly semantics, results contracts, anomaly equivalence, and specification validation.
 
 ### Bug Fixes
 

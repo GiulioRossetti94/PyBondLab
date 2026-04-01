@@ -1050,8 +1050,9 @@ class StrategyFormation:
 
         Returns
         -------
-        StrategyResults
-            Object containing all results (returns, characteristics, turnover, etc.)
+        FormationResults
+            Object containing ex-ante results and optional ex-post results,
+            together with returns, characteristics, turnover, and metadata.
         """
         # Update column names if custom names are provided
         self._apply_column_mapping(IDvar, DATEvar, RETvar, RATINGvar, VWvar, PRICEvar)
