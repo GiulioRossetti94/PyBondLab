@@ -123,12 +123,13 @@ Estimate time-varying factor exposures for individual bonds using rolling regres
 
 **File:** `06_anomaly_assaying.py`
 
-Assess robustness of anomaly returns across methodological choices (Tier 2 specification curve).
+Assess robustness of anomaly returns across methodological choices (Tier 2 specification curve). This example is organized in recommended public-API order: fast single-signal first, then fast multi-signal, then the richer slow-path workflow.
 
 **Features demonstrated:**
 - `assay_anomaly_fast` (single-signal quick assessment)
 - `BatchAssayAnomaly` (multi-signal batch)
-- `AssayAnomaly` and `AssayAnomalyRunner` (full specification grid)
+- `AssayAnomaly` (default slow-path anomaly workflow)
+- `AssayAnomalyRunner` (advanced/internal runner control, not the default entry point)
 - `SpecificationValidator` for input checking
 - Specification dimensions: weighting × nport × breakpoint scheme × breakpoint universe × rating × maturity
 

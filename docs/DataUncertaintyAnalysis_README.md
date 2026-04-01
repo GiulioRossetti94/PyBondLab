@@ -2,6 +2,8 @@
 
 `DataUncertaintyAnalysis` is a high-level tool for studying how **data filters** affect factor returns. It systematically tests multiple filter configurations (trimming, price exclusions, bounce-back exclusions, winsorization) across different holding periods, returning both **Ex-Ante (EA)** and **Ex-Post (EP)** factor returns.
 
+This is an advanced workflow built on top of the core formation engine. For the canonical first workflow, start with [docs/CoreWorkflow_README.md](CoreWorkflow_README.md).
+
 This is essential for understanding the robustness of trading strategies to data cleaning choices.
 
 ---
@@ -125,8 +127,8 @@ DataUncertaintyAnalysis(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `data` | DataFrame | **required** | Bond panel data |
-| `signals` | List[str] | None | Pre-computed signal column name(s) - uses **fast path** |
-| `strategy` | Strategy | None | Momentum or LTreversal object - uses **slow path** |
+| `signals` | List[str] | None | Pre-computed signal column name(s); uses fast path when `use_fast_path=True` and the configuration is supported |
+| `strategy` | Strategy | None | Momentum or LTreversal object; can use the optimized strategy fast path when supported, otherwise falls back to slow path |
 | `holding_periods` | List[int] | [1, 3, 6] | Holding periods to test |
 | `num_portfolios` | int | 5 | Number of quantile portfolios |
 | `dynamic_weights` | bool | True | Use VW from d-1 (True) or formation date (False) |
@@ -143,6 +145,8 @@ DataUncertaintyAnalysis(
 ### Returns
 
 `DataUncertaintyResults` object with factor returns and summary statistics.
+
+**Semantic note:** `ratings=` is a true analysis dimension. Slow-path and fast-path runs both emit separate configurations for each requested rating choice.
 
 ---
 

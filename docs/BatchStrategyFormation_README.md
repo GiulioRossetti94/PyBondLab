@@ -1,6 +1,8 @@
 # BatchStrategyFormation User Guide
 
-`BatchStrategyFormation` is a high-performance tool for running portfolio sorts across **multiple signals** efficiently. Instead of running `StrategyFormation` one signal at a time, `BatchStrategyFormation` processes all your signals in a single call with automatic parallelization.
+`BatchStrategyFormation` is a high-performance tool for running portfolio sorts across **multiple signals** efficiently. Instead of running `StrategyFormation` one signal at a time, `BatchStrategyFormation` processes all your signals in a single call and automatically selects between a full-result path and a reduced fast path.
+
+For the canonical first workflow and core semantic notes, see [docs/CoreWorkflow_README.md](CoreWorkflow_README.md).
 
 ---
 
@@ -225,7 +227,7 @@ Track portfolio turnover and aggregate characteristics:
 batch = BatchStrategyFormation(
     data=data,
     signals=['momentum', 'value', 'quality'],
-    holding_period=3,           # Quarterly rebalancing
+    holding_period=3,           # Monthly staggered cohorts, not quarterly rebalancing
     num_portfolios=5,
     turnover=True,              # Compute turnover
     chars=['duration', 'spread', 'rating'],  # Aggregate these at portfolio level
@@ -254,7 +256,6 @@ Use non-monthly rebalancing for lower turnover strategies:
 batch = BatchStrategyFormation(
     data=data,
     signals=['value', 'quality', 'momentum'],
-    holding_period=12,
     num_portfolios=5,
     rebalance_frequency='annual',  # or 12
     rebalance_month=6,             # Rebalance in June
@@ -268,7 +269,6 @@ results = batch.fit()
 batch = BatchStrategyFormation(
     data=data,
     signals=['signal1', 'signal2'],
-    holding_period=3,
     num_portfolios=5,
     rebalance_frequency='quarterly',  # or 3
     rebalance_month=6,                # June, September, December, March
@@ -276,6 +276,13 @@ batch = BatchStrategyFormation(
 )
 results = batch.fit()
 ```
+
+**Important:** Monthly `holding_period=3` means staggered overlapping cohorts. Quarterly rebalancing is a different mode driven by `rebalance_frequency='quarterly'`, where `holding_period` must remain `1`.
+
+| Setting | Meaning |
+|---|---|
+| `holding_period=3`, monthly | 3 overlapping monthly cohorts |
+| `rebalance_frequency='quarterly'` | One non-staggered portfolio held across calendar quarters |
 
 **Performance (Phase 15 optimization):**
 
@@ -350,6 +357,17 @@ results = batch.fit()
 ---
 
 ## Accessing Results
+
+### Result Tiers
+
+`BatchStrategyFormation` can return different result tiers depending on configuration:
+
+| Tier | Typical settings | What is available |
+|---|---|---|
+| Full batch result | `turnover=True`, `chars=[...]`, or `banding` enabled | Long-short, full legs, bond counts, turnover, characteristics |
+| Fast batch result | `turnover=False`, `chars=None`, `banding=None` | Long-short returns only |
+
+Use full results when you need `extract_panel()`, `get_bond_count()`, turnover, or characteristics.
 
 ### Dictionary-like Access
 
@@ -607,7 +625,7 @@ batch = BatchStrategyFormation(
 ### Portfolio Indices and Bond Counts (`save_idx`)
 
 The `save_idx=True` parameter saves portfolio assignments for each date. This enables:
-- Bond count statistics via `get_nbonds()`
+- Bond count statistics via `get_bond_count()`
 - Portfolio composition analysis
 
 **IMPORTANT**: `save_idx=True` only works with the slow path. To save portfolio indices, you must set `turnover=True`:
@@ -620,7 +638,7 @@ batch = BatchStrategyFormation(
     turnover=True,   # Required for save_idx to work
 )
 results = batch.fit()
-nbonds = results['momentum'].get_nbonds()  # Returns DataFrame with nbonds_s, nbonds_l, nbonds_ls
+counts = results['momentum'].get_bond_count()  # Returns per-portfolio bond counts by date
 
 # This does NOT work - fast path ignores save_idx
 batch = BatchStrategyFormation(
@@ -628,7 +646,7 @@ batch = BatchStrategyFormation(
     signals=['momentum'],
     turnover=False,  # Fast path - save_idx has no effect
 )
-# get_nbonds() will raise an error
+# get_bond_count() will raise an error
 ```
 
 ---

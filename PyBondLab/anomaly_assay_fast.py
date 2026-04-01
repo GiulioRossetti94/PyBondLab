@@ -22,7 +22,7 @@ import warnings
 from numba import njit, prange
 
 try:
-    from .constants import ColumnNames
+    from .constants import ColumnNames, RatingBounds, get_rating_bounds as core_get_rating_bounds
     from .numba_core import (
         compute_ranks_all_dates_fast,
         compute_ranks_with_custom_thresholds,
@@ -38,7 +38,7 @@ try:
         ValidationResult,
     )
 except ImportError:
-    from constants import ColumnNames
+    from constants import ColumnNames, RatingBounds, get_rating_bounds as core_get_rating_bounds
     from numba_core import (
         compute_ranks_all_dates_fast,
         compute_ranks_with_custom_thresholds,
@@ -93,12 +93,14 @@ def get_rating_bounds(rating: Union[str, Tuple[int, int]]) -> Tuple[int, int]:
     """Get (min, max) rating bounds from specification."""
     if isinstance(rating, tuple):
         return rating
-    rating_map = {
-        'IG': (1, 10), 'ig': (1, 10),
-        'HY': (11, 21), 'hy': (11, 21),
-        'NIG': (11, 21), 'nig': (11, 21),
-    }
-    return rating_map.get(rating, (1, 21))
+    if isinstance(rating, str):
+        rating_upper = rating.upper()
+        if rating_upper == 'NIG':
+            return core_get_rating_bounds('NIG')
+        if rating_upper == 'IG':
+            return core_get_rating_bounds('IG')
+        raise ValueError(f"Invalid rating '{rating}'. Use 'IG', 'NIG', or a (min, max) tuple.")
+    return (RatingBounds.IG_MIN, RatingBounds.NIG_MAX)
 
 
 # =============================================================================

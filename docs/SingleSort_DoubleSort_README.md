@@ -2,6 +2,8 @@
 
 `SingleSort` and `DoubleSort` are strategy classes that define how bonds are sorted into portfolios based on one or two characteristics. These strategies are then executed using `StrategyFormation` to compute portfolio returns.
 
+For the canonical first workflow, required schema, and result-tier overview, start with [docs/CoreWorkflow_README.md](CoreWorkflow_README.md).
+
 ---
 
 ## Table of Contents
@@ -1020,8 +1022,8 @@ sf = pbl.StrategyFormation(
 result = sf.fit()
 
 # Get bond counts per date
-nbonds = result.get_nbonds()
-# Returns DataFrame with columns: nbonds_s (short), nbonds_l (long), nbonds_ls (total)
+counts = result.get_bond_count()
+# Returns a DataFrame with one column per portfolio containing bond counts by date
 ```
 
 **Note**: The fast path (when `turnover=False`) computes returns only and does not save portfolio indices, even if `save_idx=True` is set.

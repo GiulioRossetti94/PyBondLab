@@ -6,14 +6,14 @@ Replicates the four-factor model for corporate bonds:
   MKTB: Value-weighted bond market excess return
   DRF:  Default risk factor (5x5 rating x VaR, P5-P1 averaged across ratings)
   LRF:  Liquidity risk factor (5x5 rating x illiquidity, same approach)
-  CRF:  Credit risk factor (HY-IG spread averaged across signal bins & signals)
+  CRF:  Credit risk factor (NIG-IG spread averaged across signal bins & signals)
 
 Methodology:
   For each signal s in {VaR, illiquidity, reversal}, form 5x5 unconditional
   double-sorted VW portfolios on RATING_NUM x s. Then:
     DRF  = avg across 5 rating groups of (top - bottom quintile on VaR)
     LRF  = avg across 5 rating groups of (top - bottom quintile on illiquidity)
-    CRF  = avg across 5 signal bins and all 3 signals of (HY - IG spread)
+    CRF  = avg across 5 signal bins and all 3 signals of (NIG - IG spread)
     MKTB = lagged-VW bond market return (excess of risk-free rate)
 
 Signal mapping (Byungmin -> DRR panel):
@@ -104,9 +104,9 @@ for signal, label, sign in SORT_SIGNALS:
     # --- Credit component: RATING5 - RATING1 within each signal bin ---
     crf_parts = []
     for s in range(1, 6):
-        hy = f'RATING_NUM5_{sig_up}{s}'
+        nig = f'RATING_NUM5_{sig_up}{s}'
         ig = f'RATING_NUM1_{sig_up}{s}'
-        crf_parts.append(vw_ptf[hy] - vw_ptf[ig])
+        crf_parts.append(vw_ptf[nig] - vw_ptf[ig])
 
     crf_ts = pd.concat(crf_parts, axis=1).mean(axis=1)
     factors_crf[label] = crf_ts

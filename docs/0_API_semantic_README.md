@@ -1,5 +1,7 @@
 # API Semantic Notes
 
+This page is now a reference appendix. The highest-risk caveats are surfaced directly in the main README and the core workflow docs.
+
 Some PyBondLab parameters are conditionally active, silently ignored, or behave differently depending on other settings. This page documents known interactions to help avoid surprises.
 
 ## Parameter Interactions
@@ -17,4 +19,3 @@ Some PyBondLab parameters are conditionally active, silently ignored, or behave 
 | `DataUncertaintyAnalysis` | `rating` vs `ratings` | Both provided | `ratings` (list) takes precedence silently. Prefer `ratings=` for all new code. |
 | `DataUncertaintyAnalysis` | `use_fast_path` | `rebalance_frequency != 'monthly'`, or `no_gap=True`, or `fill_na=True` | Silently falls back to the slow pandas path. |
 | `DataUncertaintyResults` | `.summary()` EA columns | `wins` filter | EA statistics are `NaN` because winsorization does not change portfolio rankings — only EP returns reflect the winsorization effect. |
-

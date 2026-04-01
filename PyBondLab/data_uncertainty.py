@@ -125,6 +125,7 @@ class AnalysisConfig:
     """Configuration for a single analysis run."""
     signal: str
     hp: int
+    rating: Optional[Union[str, Tuple[int, int]]]
     filter_config: FilterConfig
     column_name: str
 
@@ -1337,14 +1338,17 @@ class DataUncertaintyAnalysis:
             signal_name = signal if signal else 'strategy'
 
             for hp in self.holding_periods:
-                for fc in self._filter_configs:
-                    column_name = f"{signal_name}_hp{hp}_{fc.get_column_suffix()}"
-                    configs.append(AnalysisConfig(
-                        signal=signal_name,
-                        hp=hp,
-                        filter_config=fc,
-                        column_name=column_name
-                    ))
+                for rating in self.ratings:
+                    rating_suffix = f"_{rating}" if rating is not None else ""
+                    for fc in self._filter_configs:
+                        column_name = f"{signal_name}_hp{hp}_{fc.get_column_suffix()}{rating_suffix}"
+                        configs.append(AnalysisConfig(
+                            signal=signal_name,
+                            hp=hp,
+                            rating=rating,
+                            filter_config=fc,
+                            column_name=column_name
+                        ))
 
         return configs
 
@@ -1440,7 +1444,7 @@ class DataUncertaintyAnalysis:
                     filter_dict=ac.filter_config.to_pbl_filter(),
                     num_portfolios=self.num_portfolios,
                     dynamic_weights=self.dynamic_weights,
-                    rating=self.rating,
+                    rating=ac.rating,
                     strategy_obj=self.strategy,
                     column_name=ac.column_name,
                     rebalance_frequency=self.rebalance_frequency,
@@ -1473,7 +1477,7 @@ class DataUncertaintyAnalysis:
                     ac.filter_config.to_pbl_filter(),
                     self.num_portfolios,
                     self.dynamic_weights,
-                    self.rating,
+                    ac.rating,
                     self.strategy,
                     ac.column_name,
                     self.rebalance_frequency,
@@ -1560,6 +1564,7 @@ class DataUncertaintyAnalysis:
                 'column_name': col,
                 'signal': ac.signal,
                 'hp': ac.hp,
+                'rating': ac.rating,
                 'filter_type': ac.filter_config.filter_type,
                 'level': ac.filter_config.level,
                 'location': ac.filter_config.location
