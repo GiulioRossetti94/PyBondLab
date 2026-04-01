@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 import warnings
 
+from .constants import RatingBounds, get_rating_bounds as core_get_rating_bounds
+
 
 class ValidationSeverity(Enum):
     """Severity levels for validation issues."""
@@ -76,8 +78,8 @@ class SpecificationValidator:
     Validates specification grids for AnomalyAssayer.
 
     Catches problematic combinations like:
-    - IG-only breakpoints with HY-only rating filter (disjoint populations)
-    - HY-only breakpoints with IG-only rating filter
+    - IG-only breakpoints with NIG-only rating filter (disjoint populations)
+    - NIG-only breakpoints with IG-only rating filter
     - Custom breakpoints that don't match portfolio count
     - Overly restrictive filter combinations
 
@@ -95,15 +97,13 @@ class SpecificationValidator:
 
     # Rating bounds for common categories
     RATING_BOUNDS = {
-        'ig': (1, 10),
-        'IG': (1, 10),
-        'hy': (11, 21),
-        'HY': (11, 21),
-        'nig': (11, 21),
-        'NIG': (11, 21),
-        'all': (1, 21),
-        'ALL': (1, 21),
-        None: (1, 21),
+        'ig': (RatingBounds.IG_MIN, RatingBounds.IG_MAX),
+        'IG': (RatingBounds.IG_MIN, RatingBounds.IG_MAX),
+        'nig': (RatingBounds.NIG_MIN, RatingBounds.NIG_MAX),
+        'NIG': (RatingBounds.NIG_MIN, RatingBounds.NIG_MAX),
+        'all': (RatingBounds.IG_MIN, RatingBounds.NIG_MAX),
+        'ALL': (RatingBounds.IG_MIN, RatingBounds.NIG_MAX),
+        None: (RatingBounds.IG_MIN, RatingBounds.NIG_MAX),
     }
 
     def __init__(self, verbose: bool = True):
@@ -204,8 +204,10 @@ class SpecificationValidator:
     ) -> List[ValidationIssue]:
         """Validate portfolio structure definitions."""
         issues = []
+        valid_structures: list[tuple[int, str, Optional[List[float]]]] = []
 
         for i, struct in enumerate(structures):
+            structure_valid = True
             if len(struct) != 3:
                 issues.append(ValidationIssue(
                     severity=ValidationSeverity.ERROR,
@@ -224,9 +226,12 @@ class SpecificationValidator:
                     spec_id=f"structure_{name}",
                     message=f"n_ports must be integer >= 2, got {n_ports}",
                 ))
+                structure_valid = False
 
             # If breakpoints is None, PyBondLab will compute equal percentiles - this is FINE
             if breakpoints is None:
+                if structure_valid:
+                    valid_structures.append((n_ports, name, breakpoints))
                 continue
 
             # Check custom breakpoints match n_ports
@@ -238,6 +243,7 @@ class SpecificationValidator:
                     message=f"Breakpoints count mismatch: {n_ports} portfolios requires {expected_breakpoints} breakpoints",
                     details=f"Got {len(breakpoints)} breakpoints: {breakpoints}"
                 ))
+                structure_valid = False
 
             # Check breakpoints are sorted and in valid range
             if not all(0 < bp < 100 for bp in breakpoints):
@@ -247,6 +253,7 @@ class SpecificationValidator:
                     message="Breakpoints must be between 0 and 100 (exclusive)",
                     details=f"Got: {breakpoints}"
                 ))
+                structure_valid = False
 
             if breakpoints != sorted(breakpoints):
                 issues.append(ValidationIssue(
@@ -255,8 +262,64 @@ class SpecificationValidator:
                     message="Breakpoints must be in ascending order",
                     details=f"Got: {breakpoints}"
                 ))
+                structure_valid = False
+
+            if structure_valid:
+                valid_structures.append((n_ports, name, breakpoints))
+
+        # Long-short redundancy warnings:
+        # anomaly assay stores only the extreme long-short spread, so structures
+        # with identical lower/upper cutoffs are behaviorally redundant even if
+        # their interior portfolios differ.
+        seen_extremes: dict[tuple[float, float], tuple[int, str, Optional[List[float]]]] = {}
+        for n_ports, name, breakpoints in valid_structures:
+            extreme_key = self._get_extreme_bucket_signature(n_ports, breakpoints)
+            if extreme_key is None:
+                continue
+
+            prior = seen_extremes.get(extreme_key)
+            if prior is None:
+                seen_extremes[extreme_key] = (n_ports, name, breakpoints)
+                continue
+
+            prior_n_ports, prior_name, prior_breakpoints = prior
+            if (prior_n_ports, prior_breakpoints) == (n_ports, breakpoints):
+                continue
+
+            low_bp, high_bp = extreme_key
+            issues.append(ValidationIssue(
+                severity=ValidationSeverity.WARNING,
+                spec_id=f"structure_{name}",
+                message=(
+                    f"Long-short equivalent structure: '{name}' shares the same extreme "
+                    f"cutoffs ({low_bp:g}, {high_bp:g}) as '{prior_name}'"
+                ),
+                details=(
+                    "Anomaly assay keeps only the extreme long-short spread. "
+                    "These structures differ in the number of interior portfolios but "
+                    "should produce the same long-short return series."
+                ),
+            ))
 
         return issues
+
+    @staticmethod
+    def _get_extreme_bucket_signature(
+        n_ports: int,
+        breakpoints: Optional[List[float]],
+    ) -> Optional[Tuple[float, float]]:
+        """Return the lower/upper extreme cutoffs used by a portfolio structure."""
+        if not isinstance(n_ports, int) or n_ports < 2:
+            return None
+
+        if breakpoints is None:
+            step = 100.0 / n_ports
+            return (step, 100.0 - step)
+
+        if len(breakpoints) == 0:
+            return None
+
+        return (float(breakpoints[0]), float(breakpoints[-1]))
 
     def _validate_single_spec(
         self,
@@ -319,8 +382,8 @@ class SpecificationValidator:
         Check if breakpoint universe and rating filter are compatible.
 
         ERROR cases (disjoint populations):
-        - bp_universe='ig_only' + rating_filter='hy'
-        - bp_universe='hy_only' + rating_filter='ig'
+        - bp_universe='ig_only' + rating_filter='nig'
+        - bp_universe='nig_only' + rating_filter='ig'
 
         WARNING cases (partial overlap):
         - bp_universe='ig_only' + rating_filter='all' (valid but worth noting)
@@ -371,10 +434,13 @@ class SpecificationValidator:
     ) -> Optional[Tuple[int, int]]:
         """Get (min, max) rating bounds from filter specification."""
         if rat_filter is None:
-            return (1, 21)
+            return (RatingBounds.IG_MIN, RatingBounds.NIG_MAX)
 
         if isinstance(rat_filter, str):
-            return self.RATING_BOUNDS.get(rat_filter.upper())
+            rat_upper = rat_filter.upper()
+            if rat_upper in ('IG', 'NIG'):
+                return core_get_rating_bounds(rat_upper)
+            return self.RATING_BOUNDS.get(rat_upper)
 
         if isinstance(rat_filter, tuple) and len(rat_filter) == 2:
             return rat_filter
@@ -390,23 +456,23 @@ class SpecificationValidator:
         Infer rating bounds of breakpoint universe from name/function.
 
         Heuristic based on common naming patterns:
-        - 'all', None, 'full' -> (1, 21)
+        - 'all', None, 'full' -> (1, 22)
         - 'ig_only', 'ig' -> (1, 10)
-        - 'hy_only', 'hy', 'nig' -> (11, 21)
+        - 'nig_only', 'nig' -> (11, 22)
         """
         if bp_func is None:
-            return (1, 21)  # No filter = all bonds
+            return (RatingBounds.IG_MIN, RatingBounds.NIG_MAX)  # No filter = all bonds
 
         bp_name_lower = bp_name.lower()
 
-        if 'ig_only' in bp_name_lower or bp_name_lower == 'ig':
-            return (1, 10)
+        if 'nig_only' in bp_name_lower or bp_name_lower == 'nig':
+            return (RatingBounds.NIG_MIN, RatingBounds.NIG_MAX)
 
-        if 'hy_only' in bp_name_lower or bp_name_lower in ('hy', 'nig', 'nig_only'):
-            return (11, 21)
+        if 'ig_only' in bp_name_lower or bp_name_lower == 'ig':
+            return (RatingBounds.IG_MIN, RatingBounds.IG_MAX)
 
         if bp_name_lower in ('all', 'full', 'none'):
-            return (1, 21)
+            return (RatingBounds.IG_MIN, RatingBounds.NIG_MAX)
 
         # Can't infer from name, return None (skip check)
         return None
@@ -575,13 +641,13 @@ def validate_specs(
     ...         (5, 'quintiles', None),      # None = PyBondLab computes equal quintiles
     ...         (3, 'extreme', [10, 90]),    # Custom: 10/80/10 split
     ...     ],
-    ...     'rating_filters': {'all': None, 'ig': (1, 10), 'hy': (11, 21)},
+    ...     'rating_filters': {'all': None, 'ig': (1, 10), 'nig': (11, 22)},
     ...     'bp_universes': {'all': None, 'ig_only': lambda df: df['RATING_NUM'] <= 10},
     ...     'maturity_filters': {'all': None, 'short': (0, 5)},
     ... }
     >>>
     >>> result = validate_specs(specs)
-    >>> # Will flag: ig_only breakpoints + hy rating filter as ERROR
+    >>> # Will flag: ig_only breakpoints + nig rating filter as ERROR
     """
     validator = SpecificationValidator(verbose=verbose)
     result = validator.validate(specs, data=data, rating_col=rating_col)
@@ -692,7 +758,7 @@ def get_valid_spec_list(
     >>> specs = {
     ...     'weighting': ['EW', 'VW'],
     ...     'portfolio_structures': [(5, 'quintiles', None)],
-    ...     'rating_filters': {'all': None, 'ig': (1, 10), 'hy': (11, 21)},
+    ...     'rating_filters': {'all': None, 'ig': (1, 10), 'nig': (11, 22)},
     ...     'bp_universes': {'all': None, 'ig_only': lambda df: df['RATING_NUM'] <= 10},
     ...     'maturity_filters': {'all': None},
     ... }
@@ -758,5 +824,3 @@ def filter_spec_list(
         exclude_ids.update(issue.spec_id for issue in validation_result.warnings)
 
     return [s for s in spec_list if s['spec_id'] not in exclude_ids]
-
-

@@ -25,7 +25,7 @@ class NamingConfig:
     weighting_prefix : bool, default=False
         Add 'ew_' or 'vw_' prefix to factor names.
     include_rating_suffix : bool, default=True
-        Add '_ig' or '_hy' suffix for rating-filtered strategies.
+        Add '_ig' or '_nig' suffix for rating-filtered strategies.
     include_wf_suffix : bool, default=True
         Add '_wf' suffix for WithinFirmSort strategies.
     doublesort_sep : str, default='_'
@@ -80,7 +80,7 @@ def make_factor_name(
     weighting : str, optional
         'ew' or 'vw' for weighting prefix.
     rating : str, optional
-        'ig' or 'hy' for rating suffix.
+        'ig' or 'nig' for rating suffix.
     is_within_firm : bool
         Add '_wf' suffix for WithinFirmSort.
     sign_corrected : bool
@@ -220,20 +220,20 @@ def rating_to_suffix(rating) -> Optional[str]:
     Returns
     -------
     str or None
-        'ig' for investment grade, 'hy' for high yield, None otherwise.
+        'ig' for investment grade, 'nig' for non-investment grade, None otherwise.
     """
     if rating is None:
         return None
     if isinstance(rating, str):
         if rating.upper() == 'IG':
             return 'ig'
-        elif rating.upper() in ('NIG', 'HY'):
-            return 'hy'
+        elif rating.upper() == 'NIG':
+            return 'nig'
     elif isinstance(rating, tuple):
-        # Tuple (min, max) - check if it's IG range or HY range
+        # Tuple (min, max) - check if it's IG range or NIG range
         min_rating, max_rating = rating
         if max_rating <= 10:
             return 'ig'
         elif min_rating > 10:
-            return 'hy'
+            return 'nig'
     return None

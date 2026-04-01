@@ -62,8 +62,8 @@ ew_ls, vw_ls = results.get_long_short()
 ew_turn, vw_turn = results.get_turnover()
 ```
 
-Your data needs columns: `date`, `ID` (bond identifier), `ret` (returns), `VW` (value weight).
-Optional: `RATING_NUM` (numeric credit rating, 1-10 = IG, 11-22 = NIG) for rating filters, `PRICE` for price filters.
+Your data currently needs columns: `date`, `ID` (bond identifier), `ret` (returns), `VW` (value weight), and `RATING_NUM` (numeric credit rating, 1-10 = IG, 11-22 = NIG). `PRICE` is optional and only needed for price filters.
+Monthly `holding_period > 1` means staggered overlapping cohorts. Quarterly, semi-annual, and annual rebalancing are controlled by `rebalance_frequency`, where `holding_period` must be `1`.
 Use column mapping if your names differ:
 
 ```python
@@ -71,6 +71,21 @@ results = pbl.StrategyFormation(data, strategy=strategy).fit(
     IDvar='cusip', RETvar='ret_vw', VWvar='mcap_e'
 )
 ```
+
+---
+
+## Core Workflow
+
+Start with [docs/CoreWorkflow_README.md](docs/CoreWorkflow_README.md). It defines the canonical first workflow, required schema, result tiers, and the main semantic traps.
+
+Use `StrategyFormation` first, then move to `BatchStrategyFormation` when the single-run workflow is clear. Treat `WithinFirmSort`, `RollingBeta`, `DataUncertaintyAnalysis`, and anomaly assaying as advanced workflows built on top of that core.
+
+## Semantic Notes
+
+- `dynamic_weights` has no effect when `holding_period == 1`.
+- Non-monthly rebalancing uses `rebalance_frequency`; in that mode `holding_period` must be `1`.
+- `WithinFirmSort` currently supports `holding_period=1` only.
+- Fast batch results contain long-short returns only; use `turnover=True` or `chars=[...]` when you need full legs, bond counts, turnover, characteristics, or `extract_panel()`.
 
 ---
 
@@ -117,7 +132,7 @@ See [docs/WithinFirmSort_README.md](docs/WithinFirmSort_README.md) for methodolo
 
 ### Batch Processing
 
-Process many signals at once. Automatically selects the fastest execution path.
+Process many signals at once. Batch formation can return either full formation results or a reduced fast-path result depending on your settings.
 
 ```python
 from PyBondLab import BatchStrategyFormation
@@ -132,6 +147,8 @@ batch = BatchStrategyFormation(
 results = batch.fit()
 ew_ls, vw_ls = results['cs'].get_long_short()
 ```
+
+Use `turnover=True` or `chars=[...]` when you need full portfolio legs, bond counts, turnover, characteristics, or `extract_panel()`.
 
 Within-firm batch:
 
@@ -238,6 +255,13 @@ report = AssayAnomaly(data=data, sort_var='cs', holding_periods=[1])
 _, recap = report.summary_results()
 print(recap)
 ```
+
+Which anomaly tool to use:
+
+- `assay_anomaly_fast`: single signal, speed-first
+- `BatchAssayAnomaly`: multiple signals, speed-first
+- `AssayAnomaly`: richer slow-path workflow
+- `AssayAnomalyRunner`: advanced/internal control, not the default entry point for new users
 
 See [docs/AnomalyAssay_README.md](docs/AnomalyAssay_README.md) and [docs/BatchAssayAnomaly_README.md](docs/BatchAssayAnomaly_README.md).
 

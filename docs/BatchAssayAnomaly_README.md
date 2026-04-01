@@ -1,8 +1,25 @@
 # BatchAssayAnomaly User Guide
 
-`BatchAssayAnomaly` is a high-performance tool for running anomaly assays across **multiple signals** efficiently. Instead of running `assay_anomaly_fast` one signal at a time, `BatchAssayAnomaly` processes all your signals in a single call with automatic parallelization.
+`BatchAssayAnomaly` is the fast public API for running anomaly assays across **multiple signals**. It applies the same speed-first specification-grid workflow as `assay_anomaly_fast`, but across many candidate signals.
 
-This is essential for multiverse analysis when you need to test multiple factor candidates across a large specification grid.
+Use it when:
+- you have many signals
+- you want the fast numba-based anomaly workflow
+- you want comparable summary output across signals
+
+Do not use it when you mainly need one signal or a slower, fuller inspection workflow:
+- for one signal, prefer `assay_anomaly_fast`
+- for the richer slow-path workflow, use `AssayAnomaly`
+- treat `AssayAnomalyRunner` as advanced/internal
+
+## Which Anomaly Tool Should I Use?
+
+| API | Recommended use |
+|---|---|
+| `assay_anomaly_fast` | One signal, speed-first |
+| `BatchAssayAnomaly` | Many signals, speed-first |
+| `AssayAnomaly` | Slower but richer inspection workflow |
+| `AssayAnomalyRunner` | Advanced/internal control |
 
 ---
 
@@ -27,6 +44,8 @@ This is essential for multiverse analysis when you need to test multiple factor 
 ---
 
 ## Quick Start
+
+The recommended use case is many signals on one shared specification grid:
 
 ```python
 from PyBondLab import BatchAssayAnomaly
@@ -129,6 +148,8 @@ specs = {
 - `timings`: Dict with processing times per signal
 - `errors`: Dict with error messages for failed signals
 
+Each individual signal result is still an `AnomalyAssayResult`. If you need the slower `AnomalyResults` panel produced by `AssayAnomaly`, use that API directly instead of `BatchAssayAnomaly`.
+
 ---
 
 ## Examples
@@ -152,7 +173,7 @@ specs = {
     'rating_filters': {
         'all': None,
         'ig': (1, 10),
-        'hy': (11, 21),
+        'hy': (11, 22),
     },
     'bp_universes': {
         'all': None,
@@ -563,7 +584,7 @@ TIER2_SPECS = {
     'rating_filters': {
         'all': None,
         'ig': (1, 10),
-        'hy': (11, 21),
+        'hy': (11, 22),
     },
     'bp_universes': {
         'all': None,

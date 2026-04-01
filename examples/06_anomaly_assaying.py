@@ -6,18 +6,24 @@ assay_anomaly_fast (numba-accelerated single-signal), and
 BatchAssayAnomaly (multi-signal batch) for robustness testing
 across specification grids.
 
+The example is ordered by recommended public API usage:
+1. `assay_anomaly_fast` for one signal
+2. `BatchAssayAnomaly` for many signals
+3. `AssayAnomaly` for the richer slow-path workflow
+4. `AssayAnomalyRunner` only as an advanced/internal extension point
+
 This replicates the MUA analysis from Dickerson, Robotti & Rossetti:
 for each signal, vary weighting, number of portfolios, breakpoint
 scheme, breakpoint universe, rating filter, and maturity filter.
 
 PyBondLab features used:
-  - AssayAnomaly                (convenience facade, slow path)
-  - AssayAnomalyRunner          (full runner with save_idx)
-  - AnomalyResults              (.df, .summary_results())
   - assay_anomaly_fast          (numba fast path, single signal)
   - AnomalyAssayResult          (.summary(), .returns_df)
   - BatchAssayAnomaly           (multi-signal batch)
   - BatchAssayResults           (dict-like access per signal)
+  - AssayAnomaly                (convenience facade, slow path)
+  - AnomalyResults              (.df, .summary_results())
+  - AssayAnomalyRunner          (advanced/internal runner with save_idx)
   - validate_specs              (specification validation)
   - SpecificationValidator      (validator class)
   - generate_spec_list          (spec grid generation)
@@ -156,7 +162,7 @@ print(f"\nFull results shape: {full_results.shape}")
 print(f"Recap by type:\n{recap}")
 
 # =============================================================================
-# 5. AssayAnomalyRunner with custom breakpoint universe
+# 5. AssayAnomalyRunner with custom breakpoint universe (advanced/internal)
 # =============================================================================
 runner_results = AssayAnomalyRunner(
     strategy=SingleSort(sort_var='dvol', holding_period=1, num_portfolios=5,

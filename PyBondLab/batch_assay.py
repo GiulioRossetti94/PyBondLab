@@ -354,7 +354,7 @@ class BatchAssayAnomaly:
     dynamic_weights : bool, default=True
         Use dynamic (d-1) weights for VW portfolios
     skip_invalid : bool, default=True
-        Skip invalid specification combinations (e.g., ig_only bp + hy filter)
+        Skip invalid specification combinations (e.g., ig_only bp + nig filter)
     IDvar : str, optional
         Column name for bond identifier (default: 'ID')
     DATEvar : str, optional

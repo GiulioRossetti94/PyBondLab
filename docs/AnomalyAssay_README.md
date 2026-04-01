@@ -1,8 +1,28 @@
 # Anomaly Assay User Guide
 
-`assay_anomaly_fast` is a high-performance tool for testing factor robustness across **specification grids**. It computes long-short portfolio returns for every combination of weighting schemes, portfolio structures, rating filters, breakpoint universes, and maturity filters using numba-accelerated computations.
+PyBondLab exposes three anomaly-assay entry points for normal users:
 
-This is essential for multiverse analysis and understanding whether factor returns are robust to researcher degrees of freedom.
+- `assay_anomaly_fast`: fast single-signal assay
+- `BatchAssayAnomaly`: fast multi-signal assay
+- `AssayAnomaly`: slower but richer workflow with fuller output
+
+All three test factor robustness across **specification grids** spanning weighting schemes, portfolio structures, rating filters, breakpoint universes, and maturity filters. This is the package's Tier 2 robustness layer for methodological/specification uncertainty.
+
+## Which Anomaly Tool Should I Use?
+
+- Start with `assay_anomaly_fast` if you want one signal and a specification grid as fast as possible.
+- Use `BatchAssayAnomaly` when you want the same fast workflow across many signals.
+- Use `AssayAnomaly` when you need the slower, fuller workflow with bond counts, turnover-aware inspection, and easier downstream exploration.
+- Treat `AssayAnomalyRunner` as advanced/internal. It exists for custom control, not as the default public starting point.
+
+### Public API Map
+
+| API | Recommended use | Output style | Default audience |
+|---|---|---|---|
+| `assay_anomaly_fast` | One signal, speed-first | `AnomalyAssayResult` with returns grid and summary | Most users |
+| `BatchAssayAnomaly` | Many signals, speed-first | Batch wrapper around many `AnomalyAssayResult`s | Screening / multiverse runs |
+| `AssayAnomaly` | One signal, richer slow-path inspection | `AnomalyResults` with fuller time-series panel | Users who want detail over speed |
+| `AssayAnomalyRunner` | Custom runner control | Internal/advanced interface | Advanced users only |
 
 ---
 
@@ -30,6 +50,8 @@ This is essential for multiverse analysis and understanding whether factor retur
 ---
 
 ## Quick Start
+
+The recommended default is `assay_anomaly_fast` for a single signal:
 
 ```python
 from PyBondLab import assay_anomaly_fast
@@ -77,7 +99,7 @@ A specification grid defines all combinations of:
 |-----------|-------------|----------------|
 | **Weighting** | Portfolio weighting scheme | `'EW'` (equal), `'VW'` (value) |
 | **Portfolio Structure** | Number of portfolios and breakpoints | `(5, 'quintiles', None)`, `(3, 'extreme', [10, 90])` |
-| **Rating Filter** | Which bonds to include | `None` (all), `(1, 10)` (IG), `(11, 21)` (HY) |
+| **Rating Filter** | Which bonds to include | `None` (all), `(1, 10)` (IG), `(11, 22)` (HY/NIG) |
 | **BP Universe** | Which bonds define breakpoints | `None` (all), `lambda df: df['RATING_NUM'] <= 10` |
 | **Maturity Filter** | Maturity range filter | `None` (all), `(0, 5)` (short), `(10, 100)` (long) |
 
@@ -161,6 +183,8 @@ specs = {
 - `returns_df`: DataFrame of long-short returns (dates x specs)
 - `metadata`: Dict with run information
 - `summary()`: Method to compute t-statistics
+
+If you need the slower, richer workflow instead, use `AssayAnomaly` from the main package API. Use `AssayAnomalyRunner` only when you explicitly need custom runner control.
 
 ---
 
@@ -270,7 +294,7 @@ specs = {
     'rating_filters': {
         'all': None,           # All bonds
         'ig': (1, 10),         # Investment Grade (AAA to BBB-)
-        'hy': (11, 21),        # High Yield (BB+ to C)
+        'hy': (11, 22),        # High Yield / NIG
         'bbb': (7, 10),        # BBB only
     },
     'bp_universes': {
@@ -471,7 +495,7 @@ TIER2_SPECS = {
     'rating_filters': {
         'all': None,
         'ig': (1, 10),
-        'hy': (11, 21),
+        'hy': (11, 22),
     },
     'bp_universes': {
         'all': None,

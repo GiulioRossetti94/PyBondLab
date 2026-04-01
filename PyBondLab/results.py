@@ -443,7 +443,7 @@ class StrategyResults:
     signal_name : str, optional
         Name of the signal used for sorting (for naming)
     rating_str : str, optional
-        Rating suffix ('ig', 'hy', or None)
+        Rating suffix ('ig', 'nig', or None)
     is_within_firm : bool
         Whether this is a WithinFirmSort strategy
     second_signal : str, optional
@@ -1287,7 +1287,7 @@ def build_strategy_results(
     signal_name : str, optional
         Name of the signal used for sorting (for naming)
     rating_str : str, optional
-        Rating suffix ('ig', 'hy', or None)
+        Rating suffix ('ig', 'nig', or None)
     is_within_firm : bool
         Whether this is a WithinFirmSort strategy
     second_signal : str, optional

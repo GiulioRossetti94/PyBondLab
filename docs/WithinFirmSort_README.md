@@ -4,6 +4,8 @@
 
 `WithinFirmSort` implements a within-firm high-low sorting methodology for constructing bond factors. Unlike standard cross-sectional sorting (SingleSort), this strategy sorts bonds **within each firm**, isolating within-firm bond dispersion from cross-firm differences.
 
+This is an advanced workflow. For the canonical first workflow and required core schema, start with [docs/CoreWorkflow_README.md](CoreWorkflow_README.md).
+
 ---
 
 ## Table of Contents
