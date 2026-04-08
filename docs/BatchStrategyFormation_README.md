@@ -693,7 +693,6 @@ else:
 ### Getting Help
 
 - Check verbose output for timing breakdown
-- Review the [CLAUDE.md](../CLAUDE.md) for technical details
 - Run validation script: `python examples/validate_fast_batch.py`
 
 ---

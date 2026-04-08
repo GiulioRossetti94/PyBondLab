@@ -35,7 +35,7 @@ from _config import load_panel
 # ============================================================================
 
 # Path to monthly CPI growth data
-INF_DATA_DIR = "/Users/u1972481/Dropbox/1-research/Ra4-Andriollo-Rossetti-Ridge/Tail-Inflation/bond_inflation_project/data"
+INF_DATA_DIR = os.environ.get("INF_DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))
 CPI_PATH = os.path.join(INF_DATA_DIR, "CUSR0000SA0_1m.csv")
 
 BETA_WINDOW = 36      # Rolling window (months)

@@ -716,7 +716,6 @@ else:
 
 - Check verbose output for progress and path information
 - Review the [WithinFirmSort_README.md](WithinFirmSort_README.md) for strategy details
-- Review the [CLAUDE.md](../CLAUDE.md) for technical implementation details
 
 ---
 

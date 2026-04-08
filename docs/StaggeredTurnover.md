@@ -636,7 +636,6 @@ This creates a balanced panel with maximally-changing signal and verifies:
 
 ## See Also
 
-- [CLAUDE.md](../CLAUDE.md) - Project documentation
 - [examples/diagnose_turnover.py](../examples/diagnose_turnover.py) - Diagnostic script for turnover computation
 - [examples/validate_shift_alignment.py](../examples/validate_shift_alignment.py) - Validation script for shift(1) alignment
 - [examples/diagnose_turnover_unbalanced.py](../examples/diagnose_turnover_unbalanced.py) - Diagnostic for unbalanced panels
