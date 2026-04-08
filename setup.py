@@ -19,7 +19,7 @@ class build_py(_build_py):
         return super().build_module(module, module_file, package)
 
 
-setup(name = 'PyBondLab',
+setup(name = 'pybondlab',
       version = '0.2.0',
       description = ('Performs portfolio sorting and strategy evaluation for corporate bonds'),
       long_description=open('README.md').read() if os.path.exists('README.md') else '',
