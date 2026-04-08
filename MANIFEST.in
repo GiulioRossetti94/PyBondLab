@@ -1,3 +1,4 @@
 include README.md
 include LICENSE
 recursive-include PyBondLab/data/WRDS *.csv
+prune tests

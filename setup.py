@@ -1,5 +1,23 @@
 from setuptools import setup, find_packages
+from setuptools.command.build_py import build_py as _build_py
 import os
+
+
+class build_py(_build_py):
+    """Keep internal development helpers out of the wheel."""
+
+    def find_package_modules(self, package, package_dir):
+        modules = super().find_package_modules(package, package_dir)
+        return [
+            module for module in modules
+            if not (module[0] == 'PyBondLab' and module[1] == 'pbl_test')
+        ]
+
+    def build_module(self, module, module_file, package):
+        if package == 'PyBondLab' and module == 'pbl_test':
+            return None
+        return super().build_module(module, module_file, package)
+
 
 setup(name = 'PyBondLab',
       version = '0.2.0',
@@ -48,4 +66,5 @@ setup(name = 'PyBondLab',
           'performance': [],  # Backward-compatible alias; numba is required
           'all': ['wrds'],
       },
+      cmdclass={'build_py': build_py},
 )
